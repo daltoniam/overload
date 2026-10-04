@@ -347,7 +347,7 @@ func (inst *installation) startServices(exe string) error {
 	logs := filepath.Join(inst.home, "logs")
 	if inst.values["OVERLOAD_POSTGRES"] == "native" {
 		label := inst.label + ".postgres"
-		if err := writePlist(launchAgentPath(label), launchAgent{Label: label, Args: inst.postgresArgs(), Dir: inst.home, Log: filepath.Join(logs, "postgres.log")}); err != nil {
+		if err := writePlist(launchAgentPath(label), launchAgent{Label: label, Args: inst.postgresArgs(), Dir: inst.home, Log: filepath.Join(logs, "postgres.log"), Env: map[string]string{"LC_ALL": "C", "LANG": "C"}}); err != nil {
 			return err
 		}
 		if err := launchctl("bootstrap", guiDomain(), launchAgentPath(label)); err != nil {
