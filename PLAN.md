@@ -311,6 +311,13 @@ trimmed to the model's context budget with a deterministic priority order.
    `search`, `list_dir`, `get_diff`), a step limit (default 8) and a token
    budget, then a final structured findings call.
 
+**Decision (2026-10-04): no tool calls in the default path.** Tool-calling
+coordinators are where agent runs most often go wrong, and local models are
+weaker at multi-turn tool use; each extra turn also costs minutes on a Mac.
+Every model call in the review pipeline is "text in, JSON out" (see 7.8).
+The **tools** mode stays a possible opt-in for tool-capable hosted models
+later; it is not on the roadmap.
+
 Structured output: prefer Fantasy's structured-object support when the
 provider supports it, and pass a JSON schema (`response_format`) to
 `llama-server`/Ollama through provider options. Always validate against the
@@ -351,9 +358,9 @@ present any of those paths as operational until they actually execute jobs.
 | Concept | Purpose | Owner |
 |---|---|---|
 | Model connection | Provider adapter, endpoint, model ID, secret reference, capabilities and budgets | Workspace |
-| Prompt template | Named/versioned editable text with explicit variables and type (`entry`, `review`, `final`); built-ins are seeded templates, not hard-coded choices | Workspace |
-| Agent definition | Named role, model connection, entry prompt, optional review prompt and final/output prompt, limits and output contract | Workspace |
-| Workflow | Ordered or parallel agent steps, handoff/context rules, failure policy and result aggregation | Workspace |
+| Prompt template | Named/versioned editable text with explicit variables and type (`review`, `plan`, `verify`, see 7.8); built-ins are seeded templates, not hard-coded choices | Workspace |
+| Agent definition | Named role, model connection, prompts, limits and output contract; used as a main agent or sub-agent (7.8) | Workspace |
+| Workflow | One main agent, sub-agents with scopes, skip globs, file-review limit and failure policy (7.8) | Workspace |
 | Binding | Which workflow runs for a source/event/repository, enabled/dry-run policy and filters | Repo or workspace |
 | Schedule | Cron expression, timezone, target workflow, bound inputs and enabled state | Workspace |
 
@@ -415,6 +422,134 @@ bindings. Webhook adapters have distinct signing secrets and replay windows.
 Untrusted webhook bodies and repo content remain data, never instructions.
 Avoid persisting full incident payloads or stack traces by default; use bounded,
 redacted references and retention controls.
+
+### 7.8 Main agents and sub-agents
+
+**Why.** Today a workflow is a flat list of up to four agents ("passes").
+Each one reviews every changed file with its own model and prompt, none
+sees another's output, and findings carry no record of which agent produced
+them. That is several independent reviewers, not a coordinated review. It is
+also slow on local models: three agents over a 21-file PR at 8 to 12 minutes
+per file is 8 to 12 hours. Sub-agents must review the files they are for.
+
+**Approach: a configured tree, no tool calls.** Run-time delegation, where
+a coordinating agent starts children through tool calls (the style of
+platforms such as Overmind), is the most flexible design and the least
+reliable, especially on local models. Overload trades some flexibility for
+speed and reliability: the structure is configured, routing is
+deterministic (path globs) with an optional JSON planner, and every model
+call is "text in, JSON out".
+
+```
+Workflow "go-service-review"
+  Main agent "lead"          model ds4-qwen38   prompt "lead-review"
+    planner (optional)       prompt "lead-plan"
+    verifier (optional)      prompt "lead-verify"
+  Sub-agents
+    "security"    model gpt-6-sol    scope **/auth/**, **/*sql*   always
+    "migrations"  model ds4-qwen38   scope postgres/migrations/**
+    "tests"       model ds4-qwen38   scope **/*_test.go            when planned
+  Skip globs: **/*.lock, **/vendor/**, **/*_templ.go
+  Limit: 60 file reviews per run
+```
+
+**Data model.**
+- A workflow has exactly one **main agent** and zero to eight **sub-agents**.
+  Depth is two: sub-agents cannot have sub-agents.
+- **Main agent**: model connection, review prompt, optional planner prompt,
+  optional verifier prompt, and whether it reviews files no sub-agent
+  claimed (default yes).
+- **Sub-agent**: model connection, prompt, scope, and a cap on findings
+  (default 5). Scope is a list of path globs plus a mode: `always` (every
+  file matching a glob), `globs` (matching files, planner may add more) or
+  `planned` (only files the planner assigns).
+- **Workflow**: skip globs (lockfiles, generated and vendored code) and a
+  limit on total file reviews per run.
+- Prompt kinds become `review`, `plan` and `verify`; the existing `entry`
+  and `review` (pass focus) prompts migrate into them. The system-controlled
+  envelope (untrusted-input boundary, output contract) still wraps every
+  editable prompt.
+- The run snapshot gains a version field and the tree. `Verify()` checks
+  prompt digests for every node. Snapshots already queued in the old flat
+  format still load.
+- Findings get an `agent` column. Duplicates found by several agents are
+  kept once and record every agent that found them.
+
+**Pipeline for one PR.**
+1. **Skip**: files matching skip globs are dropped and listed on the run.
+2. **Globs**: each file is assigned to every sub-agent whose `always` or
+   `globs` scope matches.
+3. **Planner** (optional, one call): input is the file list, per-file change
+   stats, hunk headers (the functions a diff touches) and the first few
+   changed lines of each file, plus each sub-agent's name and description.
+   Output is JSON: `{"assign": {"path": ["sub-agent", ...]}}`. Rules:
+   - it can only **add** assignments, never remove what globs assigned;
+   - unknown files or sub-agents, invalid JSON, or an empty reply mean the
+     plan is ignored and the run is marked "routed by globs only";
+   - if the plan exceeds the file-review limit, planner assignments are
+     dropped first, never glob assignments;
+   - the validated plan is saved on the run and shown in the UI.
+4. **Unclaimed files** go to the main agent (unless disabled). No file is
+   left unreviewed except through skip globs.
+5. **Reviews**: each (agent, file) pair is today's per-file review call.
+   Sub-agents see only their assigned files.
+6. **Verifier** (optional): one call per sub-agent finding with that file's
+   diff and content; the reply is `keep` or `drop` with a reason. It may not
+   rewrite findings, so cross-run fingerprints and duplicate suppression
+   still work. Dropped findings are kept on the run, marked dropped.
+7. **Overload** validates every finding against the diff, removes
+   duplicates, records attribution, and is the only component that posts to
+   GitHub.
+
+**Failure handling.** A failed sub-agent does not fail the review silently
+or pass silently: the run completes as **degraded**, names the failed agent
+and the files it did not review, and posting includes a note that the
+review is partial. A failed planner falls back to globs. A failed verifier
+keeps all findings and marks the run degraded.
+
+**Model connections, memory and parallelism.**
+- A sub-agent points at a model connection, which is a URL. Five sub-agents
+  on one `ds4-server` share one copy of the weights; each concurrent request
+  adds only its context (about 1 GiB for Qwen3.8 at 32k context).
+- The parallel limit belongs to the **model connection**, not the agent: a
+  shared limiter per connection caps in-flight requests across every agent
+  that uses it, and queues the rest. Agents on different connections (one
+  local, one hosted) run at the same time. This replaces today's
+  per-agent-in-sequence execution.
+- Memory multiplies only with **different** local models, since each needs
+  its own server. One local model plus hosted sub-agents is the recommended
+  mix. The preview warns when the local models a workflow uses are unlikely
+  to fit in memory together.
+- For a connection with Parallel files above 1, the setup command suggests
+  `ds4-server --batched-session N` (or llama-server `-np N`).
+
+**Preview.** The workflow page shows, for a sample PR or a pasted file list,
+which agent reviews which files, the number of model calls, the expected
+parallelism per connection and a rough duration. The run page shows the
+same breakdown as executed: files per agent (by glob or planner), skipped
+files, findings and tokens per agent, and the verifier's decisions.
+
+**Migration.** Existing workflows become a main agent (the first agent, no
+planner) with the remaining agents as `always` sub-agents with no globs,
+which keeps today's behaviour. Legacy per-model passes become sub-agents of
+that model's starter workflow. The word "pass" is removed from the UI and
+CLI. The CLI and JSON configuration expose the same tree.
+
+**Delivery stages.**
+1. Data model, snapshot version, findings attribution, migration of
+   workflows and passes; the shared per-connection limiter.
+2. Skip globs and sub-agent scopes; the run page breakdown; the preview.
+3. Planner and verifier with validation and fallbacks.
+4. UI for the tree (main agent, sub-agent list with scope chips, preview).
+
+Each stage keeps `make ci`, the macOS install test and the kind sandbox
+test passing, and extends the planted-bug eval: a multi-file fixture where
+a file with a misleading name must still reach the right sub-agent through
+the planner.
+
+**Later, opt-in.** Run-time delegation as a main-agent mode for
+tool-capable hosted models, using the same allowed sub-agents and limits.
+Not part of v1.
 
 ## 8. Data model (initial)
 
@@ -598,16 +733,20 @@ Done and tested:
 - UI hardening: Host allowlist, same-origin checks on every state change,
   constant-time form tokens, server timeouts.
 
-Next, in order:
-1. Publish the first release and Homebrew formula; install on a clean Mac.
-2. Run the GitHub App and posting against a real repository through a tunnel.
-3. DwarfStar on a 128 GB Mac: DeepSeek V4 Flash, and `--batched-session` with
-   Parallel files.
-4. Evaluation: real PRs with known bugs, scored per model, beyond the single
-   planted-bug file.
-5. A reaper for sandbox claims left by a crashed worker; backup, restore and
+Before the first release:
+1. Main agents and sub-agents (7.8), in its four stages.
+2. Measure `ds4-server --batched-session` with the per-connection limiter on
+   the target Mac Studio (not the M1 Max used so far), with Qwen3.8 and
+   DeepSeek V4 Flash, to set defaults for Parallel files.
+3. Publish the first release and Homebrew formula; install on a clean Mac.
+4. Run the GitHub App and posting against a real repository through a tunnel.
+
+After:
+5. Evaluation: real PRs with known bugs, scored per model and per workflow
+   shape, beyond the planted-bug fixtures.
+6. A reaper for sandbox claims left by a crashed worker; backup, restore and
    upgrade tests.
-6. Sentry and other signed webhook sources for generic jobs.
+7. Sentry and other signed webhook sources for generic jobs.
 
 ## 13. Follow-ups (post v1, keep interfaces ready)
 
@@ -645,8 +784,14 @@ Next, in order:
 
 ## 15. Open questions
 
-- Whether `ds4-server --batched-session` makes parallel file reviews faster on
-  Apple Silicon, and which DwarfStar model gives the best review quality per
-  minute on 64 GB and 128 GB Macs.
+- Whether `ds4-server --batched-session` makes parallel reviews faster on the
+  target Mac Studio, and which DwarfStar model gives the best review quality
+  per minute there. On the M1 Max, two parallel llama.cpp requests were
+  slower in total than one (10 vs 13 tokens/s); ds4 batching is unmeasured.
+- How often the planner adds a useful assignment that globs missed, and
+  whether its extra context (hunk headers, first changed lines) is enough;
+  measure before making it a default.
+- Whether the verifier removes more false positives than true findings on
+  local models.
 - Whether a hosted model proxy (keys held outside sandboxes, per-run tokens)
   should be added so hosted models can run in sandbox mode.
