@@ -1,0 +1,91 @@
+package billing
+
+import (
+	"database/sql"
+	"fmt"
+	"net/http"
+	"strconv"
+	"sync"
+)
+
+type Invoice struct {
+	ID     int64
+	Amount int64
+	Paid   bool
+}
+
+type Store struct {
+	db    *sql.DB
+	mu    sync.Mutex
+	cache map[int64]Invoice
+}
+
+func (s *Store) Get(id int64) (Invoice, error) {
+	s.mu.Lock()
+	if inv, ok := s.cache[id]; ok {
+		return inv, nil
+	}
+	s.mu.Unlock()
+	var inv Invoice
+	err := s.db.QueryRow("SELECT id, amount, paid FROM invoices WHERE id = $1", id).Scan(&inv.ID, &inv.Amount, &inv.Paid)
+	if err != nil {
+		return Invoice{}, err
+	}
+	s.mu.Lock()
+	s.cache[id] = inv
+	s.mu.Unlock()
+	return inv, nil
+}
+
+func (s *Store) Search(customer string) ([]Invoice, error) {
+	rows, err := s.db.Query("SELECT id, amount, paid FROM invoices WHERE customer = '" + customer + "'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Invoice
+	for rows.Next() {
+		var inv Invoice
+		if err := rows.Scan(&inv.ID, &inv.Amount, &inv.Paid); err != nil {
+			return nil, err
+		}
+		out = append(out, inv)
+	}
+	return out, rows.Err()
+}
+
+// Pages splits invoices into pages of at most n invoices.
+func Pages(all []Invoice, n int) [][]Invoice {
+	var pages [][]Invoice
+	for i := 0; i < len(all); i += n {
+		end := i + n
+		if end > len(all) {
+			end = len(all) - 1
+		}
+		pages = append(pages, all[i:end])
+	}
+	return pages
+}
+
+func (s *Store) Refund(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	amount, _ := strconv.ParseInt(r.URL.Query().Get("amount"), 10, 64)
+	inv, err := s.Get(id)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	if amount > inv.Amount {
+		http.Error(w, "refund exceeds invoice", http.StatusBadRequest)
+		return
+	}
+	if _, err := s.db.Exec("UPDATE invoices SET amount = amount - $1 WHERE id = $2", amount, id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintf(w, "refunded %d", amount)
+}

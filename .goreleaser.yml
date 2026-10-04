@@ -1,0 +1,68 @@
+version: 2
+
+project_name: overload
+
+builds:
+  - main: ./cmd/overload
+    binary: overload
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+
+archives:
+  - formats:
+      - tar.gz
+    # No version in the name so install.sh can use releases/latest/download.
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+release:
+  github:
+    owner: daltoniam
+    name: overload
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+brews:
+  - repository:
+      owner: daltoniam
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/daltoniam/overload"
+    description: "Self-hosted AI pull request reviews and scheduled agent jobs"
+    license: "Apache-2.0"
+    dependencies:
+      - name: postgresql@17
+    caveats: |
+      Start overload (a private Postgres plus a login service) with:
+        overload install
+
+      It prints the UI address and generated password. Stop it with
+      `overload uninstall`; add --purge to delete its data.
+    test: |
+      assert_match version.to_s, shell_output("#{bin}/overload version")

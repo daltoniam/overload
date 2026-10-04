@@ -1,0 +1,170 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+func agentStatus(enabled bool) string {
+	if enabled {
+		return "Enabled"
+	}
+	return "Disabled"
+}
+
+func agentKindLabel(kind string) string {
+	if kind == "scheduled_prompt" {
+		return "Scheduled prompt"
+	}
+	return "PR review"
+}
+
+func agentFormTitle(name string) string {
+	if name == "" {
+		return "New agent"
+	}
+	return "Edit agent"
+}
+
+func repositoryFormTitle(repo overload.Repository) string {
+	if repo.ID == 0 {
+		return "New repository"
+	}
+	return repo.FullName
+}
+
+func bindingAction(enabled bool) string {
+	if enabled {
+		return "Disable"
+	}
+	return "Enable"
+}
+
+func repositoryBindings(bindings []overload.TriggerBinding, name string) []overload.TriggerBinding {
+	var result []overload.TriggerBinding
+	for _, binding := range bindings {
+		if binding.Repository == name {
+			result = append(result, binding)
+		}
+	}
+	return result
+}
+
+templ Agents(agents []overload.AgentDefinition) {
+	@layouts.Base(layouts.PageData{Title: "Agents", CurrentPath: "/configure/agents"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Agents</p><h1>Agents</h1><p class="muted">Each agent chooses a model and pinned prompt revisions. Editing an agent affects future runs only.</p></div><a class="button" href="/configure/agents/new">New agent</a></div>
+		<section class="panel">
+			if len(agents) == 0 {
+				<div class="empty">No agents yet. <a href="/configure/agents/new">Create an agent</a> after adding a model and entry prompt.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Job type</th><th>Model</th><th>Entry prompt</th><th>Status</th><th></th></tr></thead><tbody>
+					for _, agent := range agents {
+						<tr><td><strong>{ agent.Name }</strong></td><td>{ agentKindLabel(agent.Kind) }</td><td>{ agent.Model }</td><td>{ agent.EntryPrompt }</td><td><span class="badge neutral">{ agentStatus(agent.Enabled) }</span></td><td><a href={ templ.URL("/configure/agents/" + agent.Name) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings, prompts []overload.PromptTemplate, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Agent", CurrentPath: "/configure/agents"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/agents">Agents</a></p><h1>{ agentFormTitle(agent.Name) }</h1><p class="muted">Select a model and prompts. Saving this agent selects the latest prompt revisions for future jobs. Without saving, it keeps its previously selected revisions.</p></div><a href="/configure/agents">All agents</a></div>
+		<section class="panel"><form method="post" action="/configure/agents"><input type="hidden" name="csrf" value={ nonce }/>
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ agent.Name } readonly?={ agent.Name != "" } placeholder="security-reviewer"/></label>
+			<label class="field"><span>Job type</span><select name="kind"><option value="pr_review" selected?={ agent.Kind == "" || agent.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ agent.Kind == "scheduled_prompt" }>Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. Each agent is one independent review pass with its own model and prompts.</small></label>
+			<label class="field"><span>Model connection</span><select name="model" required><option value="">Select a model</option>
+				for _, model := range models {
+					<option value={ model.Name } selected?={ model.Name == agent.Model }>{ model.Name } ({ model.Model })</option>
+				}
+			</select><small><a href="/settings">Manage model connections</a></small></label>
+			<label class="field"><span>Entry prompt</span><select name="entry_prompt" required><option value="">Select an entry prompt</option>
+				for _, prompt := range prompts {
+					if prompt.Kind == "entry" {
+						<option value={ prompt.Name } selected?={ prompt.Name == agent.EntryPrompt }>{ prompt.Name } (latest revision { fmt.Sprint(prompt.Revision) })</option>
+					}
+				}
+			</select><small><a href="/configure/prompts">Manage prompts</a></small></label>
+			<label class="field"><span>Pass focus prompt (optional)</span><select name="review_prompt"><option value="">None</option>
+				for _, prompt := range prompts {
+					if prompt.Kind == "review" {
+						<option value={ prompt.Name } selected?={ prompt.Name == agent.ReviewPrompt }>{ prompt.Name } (latest revision { fmt.Sprint(prompt.Revision) })</option>
+					}
+				}
+			</select></label>
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ agent.Enabled }/> Allow this agent in future runs</label><p class="muted">Turn off to pause this agent without deleting its setup. Workflows using a disabled agent cannot start new runs; already queued runs keep their saved configuration.</p>
+			<button type="submit">Save agent</button>
+		</form></section>
+		if agent.Name != "" {
+			<section class="panel"><h2>Remove agent</h2><p class="muted">Agents used in workflows cannot be deleted. Disable this agent instead if it is still in use.</p><form method="post" action={ templ.URL("/configure/agents/" + agent.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete agent</button></form></section>
+		}
+	}
+}
+
+templ Repositories(repos []overload.Repository) {
+	@layouts.Base(layouts.PageData{Title: "Repositories", CurrentPath: "/configure/repositories"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Repositories</p><h1>Repositories</h1><p class="muted">Manage each repository independently. Processing requires an enabled repository and a matching PR event binding.</p></div><a class="button" href="/configure/repositories/new">New repository</a></div>
+		<section class="panel">
+			if len(repos) == 0 {
+				<div class="empty">No repositories yet. <a href="/configure/repositories/new">Add a repository</a> to configure PR events.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Access</th><th>Status</th><th>Mode</th><th></th></tr></thead><tbody>
+					for _, repo := range repos {
+						<tr><td><strong>{ repo.FullName }</strong></td><td>{ repositoryAccess(repo.InstallationID) }</td><td><span class="badge neutral">{ agentStatus(repo.Enabled) }</span></td><td>{ repositoryMode(repo.DryRun) }</td><td><a href={ templ.URL(fmt.Sprintf("/configure/repositories/%d", repo.ID)) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBinding, workflows []overload.Workflow, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Repository", CurrentPath: "/configure/repositories"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/repositories">Repositories</a></p><h1>{ repositoryFormTitle(repo) }</h1><p class="muted">Reviews stay dry-run unless posting is enabled here and the server runs with OVERLOAD_ENABLE_POSTING=1. Posting needs the GitHub App.</p></div><a href="/configure/repositories">All repositories</a></div>
+		<section class="panel"><h2>Repository settings</h2><form method="post" action="/configure/repositories"><input type="hidden" name="csrf" value={ nonce }/>
+			if repo.ID != 0 {
+				<input type="hidden" name="id" value={ fmt.Sprint(repo.ID) }/>
+			}
+			<label class="field"><span>GitHub owner/repo</span><input name="name" required placeholder="owner/repo" value={ repo.FullName } readonly?={ repo.ID != 0 }/></label>
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ repo.Enabled }/> Enable processing for this repository</label>
+			<label class="check"><input type="checkbox" name="post" value="true" checked?={ !repo.DryRun }/> Post reviews as GitHub comments</label>
+			<button type="submit">Save repository</button>
+		</form></section>
+		if repo.ID != 0 {
+			<section class="panel"><div class="panel-head"><div><h2>PR event bindings</h2><p class="muted">Choose which PR actions run a workflow for this repository.</p></div></div>
+				if len(repositoryBindings(bindings, repo.FullName)) == 0 {
+					<div class="empty">No PR actions configured. Incoming events will be skipped.</div>
+				}
+				for _, binding := range repositoryBindings(bindings, repo.FullName) {
+					<article class="profile"><div class="profile-top"><h3>{ binding.Action } → { binding.Workflow }</h3><span class="badge neutral">{ agentStatus(binding.Enabled) }</span></div>
+						<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="action" value={ binding.Action }/><input type="hidden" name="workflow" value={ binding.Workflow }/><input type="hidden" name="enabled" value={ fmt.Sprint(!binding.Enabled) }/><button class="secondary" type="submit">{ bindingAction(binding.Enabled) }</button></form>
+						<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/bindings/%d/delete", repo.ID, binding.ID)) }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete binding</button></form>
+					</article>
+				}
+				<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="enabled" value="true"/><label class="field"><span>PR action</span><select name="action"><option value="opened">Opened</option><option value="synchronize">Updated</option><option value="reopened">Reopened</option><option value="ready_for_review">Ready for review</option></select></label><label class="field"><span>Workflow</span><select name="workflow" required><option value="">Select a PR workflow</option>
+					for _, workflow := range workflows {
+						if workflow.Kind == "pr_review" && workflow.Enabled {
+							<option value={ workflow.Name }>{ workflow.Name }</option>
+						}
+					}
+				</select></label><button type="submit">Add or update binding</button></form>
+			</section>
+			<section class="panel"><h2>Remove repository</h2><p class="muted">Repositories with bindings or runs cannot be deleted. Disable processing to keep their history.</p><form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/delete", repo.ID)) }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete repository</button></form></section>
+		}
+	}
+}
+
+func repositoryAccess(installationID int64) string {
+	if installationID > 0 {
+		return "GitHub App"
+	}
+	return "Token (manual)"
+}
+
+func repositoryMode(dryRun bool) string {
+	if dryRun {
+		return "Dry run"
+	}
+	return "Posts reviews"
+}

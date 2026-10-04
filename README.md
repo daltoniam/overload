@@ -1,0 +1,103 @@
+# overload
+
+Overload reviews GitHub pull requests with AI models you run on your own Mac.
+It is built for Apple Silicon: a local model served on Metal (by
+[DwarfStar](https://dwarfstar.sh/) or llama.cpp) reads each changed file,
+and overload checks every finding against the diff before it is shown or
+posted. Hosted OpenAI-compatible models work too.
+
+Status: pre-release. Local and webhook reviews, scheduled prompts, the GitHub
+App setup and opt-in posting work and are tested; the GitHub App and posting
+have only been exercised against fakes so far.
+
+## Install on a Mac
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/daltoniam/overload/main/install.sh | sh
+```
+
+With Homebrew this runs `brew install daltoniam/tap/overload` (which brings
+Postgres 17); otherwise it downloads the release binary into `~/.local/bin`.
+It then runs `overload install`, which:
+
+- writes `~/Library/Application Support/overload/overload.env` (readable only
+  by you) with a generated UI password;
+- creates a private Postgres database in the same directory;
+- registers login services for Postgres and overload that restart on failure;
+- prints the UI address (`http://127.0.0.1:8082`) and password, and suggests
+  a model if one is already running on port 8000 or 8080.
+
+`overload status` shows what is running, `overload uninstall` stops it and
+keeps your data, and `overload uninstall --purge` removes everything.
+
+## Run a model
+
+Overload talks to any OpenAI-compatible server. On a Mac, DwarfStar runs
+large mixture-of-experts models on Metal:
+
+```sh
+git clone https://github.com/antirez/ds4 && cd ds4 && make
+./download_model.sh qwen38-q2          # 137 GiB on disk, ~42 GiB in memory
+./ds4-server --ctx 32768 --prefill-chunk 1024 --port 8000
+
+overload settings set --name ds4 --url http://127.0.0.1:8000/v1 \
+  --model qwen3.8-flash-next --reasoning-param reasoning_effort \
+  --reasoning-effort high --max-output-tokens 28000 --default
+```
+
+On a 64 GB M1 Max, Qwen3.8 Flash Next found all five bugs in our planted-bug
+test file in four of four runs, at 8 to 12 minutes per file. DeepSeek V4 Flash
+needs 96 to 128 GB. llama.cpp models (for example Bonsai on
+`llama-server`) use `--reasoning-param chat_template`. See
+[deploy/README.md](deploy/README.md#models) for settings, measurements and
+hosted models.
+
+## Review a pull request
+
+```sh
+overload review --repo owner/name --pr 123
+```
+
+This uses your default model and `gh auth token` (or `GITHUB_TOKEN`), prints
+the findings and saves the run, which you can open in the UI. Nothing is
+posted to GitHub. `--workflow NAME` runs a saved multi-agent workflow instead,
+and `--concurrency N` reviews N files at once when the model server has
+parallel slots.
+
+## Review every pull request
+
+1. Open **GitHub** in the UI and create a GitHub App. GitHub needs a public
+   `https://` URL for webhooks; for a Mac, point a tunnel (Cloudflare Tunnel,
+   Tailscale Funnel) at port 8082 and use `https://<host>/webhooks/github`.
+2. Install the App on your repositories. They appear under **Repositories**,
+   disabled and dry-run.
+3. Create **Prompts**, **Agents** and a PR **Workflow**, then enable a
+   repository and bind its PR actions to the workflow.
+4. To post reviews as comments, check **Post reviews as GitHub comments** on
+   the repository and set `OVERLOAD_ENABLE_POSTING=1` in `overload.env`.
+
+Every setting is also available from the CLI (`overload prompts|agents|
+workflows|bindings|repositories|schedules list|apply`), so an agent can
+configure overload without the UI. Scheduled prompts run workflows on a cron
+schedule with JSON input.
+
+## Other deployments
+
+Linux servers and Kubernetes (with reviews in isolated Agent Sandbox pods)
+are supported and tested on kind; see [deploy/README.md](deploy/README.md).
+
+## Development
+
+Requires Go 1.26.5+ and Postgres (`overload install` or
+`docker compose up -d postgres`).
+
+```sh
+export DATABASE_URL=postgres://overload:overload@localhost:5432/overload?sslmode=disable
+make ci                 # generate, gofmt, vet, lint, test, build
+make install-test       # macOS: install under a test label and check it end to end
+make kind-test          # disposable kind cluster: app, Postgres, restarts
+```
+
+`OVERLOAD_DEV_SEED=1 overload dev-seed` adds disabled example configuration
+and one sample run for exploring the UI. [PLAN.md](PLAN.md) holds the design
+and roadmap; [AGENTS.md](AGENTS.md) the conventions for coding agents.

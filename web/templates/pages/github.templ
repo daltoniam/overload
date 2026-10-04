@@ -1,0 +1,87 @@
+package pages
+
+import (
+	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/web/templates/layouts"
+	"strconv"
+)
+
+type GitHubSetupData struct {
+	Configured       bool
+	FromEnvironment  bool
+	AppID            int64
+	Slug             string
+	HTMLURL          string
+	Installations    []postgres.GitHubInstallation
+	DefaultName      string
+	DefaultWebhook   string
+	Error            string
+	CSRF             string
+}
+
+templ GitHubSetup(data GitHubSetupData) {
+	@layouts.Base(layouts.PageData{Title: "GitHub", CurrentPath: "/setup/github"}) {
+		<div class="page-header"><div><p class="eyebrow">Setup</p><h1>GitHub App</h1><p class="muted">Overload reads pull requests through a GitHub App installed on the repositories you choose.</p></div></div>
+		if data.Error != "" {
+			<p class="notice">{ data.Error }</p>
+		}
+		if data.Configured {
+			<section class="panel"><dl>
+				<dt>App ID</dt><dd>{ strconv.FormatInt(data.AppID, 10) }</dd>
+				if data.Slug != "" {
+					<dt>App</dt><dd><a href={ templ.URL(data.HTMLURL) }>{ data.Slug }</a></dd>
+				}
+				<dt>Credentials</dt><dd>{ githubCredentialSource(data.FromEnvironment) }</dd>
+			</dl>
+			if data.Slug != "" {
+				<p><a class="button" href={ templ.URL("https://github.com/apps/" + data.Slug + "/installations/new") }>Install on repositories</a></p>
+			}
+			</section>
+			<section class="panel"><h2>Installations</h2>
+				if len(data.Installations) == 0 {
+					<div class="empty">No installations recorded yet. Install the App; GitHub then sends an installation webhook.</div>
+				} else {
+					<div class="table-wrap"><table><thead><tr><th>Account</th><th>Type</th><th>Repositories</th><th>Status</th></tr></thead><tbody>
+						for _, installation := range data.Installations {
+							<tr><td>{ installation.AccountLogin }</td><td>{ installation.AccountType }</td><td>{ strconv.Itoa(installation.Repositories) }</td><td><span class="badge neutral">{ installationStatus(installation.Suspended) }</span></td></tr>
+						}
+					</tbody></table></div>
+				}
+				<p class="muted">New repositories arrive disabled and dry-run. Enable them on <a href="/configure/repositories">Repositories</a>.</p>
+			</section>
+		} else {
+			<section class="panel"><form method="post" action="/setup/github"><input type="hidden" name="csrf" value={ data.CSRF }/>
+				<label class="field"><span>App name</span><input name="name" required maxlength="34" value={ data.DefaultName }/></label>
+				<label class="field"><span>Organization (optional)</span><input name="organization" pattern="[A-Za-z0-9-]*" placeholder="leave empty for your personal account"/></label>
+				<label class="field"><span>Public webhook URL</span><input name="webhook_url" type="url" required value={ data.DefaultWebhook } placeholder="https://example.trycloudflare.com/webhooks/github"/><small>Must be https and reachable by GitHub. For a local install, point a tunnel at this machine's UI port and append /webhooks/github.</small></label>
+				<button type="submit">Create GitHub App</button>
+			</form>
+			<p class="muted">GitHub creates a private App with read access to code and metadata and write access to pull requests (needed only when posting is enabled), then returns its credentials here. They are stored in Postgres.</p>
+			</section>
+		}
+	}
+}
+
+templ GitHubManifestRedirect(action string, manifest string, state string) {
+	@layouts.Base(layouts.PageData{Title: "GitHub", CurrentPath: "/setup/github"}) {
+		<section class="panel"><form method="post" action={ templ.SafeURL(action + "?state=" + state) }>
+			<input type="hidden" name="manifest" value={ manifest }/>
+			<p>Continue to GitHub to create the App.</p>
+			<button type="submit">Continue to GitHub</button>
+		</form></section>
+	}
+}
+
+func githubCredentialSource(env bool) string {
+	if env {
+		return "Environment (GITHUB_APP_ID and private key)"
+	}
+	return "Created from manifest; stored in Postgres"
+}
+
+func installationStatus(suspended bool) string {
+	if suspended {
+		return "suspended"
+	}
+	return "active"
+}

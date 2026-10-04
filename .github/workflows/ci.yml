@@ -1,0 +1,62 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: overload
+          POSTGRES_USER: overload
+          POSTGRES_PASSWORD: overload
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U overload" --health-interval 5s
+          --health-timeout 3s --health-retries 10
+    env:
+      DATABASE_URL: postgres://overload:overload@localhost:5432/overload?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go mod download
+      - run: go generate ./...
+      - run: git diff --exit-code -- '**/*_templ.go'
+      - run: test -z "$(gofmt -l .)"
+      - run: go vet ./...
+      - run: go tool golangci-lint run
+      - run: go test ./...
+  install:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: brew install postgresql@17
+      - run: OVERLOAD_INSTALL_TEST=1 go test -count=1 -timeout 15m -v ./deploy/installtest/
+  kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: helm/kind-action@v1
+        with:
+          version: v0.33.0
+          install_only: true
+      - run: go test -count=1 -timeout 40m -v ./deploy/kindtest/
+        env:
+          OVERLOAD_KIND_TEST: "1"
+          OVERLOAD_KIND_SANDBOX_TEST: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}

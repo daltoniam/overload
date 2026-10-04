@@ -1,0 +1,77 @@
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxTemplate
+metadata:
+  name: overload-agent
+spec:
+  service: true
+  networkPolicyManagement: Managed
+  networkPolicy:
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels:
+                app.kubernetes.io/name: overload
+        ports:
+          - port: 8080
+          - port: 9090
+    egress:
+      - to:
+          - namespaceSelector: {}
+            podSelector:
+              matchLabels:
+                k8s-app: kube-dns
+        ports:
+          - port: 53
+            protocol: UDP
+          - port: 53
+            protocol: TCP
+      - to:
+          - podSelector:
+              matchLabels:
+                overload.dev/model: "true"
+  podTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: overload-agent
+    spec:
+      automountServiceAccountToken: false
+      dnsPolicy: ClusterFirst
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        fsGroup: 1000
+      containers:
+        - name: sandboxd
+          image: overload-agent:dev
+          imagePullPolicy: IfNotPresent
+          args: ["--root-dir=/work"]
+          securityContext:
+            runAsUser: 1000
+            runAsGroup: 1000
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          ports:
+            - containerPort: 8080
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /v1/health
+              port: 8080
+          volumeMounts:
+            - name: workspace
+              mountPath: /work
+      volumes:
+        - name: workspace
+          emptyDir: {}
+---
+apiVersion: extensions.agents.x-k8s.io/v1beta1
+kind: SandboxWarmPool
+metadata:
+  name: overload-agent
+spec:
+  replicas: 2
+  sandboxTemplateRef:
+    name: overload-agent

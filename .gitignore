@@ -1,0 +1,7 @@
+.env
+dist/
+*.test
+coverage.out
+.crush/
+.local/
+/overload

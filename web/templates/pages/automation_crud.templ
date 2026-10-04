@@ -1,0 +1,193 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Prompts(prompts []overload.PromptTemplate) {
+	@layouts.Base(layouts.PageData{Title: "Prompts", CurrentPath: "/configure/prompts"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Prompts</p><h1>Prompts</h1><p class="muted">Edit instructions as new revisions. Agents keep their selected revision until saved again.</p></div><a class="button" href="/configure/prompts/new">New prompt</a></div>
+		<section class="panel">
+			if len(prompts) == 0 {
+				<div class="empty">No prompts yet. <a href="/configure/prompts/new">Create an entry prompt</a> to get started.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Latest revision</th><th></th></tr></thead><tbody>
+					for _, prompt := range prompts {
+						<tr><td><strong>{ prompt.Name }</strong></td><td>{ prompt.Kind }</td><td>{ fmt.Sprint(prompt.Revision) }</td><td><a href={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ PromptForm(prompt overload.PromptTemplate, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Prompt", CurrentPath: "/configure/prompts"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/prompts">Prompts</a> / Edit</p><h1>{ promptFormTitle(prompt.Name) }</h1><p class="muted">Saving a prompt creates a new revision; existing agents remain pinned to their previous revision.</p></div><a href="/configure/prompts">All prompts</a></div>
+		<section class="panel"><form method="post" action="/configure/prompts"><input type="hidden" name="csrf" value={ nonce }/>
+			if prompt.Name != "" {
+				<input type="hidden" name="existing" value={ prompt.Kind + "/" + prompt.Name }/>
+			}
+			if prompt.Name != "" {
+				<label class="field"><span>Type</span><input value={ promptKindLabel(prompt.Kind) } readonly/><small>Type is fixed for this prompt. Create another prompt for a different type.</small></label><input type="hidden" name="kind" value={ prompt.Kind }/>
+			} else {
+				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Entry</option><option value="review">Review pass</option></select></label>
+			}
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ prompt.Name } readonly?={ prompt.Name != "" } placeholder="security"/></label>
+			<label class="field"><span>Instructions</span><textarea name="body" required maxlength="16000" placeholder="Describe the agent's task.">{ prompt.Body }</textarea></label>
+			if prompt.Name != "" {
+				<p class="muted">Current revision { fmt.Sprint(prompt.Revision) }. Saving creates revision { fmt.Sprint(prompt.Revision + 1) }.</p>
+			}
+			<button type="submit">Save prompt revision</button>
+		</form></section>
+		if prompt.Name != "" {
+			<section class="panel"><h2>Delete prompt</h2><p class="muted">Only prompts unused by agents can be deleted. Revision history is removed with the prompt.</p><form method="post" action={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete prompt</button></form></section>
+		}
+	}
+}
+
+templ Workflows(workflows []overload.Workflow) {
+	@layouts.Base(layouts.PageData{Title: "Workflows", CurrentPath: "/configure/workflows"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Workflows</p><h1>Workflows</h1><p class="muted">Compose agents into PR reviews or scheduled prompts. Changes apply to future runs.</p></div><a class="button" href="/configure/workflows/new">New workflow</a></div>
+		<section class="panel">
+			if len(workflows) == 0 {
+				<div class="empty">No workflows yet. <a href="/configure/workflows/new">Create a workflow</a> after adding an agent.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Agents</th><th>Status</th><th></th></tr></thead><tbody>
+					for _, workflow := range workflows {
+						<tr><td><strong>{ workflow.Name }</strong></td><td>{ workflow.Kind }</td><td>{ fmt.Sprint(len(workflow.Agents)) }</td><td>{ agentStatus(workflow.Enabled) }</td><td><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Workflow", CurrentPath: "/configure/workflows"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Edit</p><h1>{ workflowFormTitle(workflow.Name) }</h1><p class="muted">Choose one to four distinct agents. A disabled workflow will not start new runs.</p></div><a href="/configure/workflows">All workflows</a></div>
+		<section class="panel"><form method="post" action="/configure/workflows"><input type="hidden" name="csrf" value={ nonce }/>
+			if workflow.Name != "" {
+				<input type="hidden" name="existing" value={ workflow.Name }/>
+			}
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ workflow.Name } readonly?={ workflow.Name != "" } placeholder="go-pr-review"/></label>
+			<label class="field"><span>Type</span><select name="kind" required><option value="pr_review" selected?={ workflow.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ workflow.Kind == "scheduled_prompt" }>Scheduled prompt</option></select></label>
+			for index := 0; index < 4; index++ {
+				<label class="field"><span>Agent { fmt.Sprint(index + 1) }</span><select name="agents" required?={ index == 0 }><option value="">{ agentOptionLabel(index) }</option>
+					for _, agent := range agents {
+						if (agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review")) || workflowAgent(workflow, index) == agent.Name {
+							<option value={ agent.Name } selected?={ workflowAgent(workflow, index) == agent.Name }>{ agent.Name } ({ agentStatus(agent.Enabled) })</option>
+						}
+					}
+				</select></label>
+			}
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ workflow.Enabled }/> Enabled for future runs</label>
+			<button type="submit">Save workflow</button>
+		</form></section>
+		if workflow.Name != "" {
+			<section class="panel"><h2>Delete workflow</h2><p class="muted">Workflows with repository bindings or schedules cannot be deleted. Disable one instead to preserve its history.</p><form method="post" action={ templ.URL("/configure/workflows/" + workflow.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete workflow</button></form></section>
+		}
+	}
+}
+
+func promptKindLabel(kind string) string {
+	switch kind {
+	case "entry":
+		return "Entry"
+	case "review":
+		return "Review pass"
+	default:
+		return kind
+	}
+}
+
+func promptFormTitle(name string) string {
+	if name == "" {
+		return "New prompt"
+	}
+	return "Edit prompt"
+}
+
+func workflowFormTitle(name string) string {
+	if name == "" {
+		return "New workflow"
+	}
+	return name
+}
+
+func agentOptionLabel(index int) string {
+	if index == 0 {
+		return "Select an agent"
+	}
+	return "None"
+}
+
+func workflowAgent(workflow overload.Workflow, index int) string {
+	if index >= len(workflow.Agents) {
+		return ""
+	}
+	return workflow.Agents[index]
+}
+
+func scheduleInput(schedule overload.Schedule) string {
+	if len(schedule.Input) == 0 {
+		return "{}"
+	}
+	return string(schedule.Input)
+}
+
+templ Schedules(schedules []overload.Schedule) {
+	@layouts.Base(layouts.PageData{Title: "Schedules", CurrentPath: "/configure/schedules"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Schedules</p><h1>Scheduled agents</h1><p class="muted">Run a scheduled-prompt workflow with JSON input on a five-field cron schedule.</p></div><a class="button" href="/configure/schedules/new">New schedule</a></div>
+		<section class="panel">
+			if len(schedules) == 0 {
+				<div class="empty">No schedules yet. <a href="/configure/schedules/new">Create a schedule</a> to run an agent automatically.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Workflow</th><th>Cron / timezone</th><th>Status</th><th></th></tr></thead><tbody>
+					for _, schedule := range schedules {
+						<tr><td><strong>{ schedule.Name }</strong></td><td>{ schedule.Workflow }</td><td>{ schedule.Cron } / { schedule.Timezone }</td><td>{ agentStatus(schedule.Enabled) }</td><td><a href={ templ.URL("/configure/schedules/" + schedule.Name) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ ScheduleForm(schedule overload.Schedule, workflows []overload.Workflow, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Schedule", CurrentPath: "/configure/schedules"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/schedules">Schedules</a> / Edit</p><h1>{ scheduleFormTitle(schedule.Name) }</h1><p class="muted">Changes to a schedule affect future occurrences; queued runs retain their input.</p></div><a href="/configure/schedules">All schedules</a></div>
+		<section class="panel"><form method="post" action="/configure/schedules"><input type="hidden" name="csrf" value={ nonce }/>
+			if schedule.Name != "" {
+				<input type="hidden" name="existing" value={ schedule.Name }/>
+			}
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ schedule.Name } readonly?={ schedule.Name != "" } placeholder="daily-summary"/></label>
+			<label class="field"><span>Workflow</span><select name="workflow" required><option value="">Select a scheduled-prompt workflow</option>
+				for _, workflow := range workflows {
+					if workflow.Kind == "scheduled_prompt" && (workflow.Enabled || workflow.Name == schedule.Workflow) {
+						<option value={ workflow.Name } selected?={ workflow.Name == schedule.Workflow }>{ workflow.Name }</option>
+					}
+				}
+			</select></label>
+			<label class="field"><span>Five-field cron expression</span><input name="cron" required value={ schedule.Cron } placeholder="0 9 * * *"/></label>
+			<label class="field"><span>IANA timezone</span><input name="timezone" required value={ schedule.Timezone } placeholder="UTC"/></label>
+			<label class="field"><span>Input (JSON object)</span><textarea name="input" required maxlength="4096">{ scheduleInput(schedule) }</textarea></label>
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ schedule.Enabled }/> Enable future runs</label>
+			if !schedule.NextRunAt.IsZero() {
+				<p class="muted">Next scheduled occurrence: { schedule.NextRunAt.Format("Jan 2, 2006 15:04 MST") }</p>
+			}
+			<button type="submit">Save schedule</button>
+		</form></section>
+		if schedule.Name != "" {
+			<section class="panel"><h2>Delete schedule</h2><p class="muted">Schedules with run history cannot be deleted; disable the schedule to preserve its results.</p><form method="post" action={ templ.URL("/configure/schedules/" + schedule.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete schedule</button></form></section>
+		}
+	}
+}
+
+func scheduleFormTitle(name string) string {
+	if name == "" {
+		return "New schedule"
+	}
+	return name
+}

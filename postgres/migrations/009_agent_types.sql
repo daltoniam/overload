@@ -1,0 +1,2 @@
+ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'pr_review' CHECK (kind IN ('pr_review','scheduled_prompt'));
+UPDATE agent_definitions SET kind='scheduled_prompt' WHERE name IN (SELECT jsonb_array_elements_text(w.agent_names) FROM workflows w WHERE w.kind='scheduled_prompt') AND kind='pr_review' AND name NOT IN (SELECT jsonb_array_elements_text(w.agent_names) FROM workflows w WHERE w.kind='pr_review');

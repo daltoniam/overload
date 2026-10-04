@@ -1,0 +1,26 @@
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - nestif
+    - staticcheck
+    - unused
+  settings:
+    nestif:
+      min-complexity: 7
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (*encoding/json.Encoder).Encode
+        - (github.com/a-h/templ.Component).Render
+  exclusions:
+    paths:
+      - web/templates
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
