@@ -118,9 +118,30 @@ func (i *install) must(args ...string) string {
 	i.t.Helper()
 	out, err := i.run(args...)
 	if err != nil {
-		i.t.Fatalf("overload %v: %v\n%s", args, err, out)
+		i.t.Fatalf("overload %v: %v\n%s\n%s", args, err, out, i.diagnostics())
 	}
 	return out
+}
+
+// diagnostics collects service logs and launchd state for a failed step.
+func (i *install) diagnostics() string {
+	var report strings.Builder
+	logs, _ := filepath.Glob(filepath.Join(i.home, "logs", "*.log"))
+	for _, path := range logs {
+		data, _ := os.ReadFile(path)
+		if len(data) > 4000 {
+			data = data[len(data)-4000:]
+		}
+		fmt.Fprintf(&report, "--- %s\n%s\n", filepath.Base(path), data)
+	}
+	for _, label := range []string{i.label + ".postgres", i.label} {
+		out, _ := exec.Command("launchctl", "print", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)).CombinedOutput()
+		if len(out) > 3000 {
+			out = out[:3000]
+		}
+		fmt.Fprintf(&report, "--- launchctl print %s\n%s\n", label, out)
+	}
+	return report.String()
 }
 
 func (i *install) waitHealthy() {
