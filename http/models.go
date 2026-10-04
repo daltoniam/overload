@@ -87,7 +87,6 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 		}
 		if previous != nil {
 			setting.PromptProfile = previous.PromptProfile
-			setting.Agents = previous.Agents
 		}
 		if err := setting.Validate(); err != nil {
 			http.Error(w, "Invalid model settings: "+err.Error(), http.StatusBadRequest)

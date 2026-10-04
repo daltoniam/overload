@@ -150,10 +150,10 @@ func TestParallelWorkflowStopsOnFirstFailure(t *testing.T) {
 	}
 }
 
-func TestParallelSavedModelWithPasses(t *testing.T) {
+func TestParallelSubAgentsOnOneModel(t *testing.T) {
 	const files = 6
 	model := newConcurrencyModel(t, files, -1)
-	spec := profileSpec(t, multiFileDiff(files), overload.ModelProfile{ConnectionKind: "hosted", APIKeyEnv: "TEST_KEY", BaseURL: model.server.URL, Model: "m", Concurrency: 4}, "context", []overload.ReviewAgent{{Name: "security", Instructions: "Look for bugs."}, {Name: "style", Instructions: "Look for bugs too."}})
+	spec := focusedSpec(t, multiFileDiff(files), overload.ModelProfile{ConnectionKind: "hosted", APIKeyEnv: "TEST_KEY", BaseURL: model.server.URL, Model: "m", Concurrency: 4}, "security", "Look for bugs.", "style", "Look for bugs too.")
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{})
 	if err != nil {
 		t.Fatal(err)
@@ -186,5 +186,68 @@ func TestForEachFilePrefersRealErrorOverCancellation(t *testing.T) {
 	calls := 0
 	if err := forEachFile(ctx, 5, 2, func(context.Context, int) error { calls++; return nil }); !errors.Is(err, context.Canceled) || calls > 2 {
 		t.Fatalf("cancelled context: err=%v calls=%d", err, calls)
+	}
+}
+
+// slowModel answers every review after a short delay and records how many
+// requests were in flight at once.
+type slowModel struct {
+	server   *httptest.Server
+	inFlight atomic.Int64
+	peak     atomic.Int64
+}
+
+func newSlowModel(t *testing.T, shared *atomic.Int64, sharedPeak *atomic.Int64) *slowModel {
+	t.Helper()
+	model := &slowModel{}
+	model.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, counter := range []struct{ now, peak *atomic.Int64 }{{&model.inFlight, &model.peak}, {shared, sharedPeak}} {
+			current := counter.now.Add(1)
+			defer counter.now.Add(-1)
+			for peak := counter.peak.Load(); current > peak && !counter.peak.CompareAndSwap(peak, current); peak = counter.peak.Load() {
+			}
+		}
+		time.Sleep(40 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, `{"summary":"","findings":[]}`)
+	}))
+	t.Cleanup(model.server.Close)
+	return model
+}
+
+func TestAgentsShareTheirModelServerLimit(t *testing.T) {
+	const files = 4
+	var total, totalPeak atomic.Int64
+	local := newSlowModel(t, &total, &totalPeak)
+	hosted := newSlowModel(t, &total, &totalPeak)
+	entry := "Entry"
+	agent := func(name, url, model string, concurrency int) overload.ResolvedAgent {
+		return overload.ResolvedAgent{Name: name, Model: overload.ModelProfile{Provider: "openaicompat", BaseURL: url, Model: model, Concurrency: concurrency}, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}}
+	}
+	workflow := overload.ResolvedWorkflow{Name: "shared", Kind: "pr_review", Agents: []overload.ResolvedAgent{
+		agent("lead", local.server.URL, "qwen", 1),
+		agent("security", hosted.server.URL, "sol", 4),
+		agent("tests", local.server.URL, "qwen", 1),
+	}}
+	result, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: multiFileDiff(files), Workflow: workflow}, fstest.MapFS{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := local.peak.Load(); got != 1 {
+		t.Fatalf("two agents on one local server had %d requests in flight; the server allows 1", got)
+	}
+	if got := hosted.peak.Load(); got != 4 {
+		t.Fatalf("hosted agent peak %d, want 4", got)
+	}
+	if totalPeak.Load() < 2 {
+		t.Fatal("agents on different servers did not run at the same time")
+	}
+	for _, name := range []string{"lead", "security", "tests"} {
+		if result.Metrics["agent_"+name+"_reviewed_files"] != files {
+			t.Fatalf("metrics %v", result.Metrics)
+		}
+	}
+	if result.Metrics["agent_lead_concurrency"] != 1 || result.Metrics["agent_security_concurrency"] != 4 {
+		t.Fatalf("metrics %v", result.Metrics)
 	}
 }

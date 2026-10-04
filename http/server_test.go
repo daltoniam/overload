@@ -242,7 +242,7 @@ func TestSettingsFormAuthorizationAndCSRF(t *testing.T) {
 			}
 		})
 	}
-	if len(store.settings) != 1 || store.settings[0].Model != "bonsai-2-27b" || store.settings[0].ConnectionKind != "local" || len(store.settings[0].Agents) != 0 {
+	if len(store.settings) != 1 || store.settings[0].Model != "bonsai-2-27b" || store.settings[0].ConnectionKind != "local" {
 		t.Fatalf("saved settings: %+v", store.settings)
 	}
 }

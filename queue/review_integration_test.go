@@ -146,7 +146,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 		t.Fatalf("run=%+v calls=%d err=%v", run, calls, err)
 	}
 	findings, err := store.ListFindings(ctx, runID)
-	if err != nil || len(findings) != 1 || findings[0].Path != "file.go" {
+	if err != nil || len(findings) != 1 || findings[0].Path != "file.go" || strings.Join(findings[0].Agents, ",") != name {
 		t.Fatalf("findings=%+v err=%v", findings, err)
 	}
 	for _, artifact := range []string{"spec.json", "result.json"} {

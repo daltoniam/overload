@@ -29,7 +29,7 @@ func TestLocalReviewPersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: "test/local-review"}, PRNumber: 12, Diff: "patch", Workflow: workflow}
-	result := overload.ReviewResult{Summary: "One bug", Findings: []overload.Finding{{Path: "a.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Bug", Body: "Fix", Confidence: .9, Evidence: "bad()"}}}
+	result := overload.ReviewResult{Summary: "One bug", Findings: []overload.Finding{{Path: "a.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Bug", Body: "Fix", Confidence: .9, Evidence: "bad()", Agents: []string{"reviewer", "security"}}}}
 	if err := store.FinishLocalReview(ctx, id, spec, result, "head-sha", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestLocalReviewPersistence(t *testing.T) {
 		t.Fatalf("run=%+v error=%v", run, err)
 	}
 	findings, err := store.ListFindings(ctx, id)
-	if err != nil || len(findings) != 1 || findings[0].Title != "Bug" {
+	if err != nil || len(findings) != 1 || findings[0].Title != "Bug" || len(findings[0].Agents) != 2 || findings[0].Agents[1] != "security" {
 		t.Fatalf("findings=%+v error=%v", findings, err)
 	}
 	data, err := store.ReadArtifact(ctx, id, "result.json")

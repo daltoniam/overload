@@ -80,7 +80,7 @@ func TestLocalPreviewWithFakeModel(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":123,"model":"fake","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`, content)
 	}))
 	defer model.Close()
-	workflow, err := harness.ProfileWorkflow(overload.ModelProfile{Provider: "openaicompat", Model: "fake", BaseURL: model.URL}, "context", nil)
+	workflow, err := harness.ProfileWorkflow(overload.ModelProfile{Provider: "openaicompat", Model: "fake", BaseURL: model.URL}, "context")
 	if err != nil {
 		t.Fatal(err)
 	}

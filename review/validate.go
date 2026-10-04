@@ -2,6 +2,7 @@ package review
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,7 +25,7 @@ func Validate(findings []overload.Finding, patch string, limit int) ([]overload.
 		return nil, err
 	}
 	var valid []overload.Finding
-	seen := make(map[string]bool)
+	seen := make(map[string]int)
 	for _, finding := range findings {
 		if !diff.Commentable(files, finding.Path, finding.Line) || finding.Side != "RIGHT" || finding.Confidence < 0 || finding.Confidence > 1 {
 			continue
@@ -36,7 +37,8 @@ func Validate(findings []overload.Finding, patch string, limit int) ([]overload.
 			continue
 		}
 		key := dedupeKey(finding)
-		if seen[key] {
+		if index, ok := seen[key]; ok {
+			valid[index].Agents = addAgents(valid[index].Agents, finding.Agents)
 			continue
 		}
 		finding.Title = sanitize(finding.Title, 120)
@@ -44,7 +46,8 @@ func Validate(findings []overload.Finding, patch string, limit int) ([]overload.
 		if finding.Title == "" || finding.Body == "" {
 			continue
 		}
-		seen[key] = true
+		seen[key] = len(valid)
+		finding.Agents = addAgents(nil, finding.Agents)
 		valid = append(valid, finding)
 	}
 	sort.SliceStable(valid, func(i, j int) bool {
@@ -57,6 +60,16 @@ func Validate(findings []overload.Finding, patch string, limit int) ([]overload.
 		valid = valid[:limit]
 	}
 	return valid, nil
+}
+
+// addAgents appends names not already present, keeping first-seen order.
+func addAgents(agents, more []string) []string {
+	for _, name := range more {
+		if name != "" && !slices.Contains(agents, name) {
+			agents = append(agents, name)
+		}
+	}
+	return agents
 }
 
 func allowed(value string, options []string) bool {

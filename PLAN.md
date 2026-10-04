@@ -536,8 +536,16 @@ that model's starter workflow. The word "pass" is removed from the UI and
 CLI. The CLI and JSON configuration expose the same tree.
 
 **Delivery stages.**
-1. Data model, snapshot version, findings attribution, migration of
-   workflows and passes; the shared per-connection limiter.
+1. Done: the first agent of a workflow is its main agent and the rest are
+   sub-agents (up to 8); all agents' file reviews are scheduled together
+   with one parallel limit per model server (base URL and model), so agents
+   on different servers run at the same time; findings record every agent
+   that reported them (`findings.agents`), including duplicates collapsed
+   across agents; per-model passes became sub-agents of their starter
+   workflow (migration 017) and `--agents-json` is gone. The snapshot
+   version field moves to stage 2, where the snapshot format first changes.
+   UI wording ("pass") is left to stage 4 because the UI is being reworked
+   separately.
 2. Skip globs and sub-agent scopes; the run page breakdown; the preview.
 3. Planner and verifier with validation and fallbacks.
 4. UI for the tree (main agent, sub-agent list with scope chips, preview).

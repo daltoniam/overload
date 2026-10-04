@@ -33,9 +33,7 @@ func forEachFile(ctx context.Context, files, concurrency int, review func(contex
 	fail := func(err error) {
 		mu.Lock()
 		defer mu.Unlock()
-		if firstErr == nil || (errors.Is(firstErr, context.Canceled) && !errors.Is(err, context.Canceled)) {
-			firstErr = err
-		}
+		firstErr = preferError(firstErr, err)
 		cancel()
 	}
 	for range reviewConcurrency(concurrency, files) {
@@ -61,6 +59,58 @@ feed:
 		return firstErr
 	}
 	return ctx.Err()
+}
+
+// preferError keeps the first real failure over cancellations it caused.
+func preferError(current, next error) error {
+	if current == nil || (errors.Is(current, context.Canceled) && !errors.Is(next, context.Canceled)) {
+		return next
+	}
+	return current
+}
+
+type reviewTask struct {
+	agent, file int
+}
+
+// connectionGroup is the work sent to one model server. Agents that share a
+// server share its parallel limit, so several agents on one local model
+// queue behind each other while agents on other servers run alongside.
+type connectionGroup struct {
+	limit int
+	tasks []reviewTask
+}
+
+func connectionKey(model overload.ModelProfile) string {
+	return model.BaseURL + "\x00" + model.Model
+}
+
+// runGroups runs every group at the same time, each with at most its limit
+// of tasks in flight, starting tasks in order. The first failure cancels all
+// remaining work.
+func runGroups(ctx context.Context, groups []connectionGroup, run func(context.Context, reviewTask) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex
+		firstErr error
+	)
+	for _, group := range groups {
+		wg.Go(func() {
+			err := forEachFile(ctx, len(group.tasks), group.limit, func(ctx context.Context, index int) error {
+				return run(ctx, group.tasks[index])
+			})
+			if err != nil {
+				mu.Lock()
+				firstErr = preferError(firstErr, err)
+				mu.Unlock()
+				cancel()
+			}
+		})
+	}
+	wg.Wait()
+	return firstErr
 }
 
 type fileOutcome struct {
@@ -122,25 +172,14 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bu
 	return outcome, nil
 }
 
-// merge folds per-file outcomes into result in file order, so output does not
-// depend on which file finished first.
+// merge appends one agent's per-file outcomes to result in file order, so
+// output does not depend on which file finished first. Duplicates across
+// agents are collapsed afterwards by review.Validate, which keeps every
+// agent that reported a finding.
 func merge(result *overload.ReviewResult, summaries *[]string, outcomes []fileOutcome) {
 	for _, outcome := range outcomes {
-		added := false
-		for _, finding := range outcome.findings {
-			duplicate := false
-			for _, existing := range result.Findings {
-				if existing.Path == finding.Path && existing.Line == finding.Line && existing.Title == finding.Title {
-					duplicate = true
-					break
-				}
-			}
-			if !duplicate {
-				result.Findings = append(result.Findings, finding)
-				added = true
-			}
-		}
-		if added && outcome.summary != "" {
+		result.Findings = append(result.Findings, outcome.findings...)
+		if len(outcome.findings) > 0 && outcome.summary != "" {
 			*summaries = append(*summaries, outcome.summary)
 		}
 		result.Metrics["raw_candidates"] = metricCount(result.Metrics, "raw_candidates") + outcome.raw

@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -58,7 +57,6 @@ func manageSettings(args []string) error {
 		keyEnv := flags.String("api-key-env", "", "environment variable name containing API key")
 		connectionKind := flags.String("connection-kind", "local", "local or hosted OpenAI-compatible connection")
 		prompt := flags.String("prompt", "context", "context or switchboard-go")
-		agentsJSON := flags.String("agents-json", "", "JSON array of named agent instructions (maximum four)")
 		asDefault := flags.Bool("default", false, "make default")
 		reasoningParam := flags.String("reasoning-param", "", "how thinking is requested: empty (auto), none, chat_template or reasoning_effort")
 		reasoningEffort := flags.String("reasoning-effort", "", "thinking level for --reasoning-param (none, minimal, low, medium, high, xhigh, max)")
@@ -71,13 +69,6 @@ func manageSettings(args []string) error {
 			return errors.New("unexpected setting arguments")
 		}
 		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens}
-		if *agentsJSON != "" {
-			decoder := json.NewDecoder(strings.NewReader(*agentsJSON))
-			decoder.DisallowUnknownFields()
-			if err := decoder.Decode(&setting.Agents); err != nil {
-				return errors.New("invalid agent instructions JSON")
-			}
-		}
 		if err := store.SaveReviewSettings(ctx, setting); err != nil {
 			return err
 		}

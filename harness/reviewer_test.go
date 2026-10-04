@@ -49,7 +49,7 @@ func TestReviewerCoversAllFiles(t *testing.T) {
 	}))
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+bad()\ndiff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+bad()\n"
-	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context", nil), fstest.MapFS{})
+	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context"), fstest.MapFS{})
 	if err != nil || calls != 2 || len(result.Findings) != 2 || result.Metrics["reviewed_files"] != 2 || result.Metrics["total_files"] != 2 {
 		t.Fatalf("result=%+v calls=%d error=%v", result, calls, err)
 	}
@@ -68,7 +68,7 @@ func TestReviewerRunsMultipleAgentsAndDeduplicates(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, content)
 	}))
 	defer server.Close()
-	spec := profileSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+bad()\n", overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context", []overload.ReviewAgent{{Name: "security", Instructions: "Check security"}, {Name: "correctness", Instructions: "Check correctness"}})
+	spec := focusedSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+bad()\n", overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "security", "Check security", "correctness", "Check correctness")
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{})
 	if err != nil || calls != 2 || len(result.Findings) != 1 || result.Metrics["agents"] != 2 || result.Metrics["agent_security_reviewed_files"] != 1 || result.Metrics["agent_correctness_reviewed_files"] != 1 {
 		t.Fatalf("calls=%d result=%+v error=%v", calls, result, err)
@@ -90,7 +90,7 @@ func TestReviewerWithVersionedModelEndpoint(t *testing.T) {
 		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":123,"model":"bonsai-2-27b","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, `{"summary":"","findings":[]}`)
 	}))
 	defer server.Close()
-	spec := profileSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n", overload.ModelProfile{BaseURL: server.URL + "/v1", Model: "bonsai-2-27b"}, "context", nil)
+	spec := profileSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n", overload.ModelProfile{BaseURL: server.URL + "/v1", Model: "bonsai-2-27b"}, "context")
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{})
 	if err != nil || result.Metrics["reviewed_files"] != 1 {
 		t.Fatalf("result=%+v error=%v", result, err)
@@ -108,7 +108,7 @@ func TestReviewerUsesNamedProjectProfile(t *testing.T) {
 	}))
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "switchboard-go", nil), fstest.MapFS{})
+	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "switchboard-go"), fstest.MapFS{})
 	if err != nil || result.Metrics["workflow"] != "switchboard-go-v1" {
 		t.Fatalf("result=%+v error=%v", result, err)
 	}
@@ -127,7 +127,7 @@ func TestReviewerDoesNotClaimPartialCoverage(t *testing.T) {
 	}))
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+new\n"
-	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context", nil), fstest.MapFS{})
+	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context"), fstest.MapFS{})
 	if err == nil || result.Metrics["agent_reviewer_reviewed_files"] != 1 || result.Metrics["total_files"] != 2 {
 		t.Fatalf("partial result=%+v error=%v", result, err)
 	}
@@ -140,7 +140,7 @@ func TestReviewerClearsUnvalidatedSummary(t *testing.T) {
 	}))
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context", nil), fstest.MapFS{})
+	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context"), fstest.MapFS{})
 	if err != nil || len(result.Findings) != 0 || result.Summary != "No actionable findings in reviewed files." || result.Metrics["raw_candidates"] != 1 || result.Metrics["validated_candidates"] != 0 {
 		t.Fatalf("unexpected result: %+v error: %v", result, err)
 	}
@@ -160,7 +160,7 @@ func TestReviewerModelHeaders(t *testing.T) {
 	}))
 	defer server.Close()
 	profile := overload.ModelProfile{BaseURL: server.URL, Model: "test", APIKeyEnv: "OVERLOAD_TEST_MODEL_KEY", Headers: map[string]string{"cf-aig-metadata": `{"source":"paired-review"}`}}
-	spec := profileSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n", profile, "context", nil)
+	spec := profileSpec(t, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n", profile, "context")
 	encoded, err := json.Marshal(spec)
 	if err != nil || strings.Contains(string(encoded), "cf-aig-metadata") || strings.Contains(string(encoded), secret) {
 		t.Fatalf("credentials serialized into review spec: %v", err)
@@ -205,7 +205,7 @@ func TestReviewerRepairsInvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+dangerous()\n"
-	spec := profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context", nil)
+	spec := profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context")
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{"a.go": &fstest.MapFile{Data: []byte("dangerous()\n")}})
 	if err != nil {
 		t.Fatal(err)

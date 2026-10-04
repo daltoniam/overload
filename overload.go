@@ -43,18 +43,19 @@ type Run struct {
 }
 
 type Finding struct {
-	ID         int64   `json:"id,omitempty"`
-	RunID      int64   `json:"run_id,omitempty"`
-	Path       string  `json:"path"`
-	Line       int     `json:"line"`
-	StartLine  int     `json:"start_line,omitempty"`
-	Side       string  `json:"side"`
-	Severity   string  `json:"severity"`
-	Category   string  `json:"category"`
-	Title      string  `json:"title"`
-	Body       string  `json:"body"`
-	Confidence float64 `json:"confidence"`
-	Evidence   string  `json:"evidence"`
+	ID         int64    `json:"id,omitempty"`
+	RunID      int64    `json:"run_id,omitempty"`
+	Path       string   `json:"path"`
+	Line       int      `json:"line"`
+	StartLine  int      `json:"start_line,omitempty"`
+	Side       string   `json:"side"`
+	Severity   string   `json:"severity"`
+	Category   string   `json:"category"`
+	Title      string   `json:"title"`
+	Body       string   `json:"body"`
+	Confidence float64  `json:"confidence"`
+	Evidence   string   `json:"evidence"`
+	Agents     []string `json:"agents,omitempty"`
 }
 
 type Repository struct {
@@ -79,25 +80,19 @@ type ModelProfile struct {
 	MaxOutputTokens int
 }
 
-type ReviewAgent struct {
-	Name         string `json:"name"`
-	Instructions string `json:"instructions"`
-}
-
 type ReviewSettings struct {
-	Agents          []ReviewAgent `json:"agents"`
-	Name            string        `json:"name"`
-	Provider        string        `json:"provider"`
-	ConnectionKind  string        `json:"connection_kind,omitempty"`
-	BaseURL         string        `json:"base_url"`
-	Model           string        `json:"model"`
-	APIKeyEnv       string        `json:"api_key_env"`
-	PromptProfile   string        `json:"prompt_profile"`
-	IsDefault       bool          `json:"is_default"`
-	Concurrency     int           `json:"concurrency,omitempty"`
-	ReasoningParam  string        `json:"reasoning_param,omitempty"`
-	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
-	MaxOutputTokens int           `json:"max_output_tokens,omitempty"`
+	Name            string `json:"name"`
+	Provider        string `json:"provider"`
+	ConnectionKind  string `json:"connection_kind,omitempty"`
+	BaseURL         string `json:"base_url"`
+	Model           string `json:"model"`
+	APIKeyEnv       string `json:"api_key_env"`
+	PromptProfile   string `json:"prompt_profile"`
+	IsDefault       bool   `json:"is_default"`
+	Concurrency     int    `json:"concurrency,omitempty"`
+	ReasoningParam  string `json:"reasoning_param,omitempty"`
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 }
 
 const MaxReviewConcurrency = 32
@@ -175,16 +170,6 @@ func (settings ReviewSettings) Validate() error {
 	}
 	if err := ValidateReasoning(settings.ReasoningParam, settings.ReasoningEffort, settings.MaxOutputTokens); err != nil {
 		return err
-	}
-	if len(settings.Agents) > 4 {
-		return errors.New("at most four review agents are supported")
-	}
-	seen := make(map[string]bool)
-	for _, agent := range settings.Agents {
-		if !settingName.MatchString(agent.Name) || seen[agent.Name] || strings.TrimSpace(agent.Instructions) == "" || len(agent.Instructions) > 4000 {
-			return errors.New("invalid review agent")
-		}
-		seen[agent.Name] = true
 	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {

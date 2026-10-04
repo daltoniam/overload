@@ -1,0 +1,1 @@
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS agents text[] NOT NULL DEFAULT '{}';

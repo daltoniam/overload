@@ -60,6 +60,10 @@ func (agent AgentDefinition) Validate() error {
 	return nil
 }
 
+// MaxSubAgents caps sub-agents per workflow. A workflow's first agent is its
+// main agent and the rest are sub-agents.
+const MaxSubAgents = 8
+
 type Workflow struct {
 	Name     string   `json:"name"`
 	Kind     string   `json:"kind"`
@@ -69,7 +73,7 @@ type Workflow struct {
 }
 
 func (workflow Workflow) Validate() error {
-	if !settingName.MatchString(workflow.Name) || (workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt") || len(workflow.Agents) == 0 || len(workflow.Agents) > 4 {
+	if !settingName.MatchString(workflow.Name) || (workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt") || len(workflow.Agents) == 0 || len(workflow.Agents) > 1+MaxSubAgents {
 		return errors.New("invalid workflow")
 	}
 	seen := make(map[string]bool)
@@ -126,17 +130,23 @@ type ResolvedWorkflow struct {
 	Agents   []ResolvedAgent `json:"agents"`
 }
 
-// Verify checks a pinned workflow once before it runs: a known kind, one to
-// four agents, a usable model for each, and prompt bodies that still match
-// the digests recorded when the run was queued.
+// Verify checks a pinned workflow once before it runs: a known kind, a main
+// agent and at most MaxSubAgents sub-agents with distinct names, a usable
+// model for each, and prompt bodies that still match the digests recorded
+// when the run was queued.
 func (workflow ResolvedWorkflow) Verify() error {
 	if workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt" {
 		return fmt.Errorf("unsupported workflow kind %q", workflow.Kind)
 	}
-	if len(workflow.Agents) == 0 || len(workflow.Agents) > 4 {
-		return errors.New("a workflow needs one to four agents")
+	if len(workflow.Agents) == 0 || len(workflow.Agents) > 1+MaxSubAgents {
+		return fmt.Errorf("a workflow needs a main agent and at most %d sub-agents", MaxSubAgents)
 	}
+	seen := make(map[string]bool)
 	for _, agent := range workflow.Agents {
+		if seen[agent.Name] {
+			return fmt.Errorf("agent %q appears more than once", agent.Name)
+		}
+		seen[agent.Name] = true
 		if agent.Name == "" || agent.Model.Provider != "openaicompat" || agent.Model.Model == "" || agent.Model.BaseURL == "" {
 			return fmt.Errorf("agent %q has no usable model", agent.Name)
 		}

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -62,12 +63,11 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 	}
 	profile := overload.ModelProfile{Provider: "openaicompat", BaseURL: os.Getenv("OVERLOAD_DEFAULT_MODEL_BASE_URL"), Model: os.Getenv("OVERLOAD_DEFAULT_MODEL"), APIKeyEnv: "OVERLOAD_DEFAULT_MODEL_API_KEY"}
 	prompt := "context"
-	var passes []overload.ReviewAgent
 	if store != nil {
 		settings, err := store.GetReviewSettings(ctx, options.profile)
 		switch {
 		case err == nil:
-			profile, prompt, passes = settings.Profile(), settings.PromptProfile, settings.Agents
+			profile, prompt = settings.Profile(), settings.PromptProfile
 		case !errors.Is(err, pgx.ErrNoRows) || options.profile != "":
 			return overload.ResolvedWorkflow{}, err
 		}
@@ -83,7 +83,7 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 	if options.promptProfile != "" {
 		prompt = options.promptProfile
 	}
-	return harness.ProfileWorkflow(profile, prompt, passes)
+	return harness.ProfileWorkflow(profile, prompt)
 }
 
 func inlineReview(args []string) error {
@@ -144,7 +144,7 @@ func inlineReview(args []string) error {
 	}
 	fmt.Printf("PR %s#%d at %s: %d findings (dry run)\n%s\n", options.repo, options.pr, headSHA, len(result.Findings), result.Summary)
 	for _, finding := range result.Findings {
-		fmt.Printf("%s:%d [%s] %s: %s\n", finding.Path, finding.Line, finding.Severity, finding.Title, finding.Body)
+		fmt.Printf("%s:%d [%s] %s (%s): %s\n", finding.Path, finding.Line, finding.Severity, finding.Title, strings.Join(finding.Agents, ", "), finding.Body)
 	}
 	if runID != 0 {
 		fmt.Printf("Run %d: /runs/%d\n", runID, runID)

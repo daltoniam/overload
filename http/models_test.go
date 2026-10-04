@@ -11,9 +11,9 @@ import (
 	"github.com/daltoniam/overload"
 )
 
-func TestModelCRUDAndLegacyPassPreservation(t *testing.T) {
+func TestModelCRUD(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
-	store := &fakeStore{settings: []overload.ReviewSettings{{Name: "legacy", Provider: "openaicompat", ConnectionKind: "local", BaseURL: "http://127.0.0.1:8080/v1", Model: "old", PromptProfile: "switchboard-go", Agents: []overload.ReviewAgent{{Name: "security", Instructions: "Keep legacy instructions"}}}}}
+	store := &fakeStore{settings: []overload.ReviewSettings{{Name: "legacy", Provider: "openaicompat", ConnectionKind: "local", BaseURL: "http://127.0.0.1:8080/v1", Model: "old", PromptProfile: "switchboard-go"}}}
 	handler := Handler(store)
 	page := func(path string, status int) string {
 		t.Helper()
@@ -59,7 +59,7 @@ func TestModelCRUDAndLegacyPassPreservation(t *testing.T) {
 	if store.settings[0].Concurrency != 6 || store.settings[0].ReasoningEffort != "high" || store.settings[0].MaxOutputTokens != 8192 {
 		t.Fatalf("concurrency not saved: %+v", store.settings[0])
 	}
-	if store.settings[0].Model != "new" || store.settings[0].ConnectionKind != "hosted" || store.settings[0].PromptProfile != "switchboard-go" || len(store.settings[0].Agents) != 1 || store.settings[0].Agents[0].Instructions != "Keep legacy instructions" {
+	if store.settings[0].Model != "new" || store.settings[0].ConnectionKind != "hosted" || store.settings[0].PromptProfile != "switchboard-go" {
 		t.Fatalf("model update lost legacy configuration: %+v", store.settings[0])
 	}
 	post("/settings/legacy/delete", url.Values{}, http.StatusForbidden)

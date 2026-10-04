@@ -153,10 +153,8 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	plan := planPosting(run.DryRun, PostingEnabled())
-	for _, finding := range result.Findings {
-		if _, err := finalTx.Exec(ctx, `INSERT INTO findings(run_id,path,line,start_line,side,severity,category,title,body,confidence,evidence,status,fingerprint) VALUES ($1,$2,$3,NULLIF($4,0),$5,$6,$7,$8,$9,$10,$11,$12,$13)`, runID, finding.Path, finding.Line, finding.StartLine, finding.Side, finding.Severity, finding.Category, finding.Title, finding.Body, finding.Confidence, finding.Evidence, plan.findingStatus, overload.FindingFingerprint(repoName, run.PRNumber, finding)); err != nil {
-			return err
-		}
+	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, result.Findings); err != nil {
+		return err
 	}
 	if plan.enqueue {
 		client, err := river.ClientFromContextSafely[pgx.Tx](ctx)

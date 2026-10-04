@@ -9,7 +9,9 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"charm.land/fantasy"
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/review"
 )
 
 //go:embed prompts/*.md
@@ -37,35 +39,26 @@ func loadPrompt(profile string) (string, string, error) {
 	return string(content), version, nil
 }
 
-// ProfileWorkflow turns a saved model profile, its built-in prompt and its
-// optional named passes into a workflow, so every review runs through the
-// same engine. The workflow is named after the prompt version.
-func ProfileWorkflow(profile overload.ModelProfile, promptProfile string, passes []overload.ReviewAgent) (overload.ResolvedWorkflow, error) {
+// ProfileWorkflow turns a model and a built-in prompt into a one-agent
+// workflow, so a review without a saved workflow runs through the same
+// engine. The workflow is named after the prompt version.
+func ProfileWorkflow(profile overload.ModelProfile, promptProfile string) (overload.ResolvedWorkflow, error) {
 	body, version, err := loadPrompt(promptProfile)
 	if err != nil {
 		return overload.ResolvedWorkflow{}, err
 	}
 	entry := overload.PromptTemplate{Name: version, Kind: "entry", Body: body, SHA256: overload.PromptDigest(body)}
-	workflow := overload.ResolvedWorkflow{Name: version, Kind: "pr_review"}
-	if len(passes) == 0 {
-		passes = []overload.ReviewAgent{{Name: "reviewer"}}
-	}
-	for _, pass := range passes {
-		agent := overload.ResolvedAgent{Name: pass.Name, Model: profile, EntryPrompt: entry}
-		if pass.Instructions != "" {
-			focus := "Review focus for " + pass.Name + ":\n" + pass.Instructions
-			agent.ReviewPrompt = overload.PromptTemplate{Name: pass.Name, Kind: "review", Body: focus, SHA256: overload.PromptDigest(focus)}
-		}
-		workflow.Agents = append(workflow.Agents, agent)
-	}
+	workflow := overload.ResolvedWorkflow{Name: version, Kind: "pr_review", Agents: []overload.ResolvedAgent{{Name: "reviewer", Model: profile, EntryPrompt: entry}}}
 	return workflow, workflow.Verify()
 }
 
 type Reviewer struct{}
 
-// Review runs each agent of a pinned PR workflow over every changed file,
-// files in parallel up to the agent's model concurrency, and merges the
-// validated findings in file order.
+// Review runs every agent of a pinned PR workflow over every changed file.
+// The first agent is the main agent and the rest are sub-agents; their file
+// reviews are scheduled together, limited per model server, and the
+// validated findings are merged in agent then file order with each finding
+// attributed to the agents that reported it.
 func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS) (overload.ReviewResult, error) {
 	workflow := spec.Workflow
 	if workflow.Kind != "pr_review" {
@@ -79,41 +72,73 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		return overload.ReviewResult{}, err
 	}
 	result := overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(batches), "reviewed_files": 0}}
-	var summaries []string
-	for _, resolved := range workflow.Agents {
+	agents := make([]fantasy.Agent, len(workflow.Agents))
+	plans := make([]reasoningPlan, len(workflow.Agents))
+	agentGroup := make([]int, len(workflow.Agents))
+	var groups []connectionGroup
+	groupIndex := map[string]int{}
+	for index, resolved := range workflow.Agents {
 		systemPrompt := reviewPreamble + resolved.EntryPrompt.Body
 		if resolved.ReviewPrompt.Kind != "" {
 			systemPrompt += "\n\n" + resolved.ReviewPrompt.Body
 		}
-		agent, plan, err := newAgent(ctx, resolved.Model, systemPrompt)
-		if err != nil {
+		if agents[index], plans[index], err = newAgent(ctx, resolved.Model, systemPrompt); err != nil {
 			return result, err
 		}
-		concurrency := reviewConcurrency(resolved.Model.Concurrency, len(batches))
-		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plan.label()
-		result.Metrics["agent_"+resolved.Name+"_concurrency"] = concurrency
-		outcomes := make([]fileOutcome, len(batches))
-		var completed atomic.Int64
-		err = forEachFile(ctx, len(batches), concurrency, func(ctx context.Context, index int) error {
-			outcome, err := reviewFile(ctx, agent, plan, batches[index], paths[index], spec.Diff)
-			if err != nil {
-				return err
-			}
-			outcomes[index] = outcome
-			completed.Add(1)
-			return nil
-		})
-		result.Metrics["agent_"+resolved.Name+"_reviewed_files"] = int(completed.Load())
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return result, fmt.Errorf("review incomplete: %w", ctxErr)
-			}
-			return result, err
+		key := connectionKey(resolved.Model)
+		group, ok := groupIndex[key]
+		if !ok {
+			group = len(groups)
+			groupIndex[key] = group
+			groups = append(groups, connectionGroup{limit: max(resolved.Model.Concurrency, 1)})
 		}
-		merge(&result, &summaries, outcomes)
+		groups[group].limit = min(groups[group].limit, max(resolved.Model.Concurrency, 1))
+		for file := range batches {
+			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: file})
+		}
+		agentGroup[index] = group
+		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
+	}
+	for index := range groups {
+		groups[index].limit = reviewConcurrency(groups[index].limit, len(groups[index].tasks))
+	}
+	outcomes := make([][]fileOutcome, len(workflow.Agents))
+	completed := make([]atomic.Int64, len(workflow.Agents))
+	for index := range outcomes {
+		outcomes[index] = make([]fileOutcome, len(batches))
+	}
+	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
+		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], spec.Diff)
+		if err != nil {
+			return err
+		}
+		for index := range outcome.findings {
+			outcome.findings[index].Agents = []string{workflow.Agents[task.agent].Name}
+		}
+		outcomes[task.agent][task.file] = outcome
+		completed[task.agent].Add(1)
+		return nil
+	})
+	for index, resolved := range workflow.Agents {
+		result.Metrics["agent_"+resolved.Name+"_concurrency"] = groups[agentGroup[index]].limit
+		result.Metrics["agent_"+resolved.Name+"_reviewed_files"] = int(completed[index].Load())
+	}
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, fmt.Errorf("review incomplete: %w", ctxErr)
+		}
+		return result, err
+	}
+	var summaries []string
+	for index := range outcomes {
+		merge(&result, &summaries, outcomes[index])
+	}
+	if result.Findings, err = review.Validate(result.Findings, spec.Diff, -1); err != nil {
+		return result, err
 	}
 	result.Metrics["reviewed_files"] = len(batches)
 	if len(result.Findings) == 0 {
+		result.Findings = []overload.Finding{}
 		result.Summary = "No actionable findings in reviewed files."
 	} else {
 		result.Summary = strings.Join(summaries, "\n")

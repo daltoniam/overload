@@ -26,7 +26,7 @@ func TestReviewSettingsStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := overload.ReviewSettings{Name: "test-settings-first", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8080/v1", Model: "bonsai-2-27b", PromptProfile: "context", IsDefault: true}
-	second := overload.ReviewSettings{Name: "test-settings-second", Provider: "openaicompat", ConnectionKind: "hosted", BaseURL: "http://127.0.0.1:8081/v1", Model: "other", PromptProfile: "switchboard-go", APIKeyEnv: "TEST_MODEL_TOKEN", Concurrency: 8, ReasoningParam: "reasoning_effort", ReasoningEffort: "high", MaxOutputTokens: 32768, Agents: []overload.ReviewAgent{{Name: "security", Instructions: "Check authorization failures."}, {Name: "correctness", Instructions: "Check API response fields."}}}
+	second := overload.ReviewSettings{Name: "test-settings-second", Provider: "openaicompat", ConnectionKind: "hosted", BaseURL: "http://127.0.0.1:8081/v1", Model: "other", PromptProfile: "switchboard-go", APIKeyEnv: "TEST_MODEL_TOKEN", Concurrency: 8, ReasoningParam: "reasoning_effort", ReasoningEffort: "high", MaxOutputTokens: 32768}
 	t.Cleanup(func() {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name IN ($1, $2)`, first.Name, second.Name)
 		_, _ = store.Pool.Exec(context.Background(), `UPDATE model_profiles SET is_default=true WHERE id=(SELECT id FROM model_profiles ORDER BY id LIMIT 1) AND NOT EXISTS(SELECT 1 FROM model_profiles WHERE is_default=true)`)
@@ -53,7 +53,7 @@ func TestReviewSettingsStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, err = store.GetReviewSettings(ctx, "")
-	if err != nil || loaded.Name != second.Name || loaded.ConnectionKind != "hosted" || loaded.PromptProfile != second.PromptProfile || loaded.APIKeyEnv != second.APIKeyEnv || loaded.Concurrency != 8 || loaded.ReasoningParam != "reasoning_effort" || loaded.ReasoningEffort != "high" || loaded.MaxOutputTokens != 32768 || len(loaded.Agents) != 2 || loaded.Agents[1].Name != "correctness" {
+	if err != nil || loaded.Name != second.Name || loaded.ConnectionKind != "hosted" || loaded.PromptProfile != second.PromptProfile || loaded.APIKeyEnv != second.APIKeyEnv || loaded.Concurrency != 8 || loaded.ReasoningParam != "reasoning_effort" || loaded.ReasoningEffort != "high" || loaded.MaxOutputTokens != 32768 {
 		t.Fatalf("default profile: %+v %v", loaded, err)
 	}
 	settings, err := store.ListReviewSettings(ctx)

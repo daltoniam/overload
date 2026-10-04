@@ -32,3 +32,21 @@ func TestSanitizeStripsLinksAndKeepsUTF8(t *testing.T) {
 		t.Fatalf("truncation split a character: %d bytes valid=%v", len(cut), utf8.ValidString(cut))
 	}
 }
+
+func TestValidateMergesAgentsOfDuplicateFindings(t *testing.T) {
+	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1,3 +1,3 @@\n-old\n+dangerous()\n+second()\n"
+	base := overload.Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Unsafe call", Body: "Fix it", Evidence: "dangerous()", Confidence: 0.9}
+	lead, security, again := base, base, base
+	lead.Agents = []string{"lead"}
+	security.Agents = []string{"security"}
+	security.Line = 2
+	security.Evidence = "second()"
+	again.Agents = []string{"lead"}
+	valid, err := Validate([]overload.Finding{lead, security, again}, patch, 10)
+	if err != nil || len(valid) != 1 {
+		t.Fatalf("valid=%+v err=%v", valid, err)
+	}
+	if got := strings.Join(valid[0].Agents, ","); got != "lead,security" {
+		t.Fatalf("agents %q, want lead,security", got)
+	}
+}

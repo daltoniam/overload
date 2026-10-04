@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -14,6 +16,7 @@ import (
 )
 
 func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
+	var mu sync.Mutex
 	calls := []string{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
@@ -29,7 +32,9 @@ func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
 		if (request.Model == "security-model" && (!strings.Contains(text, "Security entry") || !strings.Contains(text, "Security review"))) || (request.Model == "correctness-model" && (!strings.Contains(text, "Correctness entry") || !strings.Contains(text, "Correctness review"))) {
 			t.Errorf("wrong prompt for model %s", request.Model)
 		}
+		mu.Lock()
 		calls = append(calls, request.Model)
+		mu.Unlock()
 		content := `{"summary":"Issue","findings":[{"path":"a.go","line":1,"side":"RIGHT","severity":"high","category":"bug","title":"Bug","body":"Fix it","confidence":0.9,"evidence":"bad()"}]}`
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":123,"model":%q,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, request.Model, content)
@@ -44,7 +49,11 @@ func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
 	}}
 	spec := overload.ReviewSpec{Diff: "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+bad()\n", Workflow: workflow}
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{})
-	if err != nil || len(calls) != 2 || calls[0] != "security-model" || calls[1] != "correctness-model" || len(result.Findings) != 1 {
+	slices.Sort(calls)
+	if err != nil || strings.Join(calls, ",") != "correctness-model,security-model" || len(result.Findings) != 1 {
 		t.Fatalf("calls=%v result=%+v error=%v", calls, result, err)
+	}
+	if got := strings.Join(result.Findings[0].Agents, ","); got != "security,correctness" {
+		t.Fatalf("finding reported by both agents should list both in workflow order, got %q", got)
 	}
 }

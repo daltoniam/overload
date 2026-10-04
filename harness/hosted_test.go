@@ -62,7 +62,7 @@ func TestLocalReviewRequestsXHighReasoningEffort(t *testing.T) {
 			return overload.ReviewSpec{Diff: diff, Workflow: overload.ResolvedWorkflow{Name: "local-test", Kind: "pr_review", Revision: 1, Agents: []overload.ResolvedAgent{{Name: "local", Model: overload.ModelProfile{Provider: "openaicompat", ConnectionKind: "local", BaseURL: url, Model: "bonsai-2-27b"}, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}}}}}
 		}},
 		{"saved model", func(url string) overload.ReviewSpec {
-			return profileSpec(t, diff, overload.ModelProfile{BaseURL: url, Model: "bonsai-2-27b"}, "context", nil)
+			return profileSpec(t, diff, overload.ModelProfile{BaseURL: url, Model: "bonsai-2-27b"}, "context")
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -120,12 +120,26 @@ func TestLocalReviewFallsBackToMediumWhenThinkingExhaustsBudget(t *testing.T) {
 	}
 }
 
-func profileSpec(t *testing.T, diff string, profile overload.ModelProfile, prompt string, passes []overload.ReviewAgent) overload.ReviewSpec {
+func profileSpec(t *testing.T, diff string, profile overload.ModelProfile, prompt string) overload.ReviewSpec {
 	t.Helper()
 	profile.Provider = "openaicompat"
-	workflow, err := ProfileWorkflow(profile, prompt, passes)
+	workflow, err := ProfileWorkflow(profile, prompt)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return overload.ReviewSpec{Diff: diff, Workflow: workflow}
+}
+
+// focusedSpec builds a workflow whose agents share one model and differ only
+// in a focus prompt, given as name and focus pairs.
+func focusedSpec(t *testing.T, diff string, profile overload.ModelProfile, pairs ...string) overload.ReviewSpec {
+	t.Helper()
+	spec := profileSpec(t, diff, profile, "context")
+	entry, model := spec.Workflow.Agents[0].EntryPrompt, spec.Workflow.Agents[0].Model
+	spec.Workflow.Agents = nil
+	for index := 0; index < len(pairs); index += 2 {
+		body := "Review focus for " + pairs[index] + ":\n" + pairs[index+1]
+		spec.Workflow.Agents = append(spec.Workflow.Agents, overload.ResolvedAgent{Name: pairs[index], Model: model, EntryPrompt: entry, ReviewPrompt: overload.PromptTemplate{Name: pairs[index], Kind: "review", Body: body, SHA256: overload.PromptDigest(body)}})
+	}
+	return spec
 }
