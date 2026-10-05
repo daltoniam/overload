@@ -137,7 +137,7 @@ func newFileDiff(path, content string) string {
 // TestPlannerRoutingEval checks that the planner sends a file with a
 // misleading name (database code in util/textutil.go) to the database
 // sub-agent, whose paths do not match it, and that the planted SQL
-// injection is found. It uses the same OVERLOAD_EVAL_* settings as
+// injection is found and kept by the verifier. It uses the same OVERLOAD_EVAL_* settings as
 // TestPlantedBugEval for every agent.
 func TestPlannerRoutingEval(t *testing.T) {
 	if os.Getenv("OVERLOAD_PLANTED_EVAL") != "1" {
@@ -157,7 +157,8 @@ func TestPlannerRoutingEval(t *testing.T) {
 		t.Fatal(err)
 	}
 	planner := prompt(overload.PromptPlan, "Send any file that builds or runs SQL, or otherwise touches the database, to the database sub-agent.")
-	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Name: "planner-eval", Kind: "pr_review", Revision: 1, MainReviews: overload.MainReviewsUnclaimed, PlannerPrompt: &planner, Agents: []overload.ResolvedAgent{
+	verifier := prompt(overload.PromptVerify, "Drop findings that are style preferences or speculation not shown by the changed lines. Keep real bugs.")
+	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Name: "planner-eval", Kind: "pr_review", Revision: 1, MainReviews: overload.MainReviewsUnclaimed, PlannerPrompt: &planner, VerifierPrompt: &verifier, Agents: []overload.ResolvedAgent{
 		{Name: "lead", Model: profile, EntryPrompt: prompt("entry", entry)},
 		{Name: "database", Model: profile, EntryPrompt: prompt("entry", entry+"\n\nFocus on SQL injection, transactions and query correctness."), Scope: overload.Scope{Paths: []string{"**/store/**", "**/*.sql"}, Description: "SQL queries, database access and migrations"}},
 	}}
@@ -171,7 +172,10 @@ func TestPlannerRoutingEval(t *testing.T) {
 		t.Fatal(err)
 	}
 	routing := result.Metrics["routing"].(overload.Routing)
-	t.Logf("%s, planner: %s, input=%v output=%v", time.Since(start).Round(time.Second), routing.Planner, result.Metrics["input_tokens"], result.Metrics["output_tokens"])
+	t.Logf("%s, planner: %s, input=%v output=%v, verifier checked %d and dropped %d, degraded: %v", time.Since(start).Round(time.Second), routing.Planner, result.Metrics["input_tokens"], result.Metrics["output_tokens"], routing.Agents[1].Verified, routing.Agents[1].Dropped, routing.Degraded)
+	for _, finding := range result.Dropped {
+		t.Logf("  dropped %s:%d %s (%s)", finding.Path, finding.Line, finding.Title, finding.DropReason)
+	}
 	routed := false
 	for _, path := range routing.Agents[1].Planned {
 		routed = routed || path == "util/textutil.go"
@@ -186,5 +190,8 @@ func TestPlannerRoutingEval(t *testing.T) {
 	t.Logf("misleading file routed to database: %v, SQL injection found: %v", routed, found)
 	if !routed {
 		t.Error("planner did not route util/textutil.go to the database sub-agent")
+	}
+	if routing.Agents[1].Verified == 0 {
+		t.Error("verifier checked no sub-agent findings")
 	}
 }

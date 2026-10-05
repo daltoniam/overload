@@ -788,20 +788,29 @@ Done and tested:
 - UI hardening: Host allowlist, same-origin checks on every state change,
   constant-time form tokens, server timeouts.
 
+- Main agents and sub-agents (7.8), all four stages. Smoke-tested end to
+  end on a fresh database: model, prompts, agents and a three-agent
+  workflow configured in the UI (checked with Playwright), then a dry-run
+  review of a real open PR (switchboard #177, 5 files) on bonsai-2-27b via
+  llama.cpp: README skipped, test file to the `always` sub-agent, planner
+  assignments applied, 17m43s, run page and result download correct. The
+  live planner eval with a verifier routed the misleading file, found the
+  SQL injection and the verifier kept all 5 real findings (21m22s).
+
 Before the first release:
-1. Main agents and sub-agents (7.8), in its four stages.
-2. Measure `ds4-server --batched-session` with the per-connection limiter on
+1. Measure `ds4-server --batched-session` with the per-connection limiter on
    the target Mac Studio (not the M1 Max used so far), with Qwen3.8 and
    DeepSeek V4 Flash, to set defaults for Parallel files.
-3. Publish the first release and Homebrew formula; install on a clean Mac.
-4. Run the GitHub App and posting against a real repository through a tunnel.
+2. Publish the first release and Homebrew formula (needs the
+   `RELEASE_TOKEN` secret for the tap); install on a clean Mac.
+3. Run the GitHub App and posting against a real repository through a tunnel.
 
 After:
-5. Evaluation: real PRs with known bugs, scored per model and per workflow
+4. Evaluation: real PRs with known bugs, scored per model and per workflow
    shape, beyond the planted-bug fixtures.
-6. A reaper for sandbox claims left by a crashed worker; backup, restore and
+5. A reaper for sandbox claims left by a crashed worker; backup, restore and
    upgrade tests.
-7. Sentry and other signed webhook sources for generic jobs.
+6. Sentry and other signed webhook sources for generic jobs.
 
 ## 13. Follow-ups (post v1, keep interfaces ready)
 
@@ -845,7 +854,11 @@ After:
   slower in total than one (10 vs 13 tokens/s); ds4 batching is unmeasured.
 - How often the planner adds a useful assignment that globs missed, and
   whether its extra context (hunk headers, first changed lines) is enough;
-  measure before making it a default.
+  measure before making it a default. On switchboard #177 bonsai-2-27b
+  assigned every non-skipped file (including config and wiring) to the
+  integrations sub-agent, leaving the main agent nothing in "unclaimed"
+  mode; prompts may need to say "only files clearly in its area", or the
+  planner may need a per-sub-agent cap.
 - Whether the verifier removes more false positives than true findings on
   local models.
 - Whether a hosted model proxy (keys held outside sandboxes, per-run tokens)
