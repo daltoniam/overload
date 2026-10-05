@@ -85,7 +85,7 @@ func (s *Store) FinishLocalReview(ctx context.Context, runID int64, spec overloa
 			return fmt.Errorf("save %s: %w", name, err)
 		}
 	}
-	if err := InsertFindings(ctx, tx, runID, spec.Repository.FullName, spec.PRNumber, "dry_run", result.Findings); err != nil {
+	if err := InsertFindings(ctx, tx, runID, spec.Repository.FullName, spec.PRNumber, "dry_run", append(result.Findings, result.Dropped...)); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, $2, $3, $4)`, runID, map[bool]string{true: "error", false: "info"}[status == "failed"], status, map[bool]string{true: errorMessage, false: "Local PR review completed"}[status == "failed"]); err != nil {
@@ -95,7 +95,7 @@ func (s *Store) FinishLocalReview(ctx context.Context, runID int64, spec overloa
 }
 
 func (s *Store) ListFindings(ctx context.Context, runID int64) ([]overload.Finding, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT id, path, line, COALESCE(start_line, 0), side, severity, category, title, body, confidence, evidence, agents FROM findings WHERE run_id=$1 ORDER BY id`, runID)
+	rows, err := s.Pool.Query(ctx, `SELECT id, path, line, COALESCE(start_line, 0), side, severity, category, title, body, confidence, evidence, agents, CASE WHEN status='dropped' THEN suppressed_reason ELSE '' END FROM findings WHERE run_id=$1 ORDER BY id`, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +104,7 @@ func (s *Store) ListFindings(ctx context.Context, runID int64) ([]overload.Findi
 	for rows.Next() {
 		var finding overload.Finding
 		finding.RunID = runID
-		if err := rows.Scan(&finding.ID, &finding.Path, &finding.Line, &finding.StartLine, &finding.Side, &finding.Severity, &finding.Category, &finding.Title, &finding.Body, &finding.Confidence, &finding.Evidence, &finding.Agents); err != nil {
+		if err := rows.Scan(&finding.ID, &finding.Path, &finding.Line, &finding.StartLine, &finding.Side, &finding.Severity, &finding.Category, &finding.Title, &finding.Body, &finding.Confidence, &finding.Evidence, &finding.Agents, &finding.DropReason); err != nil {
 			return nil, err
 		}
 		findings = append(findings, finding)

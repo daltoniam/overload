@@ -86,9 +86,14 @@ the workflow JSON, `skip_paths` drops files such as `*.lock` or
 `vendor/**`, `scopes` limits a sub-agent to matching files (and optionally
 its number of findings), `main_reviews: "unclaimed"` leaves files a
 sub-agent claimed to that sub-agent, and `max_file_reviews` caps the work per
-run. `overload workflows preview NAME < files.txt` shows which agent would
-review each file and roughly how long it would take, without calling a
-model.
+run. A scope's `mode` is `globs` (default), `always` (only its paths) or
+`planned` (only files the planner assigns), and its `description` tells the
+planner what the sub-agent is for. `planner_prompt` names a `plan` prompt
+that lets the main agent's model send files to sub-agents whatever they are
+called; `verifier_prompt` names a `verify` prompt that keeps or drops each
+sub-agent finding before posting. `overload workflows preview NAME <
+files.txt` shows which agent would review each file and roughly how long it
+would take, without calling a model.
 
 ## Other deployments
 

@@ -153,7 +153,7 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	plan := planPosting(run.DryRun, PostingEnabled())
-	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, result.Findings); err != nil {
+	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, append(result.Findings, result.Dropped...)); err != nil {
 		return err
 	}
 	if plan.enqueue {

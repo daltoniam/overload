@@ -58,11 +58,14 @@ type Reviewer struct{}
 
 // Review runs a pinned PR workflow. Changed files matching the workflow's
 // skip paths are dropped, each sub-agent reviews the files its scope
-// matches, and the main agent reviews every file or only the unclaimed ones.
-// All file reviews are scheduled together, limited per model server, and the
-// validated findings are merged in agent then file order with each finding
-// attributed to the agents that reported it.
-func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS) (overload.ReviewResult, error) {
+// matches (plus any the optional planner adds), and the main agent reviews
+// every file or only the unclaimed ones. All file reviews are scheduled
+// together, limited per model server, and the validated findings are merged
+// in agent then file order with each finding attributed to the agents that
+// reported it. An optional verifier then keeps or drops each sub-agent
+// finding. A failed sub-agent or verifier leaves the review degraded rather
+// than failed; a failed main agent fails it.
+func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS) (result overload.ReviewResult, err error) {
 	workflow := spec.Workflow
 	if workflow.Kind != "pr_review" {
 		return overload.ReviewResult{}, errors.New("not a PR review workflow")
@@ -75,9 +78,23 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		return overload.ReviewResult{}, err
 	}
 	routing, routeErr := workflow.Route(changed)
-	result := overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(changed), "skipped_files": len(routing.Skipped), "reviewed_files": 0, "routing": routing}}
+	result = overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(changed), "skipped_files": len(routing.Skipped), "reviewed_files": 0}}
+	defer func() {
+		result.Metrics["routing"] = routing
+		if len(routing.Degraded) > 0 {
+			result.Metrics["degraded"] = true
+		}
+	}()
 	if routeErr != nil {
 		return result, routeErr
+	}
+	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(routing.Skipped) < len(changed) {
+		var usage plannerUsage
+		if routing, usage, err = planRouting(ctx, workflow, spec.Diff, changed, routing); err != nil {
+			return result, fmt.Errorf("review incomplete: %w", err)
+		}
+		result.Metrics["planner_input_tokens"], result.Metrics["planner_output_tokens"] = usage.inputTokens, usage.outputTokens
+		result.Metrics["input_tokens"], result.Metrics["output_tokens"] = usage.inputTokens, usage.outputTokens
 	}
 	batches, paths, err := makeReviewBatches(spec.Diff, repo, routing.Skipped)
 	if err != nil {
@@ -118,19 +135,31 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		groups[index].limit = reviewConcurrency(groups[index].limit, len(groups[index].tasks))
 	}
 	outcomes := make([][]fileOutcome, len(workflow.Agents))
+	done := make([][]bool, len(workflow.Agents))
 	completed := make([]atomic.Int64, len(workflow.Agents))
+	failures := make([]atomic.Pointer[string], len(workflow.Agents))
 	for index := range outcomes {
 		outcomes[index] = make([]fileOutcome, len(batches))
+		done[index] = make([]bool, len(batches))
 	}
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
+		if failures[task.agent].Load() != nil {
+			return nil
+		}
 		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], spec.Diff)
 		if err != nil {
-			return err
+			if task.agent == 0 || ctx.Err() != nil {
+				return err
+			}
+			message := overload.TruncateUTF8(err.Error(), 300)
+			failures[task.agent].CompareAndSwap(nil, &message)
+			return nil
 		}
 		for index := range outcome.findings {
 			outcome.findings[index].Agents = []string{workflow.Agents[task.agent].Name}
 		}
 		outcomes[task.agent][task.file] = outcome
+		done[task.agent][task.file] = true
 		completed[task.agent].Add(1)
 		return nil
 	})
@@ -141,6 +170,15 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		for _, outcome := range outcomes[index] {
 			routing.Agents[index].InputTokens += outcome.inputTokens
 			routing.Agents[index].OutputTokens += outcome.outputTokens
+		}
+		if message := failures[index].Load(); message != nil && err == nil {
+			routing.Agents[index].Failed = *message
+			for _, path := range routing.Agents[index].Files {
+				if !done[index][fileIndex[path]] {
+					routing.Agents[index].Unreviewed = append(routing.Agents[index].Unreviewed, path)
+				}
+			}
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("sub-agent %s failed and did not review %d of its %d files", resolved.Name, len(routing.Agents[index].Unreviewed), len(routing.Agents[index].Files)))
 		}
 	}
 	if err != nil {
@@ -157,12 +195,36 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if result.Findings, err = review.Validate(result.Findings, spec.Diff, -1); err != nil {
 		return result, err
 	}
+	if workflow.VerifierPrompt != nil && len(result.Findings) > 0 {
+		bundles := make(map[string]string, len(paths))
+		for index, path := range paths {
+			bundles[path] = batches[index]
+		}
+		verified, err := verifyFindings(ctx, workflow, result.Findings, bundles)
+		if err != nil {
+			return result, fmt.Errorf("review incomplete: %w", err)
+		}
+		result.Findings, result.Dropped = verified.kept, verified.dropped
+		for index := range routing.Agents {
+			routing.Agents[index].Verified, routing.Agents[index].Dropped = verified.checked[index], verified.droppedBy[index]
+		}
+		result.Metrics["verifier_input_tokens"], result.Metrics["verifier_output_tokens"] = verified.inputTokens, verified.outputTokens
+		result.Metrics["input_tokens"] = metricTokens(result.Metrics, "input_tokens") + verified.inputTokens
+		result.Metrics["output_tokens"] = metricTokens(result.Metrics, "output_tokens") + verified.outputTokens
+		result.Metrics["verifier_dropped"] = len(verified.dropped)
+		if verified.failures > 0 {
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("verifier could not check %d findings; they were kept", verified.failures))
+		}
+	}
 	for index, resolved := range workflow.Agents {
 		for _, finding := range result.Findings {
 			if slices.Contains(finding.Agents, resolved.Name) {
 				routing.Agents[index].Findings++
 			}
 		}
+	}
+	if result.Findings == nil {
+		result.Findings = []overload.Finding{}
 	}
 	result.Metrics["reviewed_files"] = len(batches)
 	switch {

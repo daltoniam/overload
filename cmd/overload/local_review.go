@@ -150,6 +150,15 @@ func inlineReview(args []string) error {
 		if len(routing.Skipped) > 0 {
 			fmt.Printf("Skipped %d files: %s\n", len(routing.Skipped), strings.Join(routing.Skipped, ", "))
 		}
+		if routing.Planner != "" {
+			fmt.Printf("Planner: %s\n", routing.Planner)
+		}
+		for _, note := range routing.Degraded {
+			fmt.Printf("Partial review: %s\n", note)
+		}
+	}
+	if len(result.Dropped) > 0 {
+		fmt.Printf("Verifier dropped %d findings (saved on the run, not posted)\n", len(result.Dropped))
 	}
 	for _, finding := range result.Findings {
 		fmt.Printf("%s:%d [%s] %s (%s): %s\n", finding.Path, finding.Line, finding.Severity, finding.Title, strings.Join(finding.Agents, ", "), finding.Body)

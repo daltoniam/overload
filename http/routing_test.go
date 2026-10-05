@@ -16,6 +16,11 @@ type routingStore struct {
 	automationStore
 	resolved overload.ResolvedWorkflow
 	routing  overload.Routing
+	findings []overload.Finding
+}
+
+func (store *routingStore) ListFindings(context.Context, int64) ([]overload.Finding, error) {
+	return store.findings, nil
 }
 
 func (store *routingStore) ResolveWorkflow(_ context.Context, name string) (overload.ResolvedWorkflow, error) {
@@ -64,12 +69,13 @@ func TestWorkflowPreview(t *testing.T) {
 
 func TestRunDetailShowsRouting(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
-	store := &routingStore{routing: overload.Routing{Skipped: []string{"go.lock"}, Agents: []overload.AgentFiles{{Agent: "lead", Files: []string{"main.go"}, Reviewed: 1}, {Agent: "security", Files: []string{"auth/a.go"}, Reviewed: 1, Findings: 2, Capped: 1, InputTokens: 900, OutputTokens: 40}}}}
+	store := &routingStore{routing: overload.Routing{Skipped: []string{"go.lock"}, Planner: "planner added 1 file reviews", Degraded: []string{"sub-agent tests failed and did not review 1 of its 1 files"}, Agents: []overload.AgentFiles{{Agent: "lead", Files: []string{"main.go"}, Reviewed: 1}, {Agent: "security", Files: []string{"auth/a.go", "util/x.go"}, Planned: []string{"util/x.go"}, Reviewed: 2, Findings: 2, Capped: 1, Verified: 3, Dropped: 1, InputTokens: 900, OutputTokens: 40}, {Agent: "tests", Files: []string{"a_test.go"}, Failed: "bad request", Unreviewed: []string{"a_test.go"}}}}}
+	store.findings = []overload.Finding{{Title: "Kept", Agents: []string{"security"}}, {Title: "Gone", DropReason: "verifier: not real"}}
 	store.run = overload.Run{ID: 7, Kind: "pr_review", Status: overload.RunCompleted}
 	response := httptest.NewRecorder()
 	Handler(store).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/runs/7", nil))
 	body := response.Body.String()
-	for _, want := range []string{"Agents and files", "Main agent", "Sub-agent", "900 / 40", "Skipped by skip paths: 1 files"} {
+	for _, want := range []string{"Agents and files", "Main agent", "Sub-agent", "900 / 40", "Skipped by skip paths: 1 files", "Planner: planner added 1", "Partial review:", "3 / 1", "Added by the planner:", "Failed: bad request", "Reported by security", "Not posted. verifier: not real"} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("run detail missing %q: %d %s", want, response.Code, body)
 		}

@@ -24,8 +24,8 @@ func TestWorkflowConfiguration(t *testing.T) {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM trigger_bindings WHERE repository_full_name='test/workflow-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM workflows WHERE name='test-workflow-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name IN ('test-agent-configuration','test-agent-configuration-security')`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration'))`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration')`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration','test-plan-configuration'))`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration','test-plan-configuration')`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name='test-model-configuration'`)
 		store.Pool.Close()
 	})
@@ -105,6 +105,40 @@ func TestWorkflowConfiguration(t *testing.T) {
 	resolvedRouted, err := store.ResolveWorkflow(ctx, routed.Name)
 	if err != nil || resolvedRouted.Verify() != nil || resolvedRouted.Agents[1].Scope.Paths[0] != "**/auth/**" || resolvedRouted.Agents[0].Scope.Paths != nil || resolvedRouted.SkipPaths[0] != "*.lock" || resolvedRouted.MaxFileReviews != 40 {
 		t.Fatalf("routing not resolved: %+v %v", resolvedRouted, err)
+	}
+	if resolvedRouted.PlannerPrompt != nil || resolvedRouted.VerifierPrompt != nil {
+		t.Fatalf("unexpected planner: %+v", resolvedRouted)
+	}
+	planned := routed
+	planned.PlannerPrompt, planned.VerifierPrompt = "test-plan-configuration", "test-plan-configuration"
+	if err := store.SaveWorkflow(ctx, planned); err == nil {
+		t.Fatal("saved a workflow with missing planner prompts")
+	}
+	plan, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptPlan, Body: "Plan v1."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptVerify, Body: "Verify v1."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkflow(ctx, planned); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptPlan, Body: "Plan v2."}); err != nil {
+		t.Fatal(err)
+	}
+	resolvedPlanned, err := store.ResolveWorkflow(ctx, planned.Name)
+	if err != nil || resolvedPlanned.Verify() != nil || resolvedPlanned.PlannerPrompt.Body != "Plan v1." || resolvedPlanned.PlannerPrompt.Revision != plan.Revision || resolvedPlanned.VerifierPrompt.Body != "Verify v1." {
+		t.Fatalf("planner not pinned: %+v %v", resolvedPlanned, err)
+	}
+	if err := store.DeletePrompt(ctx, overload.PromptVerify, "test-plan-configuration"); err == nil {
+		t.Fatal("deleted a verifier prompt a workflow uses")
+	}
+	listed, err = store.ListWorkflows(ctx)
+	for _, stored := range listed {
+		if stored.Name == planned.Name && (stored.PlannerPrompt != planned.PlannerPrompt || stored.VerifierPrompt != planned.VerifierPrompt) {
+			t.Fatalf("planner not listed: %+v %v", stored, err)
+		}
 	}
 	if err := store.SaveWorkflow(ctx, workflow); err != nil {
 		t.Fatal(err)

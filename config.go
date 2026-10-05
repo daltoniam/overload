@@ -27,8 +27,18 @@ func (prompt PromptTemplate) Validate() error {
 	return nil
 }
 
+// Prompt kinds: an agent's entry prompt and optional review focus, and a
+// workflow's optional planner and verifier prompts, which run on the main
+// agent's model.
+const (
+	PromptEntry  = "entry"
+	PromptReview = "review"
+	PromptPlan   = "plan"
+	PromptVerify = "verify"
+)
+
 func validPromptKind(kind string) bool {
-	return kind == "entry" || kind == "review"
+	return kind == PromptEntry || kind == PromptReview || kind == PromptPlan || kind == PromptVerify
 }
 
 func PromptDigest(body string) string {
@@ -74,6 +84,8 @@ type Workflow struct {
 	SkipPaths      []string         `json:"skip_paths,omitempty"`
 	MainReviews    string           `json:"main_reviews,omitempty"`
 	MaxFileReviews int              `json:"max_file_reviews,omitempty"`
+	PlannerPrompt  string           `json:"planner_prompt,omitempty"`
+	VerifierPrompt string           `json:"verifier_prompt,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -92,7 +104,12 @@ func (workflow Workflow) Validate() error {
 			return fmt.Errorf("scope for %q: scopes apply to the workflow's sub-agents", name)
 		}
 	}
-	return validateRouting(workflow.Kind, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.Scopes)
+	for _, prompt := range []string{workflow.PlannerPrompt, workflow.VerifierPrompt} {
+		if prompt != "" && !settingName.MatchString(prompt) {
+			return errors.New("invalid planner or verifier prompt name")
+		}
+	}
+	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: workflow.Scopes, planner: workflow.PlannerPrompt != "", verifier: workflow.VerifierPrompt != ""})
 }
 
 type TriggerBinding struct {
@@ -142,6 +159,8 @@ type ResolvedWorkflow struct {
 	SkipPaths      []string        `json:"skip_paths,omitempty"`
 	MainReviews    string          `json:"main_reviews,omitempty"`
 	MaxFileReviews int             `json:"max_file_reviews,omitempty"`
+	PlannerPrompt  *PromptTemplate `json:"planner_prompt,omitempty"`
+	VerifierPrompt *PromptTemplate `json:"verifier_prompt,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -152,7 +171,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 	if workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt" {
 		return fmt.Errorf("unsupported workflow kind %q", workflow.Kind)
 	}
-	if workflow.Version != 0 && workflow.Version != SnapshotVersion {
+	if workflow.Version != 0 && workflow.Version != 2 && workflow.Version != SnapshotVersion {
 		return fmt.Errorf("workflow snapshot version %d is not supported", workflow.Version)
 	}
 	scopes := map[string]Scope{}
@@ -165,8 +184,16 @@ func (workflow ResolvedWorkflow) Verify() error {
 		}
 		scopes[agent.Name] = agent.Scope
 	}
-	if err := validateRouting(workflow.Kind, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, scopes); err != nil {
+	if err := validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: scopes, planner: workflow.PlannerPrompt != nil, verifier: workflow.VerifierPrompt != nil}); err != nil {
 		return err
+	}
+	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {
+		return errors.New("planner and verifier prompts need workflow snapshot version 3")
+	}
+	for kind, prompt := range map[string]*PromptTemplate{PromptPlan: workflow.PlannerPrompt, PromptVerify: workflow.VerifierPrompt} {
+		if prompt != nil && (prompt.Kind != kind || PromptDigest(prompt.Body) != prompt.SHA256) {
+			return fmt.Errorf("workflow %s prompt does not match its pinned revision", kind)
+		}
 	}
 	if len(workflow.Agents) == 0 || len(workflow.Agents) > 1+MaxSubAgents {
 		return fmt.Errorf("a workflow needs a main agent and at most %d sub-agents", MaxSubAgents)

@@ -33,7 +33,7 @@ templ PromptForm(prompt overload.PromptTemplate, nonce string) {
 			if prompt.Name != "" {
 				<label class="field"><span>Type</span><input value={ promptKindLabel(prompt.Kind) } readonly/><small>Type is fixed for this prompt. Create another prompt for a different type.</small></label><input type="hidden" name="kind" value={ prompt.Kind }/>
 			} else {
-				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Entry</option><option value="review">Review pass</option></select></label>
+				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Entry</option><option value="review">Review pass</option><option value="plan">Planner</option><option value="verify">Verifier</option></select><small>Planner and verifier prompts belong to a PR workflow and run on its main agent's model.</small></label>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ prompt.Name } readonly?={ prompt.Name != "" } placeholder="security"/></label>
 			<label class="field"><span>Instructions</span><textarea name="body" required maxlength="16000" placeholder="Describe the agent's task.">{ prompt.Body }</textarea></label>
@@ -97,6 +97,10 @@ func promptKindLabel(kind string) string {
 		return "Entry"
 	case "review":
 		return "Review pass"
+	case "plan":
+		return "Planner"
+	case "verify":
+		return "Verifier"
 	default:
 		return kind
 	}

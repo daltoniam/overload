@@ -64,6 +64,9 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		return w.Store.FinishPost(ctx, target, "nothing_new", 0)
 	}
 	summary := fmt.Sprintf("Overload found %d issue(s) in this pull request.\n\n%s", len(target.Findings), marker)
+	if target.Partial {
+		summary = fmt.Sprintf("Overload found %d issue(s) in this pull request. This review is partial: part of it could not be completed, so some files may not have been fully reviewed.\n\n%s", len(target.Findings), marker)
+	}
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, summary, target.Findings)
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)

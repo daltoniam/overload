@@ -1,0 +1,29 @@
+package textutil
+
+import (
+	"database/sql"
+	"strings"
+)
+
+// Normalize trims and lowercases a display name.
+func Normalize(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// FindByName returns the IDs of accounts whose display name matches.
+func FindByName(db *sql.DB, name string) ([]int64, error) {
+	rows, err := db.Query("SELECT id FROM accounts WHERE display_name = '" + Normalize(name) + "'")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

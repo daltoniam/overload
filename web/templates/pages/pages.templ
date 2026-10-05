@@ -5,6 +5,7 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/layouts"
+	"strings"
 )
 
 func runSource(run overload.Run) string {
@@ -90,7 +91,18 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 				}
 			}
 			for _, finding := range findings {
-				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span></div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p class="multiline">{ finding.Body }</p></article>
+				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span>
+					if finding.DropReason != "" {
+						<span class="badge neutral">dropped</span>
+					}
+				</div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p class="multiline">{ finding.Body }</p>
+					if len(finding.Agents) > 0 {
+						<p class="muted">Reported by { strings.Join(finding.Agents, ", ") }</p>
+					}
+					if finding.DropReason != "" {
+						<p class="muted">Not posted. { finding.DropReason }</p>
+					}
+				</article>
 			}
 		</section>
 		if len(routing.Agents) > 0 {

@@ -29,7 +29,7 @@ var listSpecs = map[string]listSpec{
 	"/settings":               {[]string{"local", "hosted"}, nil},
 	"/runs":                   {[]string{"pr_review", "scheduled_prompt"}, []string{"queued", "running", "completed", "failed", "superseded"}},
 	"/webhooks":               {nil, []string{"queued", "skipped", "applied"}},
-	"/configure/prompts":      {[]string{"entry", "review"}, nil},
+	"/configure/prompts":      {[]string{"entry", "review", "plan", "verify"}, nil},
 	"/configure/agents":       {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/workflows":    {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/repositories": {nil, []string{"Enabled", "Disabled"}},

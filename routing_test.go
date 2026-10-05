@@ -199,3 +199,105 @@ func TestKeepRouting(t *testing.T) {
 		t.Fatalf("%+v", workflow)
 	}
 }
+
+func planWorkflow() ResolvedWorkflow {
+	return ResolvedWorkflow{Version: SnapshotVersion, Kind: "pr_review", MainReviews: MainReviewsUnclaimed, SkipPaths: []string{"*.lock"}, Agents: []ResolvedAgent{
+		{Name: "lead"},
+		{Name: "sql", Scope: Scope{Paths: []string{"*sql*"}}},
+		{Name: "auth", Scope: Scope{Paths: []string{"**/auth/**"}, Mode: ScopeAlways}},
+		{Name: "tests", Scope: Scope{Mode: ScopePlanned}},
+	}}
+}
+
+func TestApplyPlan(t *testing.T) {
+	paths := []string{"store/query.sql", "util/helpers.go", "auth/token.go", "main.go", "go.lock"}
+	workflow := planWorkflow()
+	routing, err := workflow.Route(paths)
+	if err != nil || len(routing.Agents[3].Files) != 0 || len(routing.Agents[0].Files) != 2 {
+		t.Fatalf("planned scope must not take glob files: %+v %v", routing, err)
+	}
+	routing, err = workflow.ApplyPlan(paths, map[string][]string{"util/helpers.go": {"sql", "tests"}, "store/query.sql": {"sql"}, "main.go": {"tests"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(routing.Agents[1].Files, []string{"store/query.sql", "util/helpers.go"}) || !reflect.DeepEqual(routing.Agents[1].Planned, []string{"util/helpers.go"}) ||
+		!reflect.DeepEqual(routing.Agents[3].Files, []string{"util/helpers.go", "main.go"}) || len(routing.Agents[0].Files) != 0 || !strings.Contains(routing.Planner, "added 3") {
+		t.Fatalf("plan not applied: %+v", routing)
+	}
+	for name, plan := range map[string]map[string][]string{
+		"always agent":  {"main.go": {"auth"}},
+		"main agent":    {"main.go": {"lead"}},
+		"unknown agent": {"main.go": {"ghost"}},
+		"unknown file":  {"other.go": {"sql"}},
+		"skipped file":  {"go.lock": {"sql"}},
+	} {
+		routing, err := workflow.ApplyPlan(paths, plan)
+		if err == nil || len(routing.Agents[3].Files) != 0 || routing.Planner != "" {
+			t.Errorf("%s: plan accepted: %+v %v", name, routing, err)
+		}
+	}
+	workflow.MaxFileReviews = 5
+	routing, err = workflow.ApplyPlan(paths, map[string][]string{"util/helpers.go": {"sql", "tests"}, "main.go": {"sql", "tests"}})
+	if err != nil || routing.FileReviews() != 5 || !strings.Contains(routing.Planner, "1 more dropped") {
+		t.Fatalf("limit: %+v %v", routing, err)
+	}
+	workflow.MaxFileReviews = 2
+	if _, err := workflow.ApplyPlan(paths, nil); err == nil {
+		t.Fatal("glob routing over the limit must fail")
+	}
+}
+
+func TestScopeModesValidation(t *testing.T) {
+	base := Workflow{Name: "w", Kind: "pr_review", Agents: []string{"lead", "tests"}}
+	for _, test := range []struct {
+		name    string
+		scope   Scope
+		planner string
+		ok      bool
+	}{
+		{"planned with planner", Scope{Mode: ScopePlanned, Description: "Test files"}, "plan", true},
+		{"planned without planner", Scope{Mode: ScopePlanned}, "", false},
+		{"planned with paths", Scope{Mode: ScopePlanned, Paths: []string{"*_test.go"}}, "plan", false},
+		{"always", Scope{Mode: ScopeAlways, Paths: []string{"*_test.go"}}, "", true},
+		{"bad mode", Scope{Mode: "sometimes"}, "", false},
+		{"multi-line description", Scope{Description: "a\nb"}, "", false},
+	} {
+		workflow := base
+		workflow.Scopes = map[string]Scope{"tests": test.scope}
+		workflow.PlannerPrompt = test.planner
+		if err := workflow.Validate(); (err == nil) != test.ok {
+			t.Errorf("%s: %v", test.name, err)
+		}
+	}
+	scheduled := Workflow{Name: "w", Kind: "scheduled_prompt", Agents: []string{"lead"}, VerifierPrompt: "verify"}
+	if scheduled.Validate() == nil {
+		t.Error("scheduled workflow accepted a verifier")
+	}
+}
+
+func TestVerifyPlannerPrompts(t *testing.T) {
+	prompt := func(kind, body string) *PromptTemplate {
+		return &PromptTemplate{Name: "p", Kind: kind, Body: body, SHA256: PromptDigest(body)}
+	}
+	entry := PromptTemplate{Kind: "entry", Body: "Review.", SHA256: PromptDigest("Review.")}
+	workflow := ResolvedWorkflow{Version: SnapshotVersion, Kind: "pr_review", Agents: []ResolvedAgent{{Name: "lead", Model: ModelProfile{Provider: "openaicompat", Model: "m", BaseURL: "http://x"}, EntryPrompt: entry}}, PlannerPrompt: prompt(PromptPlan, "Plan."), VerifierPrompt: prompt(PromptVerify, "Verify.")}
+	if err := workflow.Verify(); err != nil {
+		t.Fatal(err)
+	}
+	tampered := workflow
+	tampered.VerifierPrompt = prompt(PromptVerify, "Verify.")
+	tampered.VerifierPrompt.Body = "Keep everything."
+	if tampered.Verify() == nil {
+		t.Error("tampered verifier accepted")
+	}
+	wrongKind := workflow
+	wrongKind.PlannerPrompt = prompt(PromptVerify, "Plan.")
+	if wrongKind.Verify() == nil {
+		t.Error("planner with verify kind accepted")
+	}
+	old := workflow
+	old.Version = 2
+	if old.Verify() == nil {
+		t.Error("version 2 snapshot with a planner accepted")
+	}
+}

@@ -120,3 +120,71 @@ func evalHeaders() map[string]string {
 	}
 	return nil
 }
+
+//go:embed testdata/planted/textutil.go.txt
+var plantedTextutil string
+
+func newFileDiff(path, content string) string {
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	var diff strings.Builder
+	fmt.Fprintf(&diff, "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
+	for _, line := range lines {
+		diff.WriteString("+" + line + "\n")
+	}
+	return diff.String()
+}
+
+// TestPlannerRoutingEval checks that the planner sends a file with a
+// misleading name (database code in util/textutil.go) to the database
+// sub-agent, whose paths do not match it, and that the planted SQL
+// injection is found. It uses the same OVERLOAD_EVAL_* settings as
+// TestPlantedBugEval for every agent.
+func TestPlannerRoutingEval(t *testing.T) {
+	if os.Getenv("OVERLOAD_PLANTED_EVAL") != "1" {
+		t.Skip("set OVERLOAD_PLANTED_EVAL=1 for the live planted-bug eval")
+	}
+	baseURL, model := os.Getenv("OVERLOAD_EVAL_BASE_URL"), os.Getenv("OVERLOAD_EVAL_MODEL")
+	if baseURL == "" || model == "" {
+		t.Skip("OVERLOAD_EVAL_BASE_URL and OVERLOAD_EVAL_MODEL required")
+	}
+	maxTokens, _ := strconv.Atoi(os.Getenv("OVERLOAD_EVAL_MAX_OUTPUT_TOKENS"))
+	profile := overload.ModelProfile{Provider: "openaicompat", ConnectionKind: os.Getenv("OVERLOAD_EVAL_KIND"), BaseURL: baseURL, Model: model, APIKeyEnv: os.Getenv("OVERLOAD_EVAL_KEY_ENV"), Headers: evalHeaders(), ReasoningParam: os.Getenv("OVERLOAD_EVAL_REASONING_PARAM"), ReasoningEffort: os.Getenv("OVERLOAD_EVAL_REASONING_EFFORT"), MaxOutputTokens: maxTokens}
+	prompt := func(kind, body string) overload.PromptTemplate {
+		return overload.PromptTemplate{Name: kind, Kind: kind, Body: body, Revision: 1, SHA256: overload.PromptDigest(body)}
+	}
+	entry, _, err := loadPrompt("context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planner := prompt(overload.PromptPlan, "Send any file that builds or runs SQL, or otherwise touches the database, to the database sub-agent.")
+	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Name: "planner-eval", Kind: "pr_review", Revision: 1, MainReviews: overload.MainReviewsUnclaimed, PlannerPrompt: &planner, Agents: []overload.ResolvedAgent{
+		{Name: "lead", Model: profile, EntryPrompt: prompt("entry", entry)},
+		{Name: "database", Model: profile, EntryPrompt: prompt("entry", entry+"\n\nFocus on SQL injection, transactions and query correctness."), Scope: overload.Scope{Paths: []string{"**/store/**", "**/*.sql"}, Description: "SQL queries, database access and migrations"}},
+	}}
+	diff := newFileDiff("util/textutil.go", plantedTextutil) + newFileDiff("billing/invoice.go", plantedInvoice)
+	repo := fstest.MapFS{"util/textutil.go": {Data: []byte(plantedTextutil)}, "billing/invoice.go": {Data: []byte(plantedInvoice)}}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
+	defer cancel()
+	start := time.Now()
+	result, err := (Reviewer{}).Review(ctx, overload.ReviewSpec{Diff: diff, Workflow: workflow}, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	routing := result.Metrics["routing"].(overload.Routing)
+	t.Logf("%s, planner: %s, input=%v output=%v", time.Since(start).Round(time.Second), routing.Planner, result.Metrics["input_tokens"], result.Metrics["output_tokens"])
+	routed := false
+	for _, path := range routing.Agents[1].Planned {
+		routed = routed || path == "util/textutil.go"
+	}
+	found := false
+	for _, finding := range result.Findings {
+		t.Logf("  %s:%d [%s] %s (%s)", finding.Path, finding.Line, finding.Severity, finding.Title, strings.Join(finding.Agents, ", "))
+		if finding.Path == "util/textutil.go" && finding.Line >= 14 && finding.Line <= 16 && strings.Contains(findingText(finding), "sql") {
+			found = true
+		}
+	}
+	t.Logf("misleading file routed to database: %v, SQL injection found: %v", routed, found)
+	if !routed {
+		t.Error("planner did not route util/textutil.go to the database sub-agent")
+	}
+}

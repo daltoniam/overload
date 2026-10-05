@@ -119,12 +119,40 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 		t.Fatalf("existing review not recorded: %d %v", reviewID, err)
 	}
 
+	poster.existing = 0
+	partial := newRun("completed", "queued", nil, "pending")
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dropped := overload.Finding{Path: "d.go", Line: 2, Side: "RIGHT", Severity: "low", Category: "bug", Title: "Dropped", Body: "b", Confidence: 0.5, Evidence: "w()", DropReason: "verifier: not real"}
+	kept := overload.Finding{Path: "d.go", Line: 4, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Kept", Body: "b", Confidence: 0.9, Evidence: "v()"}
+	if err := postgres.InsertFindings(ctx, tx, partial, repo, 9, "pending", []overload.Finding{kept, dropped}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET metrics='{"routing":{"agents":[],"degraded":["sub-agent sql failed"]}}' WHERE id=$1`, partial); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: partial}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(poster.posts) != 2 || len(poster.posts[1]) != 1 || poster.posts[1][0].Title != "Kept" || !strings.Contains(poster.summary, "This review is partial") || strings.Contains(poster.summary, "sql") {
+		t.Fatalf("partial post=%+v summary=%q", poster.posts, poster.summary)
+	}
+	var droppedStatus, reason string
+	if err := store.Pool.QueryRow(ctx, `SELECT status, suppressed_reason FROM findings WHERE run_id=$1 AND title='Dropped'`, partial).Scan(&droppedStatus, &reason); err != nil || droppedStatus != postgres.FindingDropped || reason != "verifier: not real" {
+		t.Fatalf("dropped finding %q %q %v", droppedStatus, reason, err)
+	}
+
 	t.Setenv("OVERLOAD_ENABLE_POSTING", "")
 	disabled := newRun("completed", "queued", []overload.Finding{fresh}, "pending")
 	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: disabled}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, disabled).Scan(&postStatus); err != nil || postStatus != "posting_disabled" || len(poster.posts) != 1 {
+	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, disabled).Scan(&postStatus); err != nil || postStatus != "posting_disabled" || len(poster.posts) != 2 {
 		t.Fatalf("posted with switch off: %q %d", postStatus, len(poster.posts))
 	}
 }

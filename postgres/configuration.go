@@ -111,7 +111,19 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	routing, err := json.Marshal(workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews})
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, PlannerPrompt: workflow.PlannerPrompt, VerifierPrompt: workflow.VerifierPrompt}
+	for _, prompt := range []struct {
+		name, kind string
+		id         *int64
+	}{{workflow.PlannerPrompt, overload.PromptPlan, &stored.PlannerRevisionID}, {workflow.VerifierPrompt, overload.PromptVerify, &stored.VerifierRevisionID}} {
+		if prompt.name == "" {
+			continue
+		}
+		if err := s.Pool.QueryRow(ctx, `SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$1 AND t.kind=$2 ORDER BY r.revision DESC LIMIT 1`, prompt.name, prompt.kind).Scan(prompt.id); err != nil {
+			return fmt.Errorf("workflow %s prompt %q not found", prompt.kind, prompt.name)
+		}
+	}
+	routing, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
@@ -120,12 +132,18 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 }
 
 // workflowRouting is the stored form of a workflow's skip paths, sub-agent
-// scopes, main agent review mode and file-review limit.
+// scopes, main agent review mode, file-review limit and planner and verifier
+// prompts. The prompts are pinned to the revision current when the workflow
+// was saved, like an agent's prompts.
 type workflowRouting struct {
-	Scopes         map[string]overload.Scope `json:"scopes,omitempty"`
-	SkipPaths      []string                  `json:"skip_paths,omitempty"`
-	MainReviews    string                    `json:"main_reviews,omitempty"`
-	MaxFileReviews int                       `json:"max_file_reviews,omitempty"`
+	Scopes             map[string]overload.Scope `json:"scopes,omitempty"`
+	SkipPaths          []string                  `json:"skip_paths,omitempty"`
+	MainReviews        string                    `json:"main_reviews,omitempty"`
+	MaxFileReviews     int                       `json:"max_file_reviews,omitempty"`
+	PlannerPrompt      string                    `json:"planner_prompt,omitempty"`
+	PlannerRevisionID  int64                     `json:"planner_prompt_revision_id,omitempty"`
+	VerifierPrompt     string                    `json:"verifier_prompt,omitempty"`
+	VerifierRevisionID int64                     `json:"verifier_prompt_revision_id,omitempty"`
 }
 
 func (routing workflowRouting) apply(workflow *overload.Workflow) {
@@ -133,6 +151,8 @@ func (routing workflowRouting) apply(workflow *overload.Workflow) {
 	workflow.SkipPaths = routing.SkipPaths
 	workflow.MainReviews = routing.MainReviews
 	workflow.MaxFileReviews = routing.MaxFileReviews
+	workflow.PlannerPrompt = routing.PlannerPrompt
+	workflow.VerifierPrompt = routing.VerifierPrompt
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -188,6 +208,16 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		return result, err
 	}
 	result.SkipPaths, result.MainReviews, result.MaxFileReviews = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews
+	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
+		if id == 0 {
+			continue
+		}
+		var prompt overload.PromptTemplate
+		if err := loadPromptRevision(ctx, q, id, &prompt); err != nil {
+			return result, err
+		}
+		*target = &prompt
+	}
 	for _, agentName := range agents {
 		var agent overload.ResolvedAgent
 		var entryID int64

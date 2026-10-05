@@ -563,7 +563,28 @@ CLI. The CLI and JSON configuration expose the same tree.
    loaded at once. Previewing a sample PR by number is left to stage 4.
    Scopes and limits are edited through `overload workflows apply` until the
    stage 4 UI; saving a workflow from the current form keeps them.
-3. Planner and verifier with validation and fallbacks.
+3. Done: a workflow can name a planner prompt and a verifier prompt (new
+   prompt kinds `plan` and `verify`, migration 019), pinned to the revision
+   current when the workflow is saved and run on the main agent's model;
+   snapshot version 3. Scopes gain `mode` (`globs` default, `always`,
+   `planned`) and a `description` the planner sees. The planner gets the
+   plannable sub-agents and, per reviewable file, change counts, hunk headers
+   and the first five changed lines (24 KB budget; files past it are listed
+   by name only) and replies `{"assign": {...}}`. Invalid JSON, a missing
+   `assign`, unknown or skipped files, or the main agent, unknown or
+   `always` sub-agents reject the whole plan; a failed call or a rejected
+   plan routes by globs only and says why on the run. Over the file-review
+   limit, planner assignments are dropped from the end. The verifier checks
+   findings no main agent reported, one call each with that file's bundle;
+   dropped findings are stored with status `dropped` and the reason, shown
+   on the run and never posted. A failed sub-agent (not the main agent) or
+   verifier call no longer fails the review: it completes degraded, the run
+   page names the agent and its unreviewed files, and the posted review
+   says it is partial without internal details. Run status stays
+   `completed`; `metrics.degraded` and `routing.degraded` mark it. The
+   planted-bug eval gained `TestPlannerRoutingEval`: SQL code in
+   `util/textutil.go` must reach a database sub-agent scoped to
+   `**/store/**` through the planner.
 4. UI for the tree (main agent, sub-agent list with scope chips, preview).
 
 Each stage keeps `make ci`, the macOS install test and the kind sandbox

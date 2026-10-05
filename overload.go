@@ -56,6 +56,9 @@ type Finding struct {
 	Confidence float64  `json:"confidence"`
 	Evidence   string   `json:"evidence"`
 	Agents     []string `json:"agents,omitempty"`
+	// DropReason is set on findings the verifier dropped. They are stored
+	// on the run but never posted.
+	DropReason string `json:"drop_reason,omitempty"`
 }
 
 type Repository struct {
@@ -191,6 +194,7 @@ type ReviewSpec struct {
 
 type ReviewResult struct {
 	Findings []Finding      `json:"findings"`
+	Dropped  []Finding      `json:"dropped,omitempty"`
 	Summary  string         `json:"summary"`
 	Metrics  map[string]any `json:"metrics,omitempty"`
 	Error    string         `json:"error,omitempty"`

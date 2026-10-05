@@ -25,6 +25,12 @@ func (s *Store) DeletePrompt(ctx context.Context, kind, name string) error {
 	if inUse {
 		return errors.New("prompt is used by an agent")
 	}
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM workflows w JOIN prompt_revisions r ON r.id::text IN (w.routing->>'planner_prompt_revision_id', w.routing->>'verifier_prompt_revision_id') WHERE r.template_id=$1)`, id).Scan(&inUse); err != nil {
+		return err
+	}
+	if inUse {
+		return errors.New("prompt is used by a workflow")
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id=$1`, id); err != nil {
 		return err
 	}
