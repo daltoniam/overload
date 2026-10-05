@@ -34,7 +34,24 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 	return &Store{Pool: pool}, nil
 }
 
+// Migrate brings River's and overload's schema up to date. A session
+// advisory lock serializes concurrent callers, such as several processes or
+// test packages starting against one fresh database, which would otherwise
+// race to create the same objects.
 func (s *Store) Migrate(ctx context.Context) error {
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Release()
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock(729139)`); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	defer func() {
+		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(729139)`); err != nil {
+			_ = conn.Conn().Close(context.WithoutCancel(ctx))
+		}
+	}()
 	migrator, err := rivermigrate.New(riverpgxv5.New(s.Pool), nil)
 	if err != nil {
 		return err
