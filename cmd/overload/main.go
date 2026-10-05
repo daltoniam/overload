@@ -150,7 +150,7 @@ func serve() error {
 	if err := validateServeAddress(addr, os.Getenv("OVERLOAD_UI_INSECURE") == "1"); err != nil {
 		return err
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.Handler(store, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
+	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{store}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
 		return store.IngestPR(ctx, client, postgres.PullRequestDelivery{
 			DeliveryID:     deliveryID,
 			Action:         action,
@@ -177,4 +177,11 @@ func serve() error {
 		return err
 	}
 	return nil
+}
+
+// serverStore adds GitHub lookups the web UI needs to the database store.
+type serverStore struct{ *postgres.Store }
+
+func (store serverStore) ChangedFiles(ctx context.Context, repository string, number int) ([]string, error) {
+	return queue.ChangedFiles(ctx, store.Store, repository, number)
 }

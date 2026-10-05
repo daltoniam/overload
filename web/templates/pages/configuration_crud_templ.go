@@ -388,7 +388,7 @@ func AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings,
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, ">Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. Each agent is one independent review pass with its own model and prompts.</small></label> <label class=\"field\"><span>Model connection</span><select name=\"model\" required><option value=\"\">Select a model</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 30, ">Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. Each agent has its own model and prompts; a workflow uses it as its main agent or a sub-agent.</small></label> <label class=\"field\"><span>Model connection</span><select name=\"model\" required><option value=\"\">Select a model</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -508,7 +508,7 @@ func AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings,
 					}
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</select><small><a href=\"/configure/prompts\">Manage prompts</a></small></label> <label class=\"field\"><span>Pass focus prompt (optional)</span><select name=\"review_prompt\"><option value=\"\">None</option> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 44, "</select><small><a href=\"/configure/prompts\">Manage prompts</a></small></label> <label class=\"field\"><span>Review focus prompt (optional)</span><select name=\"review_prompt\"><option value=\"\">None</option> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

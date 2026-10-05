@@ -33,6 +33,13 @@ func serverKind(local bool) string {
 	return "Hosted"
 }
 
+func countLabel(count int, noun string) string {
+	if count == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
+}
+
 func fileList(files []string) string {
 	if len(files) == 0 {
 		return "None"
@@ -44,28 +51,28 @@ func fileList(files []string) string {
 // run (executed) it also shows what each agent reported, what the planner
 // and verifier did, and why a review is partial.
 templ RunRouting(routing overload.Routing, executed bool) {
-	<section class="panel"><div class="panel-head"><h2>Agents and files</h2><span class="badge neutral">{ fmt.Sprint(routing.FileReviews()) } file reviews</span></div>
+	<section class="panel"><div class="panel-head"><h2>Agents and files</h2><span class="badge neutral">{ countLabel(routing.FileReviews(), "file review") }</span></div>
 		for _, note := range routing.Degraded {
 			<p class="notice warning"><strong>Partial review:</strong> { note }</p>
 		}
 		if routing.Planner != "" {
 			<p class="muted">Planner: { routing.Planner }</p>
 		}
-		<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Role</th><th>Files</th><th>Added by planner</th>
+		<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Role</th><th>Files</th>
 			if executed {
-				<th>Reviewed</th><th>Findings</th><th>Over cap</th><th>Verified / dropped</th><th>Tokens in / out</th>
+				<th>Added by planner</th><th>Reviewed</th><th>Findings</th><th>Over cap</th><th>Verified / dropped</th><th>Tokens in / out</th>
 			}
 		</tr></thead><tbody>
 			for index, agent := range routing.Agents {
-				<tr><td><strong>{ agent.Agent }</strong></td><td>{ agentRole(index) }</td><td>{ fmt.Sprint(len(agent.Files)) }</td><td>{ fmt.Sprint(len(agent.Planned)) }</td>
+				<tr><td><strong>{ agent.Agent }</strong></td><td>{ agentRole(index) }</td><td>{ fmt.Sprint(len(agent.Files)) }</td>
 					if executed {
-						<td>{ fmt.Sprint(agent.Reviewed) }</td><td>{ fmt.Sprint(agent.Findings) }</td><td>{ fmt.Sprint(agent.Capped) }</td><td>{ fmt.Sprint(agent.Verified) } / { fmt.Sprint(agent.Dropped) }</td><td>{ fmt.Sprint(agent.InputTokens) } / { fmt.Sprint(agent.OutputTokens) }</td>
+						<td>{ fmt.Sprint(len(agent.Planned)) }</td><td>{ fmt.Sprint(agent.Reviewed) }</td><td>{ fmt.Sprint(agent.Findings) }</td><td>{ fmt.Sprint(agent.Capped) }</td><td>{ fmt.Sprint(agent.Verified) } / { fmt.Sprint(agent.Dropped) }</td><td>{ fmt.Sprint(agent.InputTokens) } / { fmt.Sprint(agent.OutputTokens) }</td>
 					}
 				</tr>
 			}
 		</tbody></table></div>
 		for _, agent := range routing.Agents {
-			<details><summary>{ agent.Agent }: { fmt.Sprint(len(agent.Files)) } files</summary><pre>{ fileList(agent.Files) }</pre>
+			<details><summary>{ agent.Agent }: { countLabel(len(agent.Files), "file") }</summary><pre>{ fileList(agent.Files) }</pre>
 				if len(agent.Planned) > 0 {
 					<p class="muted">Added by the planner:</p><pre>{ fileList(agent.Planned) }</pre>
 				}
@@ -76,17 +83,29 @@ templ RunRouting(routing overload.Routing, executed bool) {
 			</details>
 		}
 		if len(routing.Skipped) > 0 {
-			<details><summary>Skipped by skip paths: { fmt.Sprint(len(routing.Skipped)) } files</summary><pre>{ fileList(routing.Skipped) }</pre></details>
+			<details><summary>Skipped by skip paths: { countLabel(len(routing.Skipped), "file") }</summary><pre>{ fileList(routing.Skipped) }</pre></details>
 		}
 	</section>
 }
 
 // WorkflowPreview routes a pasted list of changed files through a workflow
 // without calling any model.
-templ WorkflowPreview(workflow overload.ResolvedWorkflow, files string, preview *overload.Preview, message string) {
+templ WorkflowPreview(workflow overload.ResolvedWorkflow, form PreviewForm, preview *overload.Preview, message string) {
 	@layouts.Base(layouts.PageData{Title: "Workflow preview", CurrentPath: "/configure/workflows"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Preview</p><h1>Preview { workflow.Name }</h1><p class="muted">Paste a pull request's changed files, one per line, to see which agent reviews which file. No model is called.</p></div><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>Edit workflow</a></div>
-		<section class="panel"><form method="get"><label class="field"><span>Changed files</span><textarea name="files" rows="10" placeholder="internal/auth/session.go&#10;postgres/migrations/018_example.sql">{ files }</textarea></label><button type="submit">Preview</button></form></section>
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Preview</p><h1>Preview { workflow.Name }</h1><p class="muted">See which agent reviews which file of a pull request, the model calls and a rough duration. No model is called.</p></div><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>Edit workflow</a></div>
+		if form.CanFetch {
+			<section class="panel"><h2>From a pull request</h2><form method="get" class="inline-form">
+				<label class="field"><span>Repository</span><select name="repository" required>
+					<option value="">Select a repository</option>
+					for _, repo := range form.Repositories {
+						<option value={ repo } selected?={ repo == form.Repository }>{ repo }</option>
+					}
+				</select></label>
+				<label class="field"><span>Pull request</span><input type="number" name="pr" min="1" required value={ form.PullRequest } placeholder="123"/></label>
+				<button type="submit">Preview pull request</button>
+			</form></section>
+		}
+		<section class="panel"><h2>From a file list</h2><form method="get"><label class="field"><span>Changed files</span><textarea name="files" rows="10" placeholder="internal/auth/session.go&#10;postgres/migrations/018_example.sql">{ form.Files }</textarea></label><button type="submit">Preview file list</button></form></section>
 		if message != "" {
 			<p class="notice">{ message }</p>
 		}

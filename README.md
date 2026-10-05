@@ -72,7 +72,10 @@ parallel slots.
 2. Install the App on your repositories. They appear under **Repositories**,
    disabled and dry-run.
 3. Create **Prompts**, **Agents** and a PR **Workflow**, then enable a
-   repository and bind its PR actions to the workflow.
+   repository and bind its PR actions to the workflow. A workflow has a
+   main agent and up to eight sub-agents, each limited to the files it is
+   for; **Preview routing** on the workflow shows who would review what
+   in a real pull request before any model runs.
 4. To post reviews as comments, check **Post reviews as GitHub comments** on
    the repository and set `OVERLOAD_ENABLE_POSTING=1` in `overload.env`.
 

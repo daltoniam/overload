@@ -180,26 +180,6 @@ func TestParseChangedFiles(t *testing.T) {
 	}
 }
 
-func TestKeepRouting(t *testing.T) {
-	previous := Workflow{Name: "w", Kind: "pr_review", Agents: []string{"lead", "security", "tests"}, SkipPaths: []string{"*.lock"}, MainReviews: MainReviewsUnclaimed, MaxFileReviews: 9,
-		Scopes: map[string]Scope{"security": {Paths: []string{"auth/**"}}, "tests": {Paths: []string{"*_test.go"}}}}
-	workflow := Workflow{Name: "w", Kind: "pr_review", Agents: []string{"security", "lead"}}
-	workflow.KeepRouting(previous)
-	if workflow.MaxFileReviews != 9 || workflow.MainReviews != MainReviewsUnclaimed || len(workflow.Scopes) != 0 || workflow.Validate() != nil {
-		t.Fatalf("security became the main agent and tests left: %+v", workflow)
-	}
-	workflow = Workflow{Name: "w", Kind: "pr_review", Agents: []string{"lead", "tests"}}
-	workflow.KeepRouting(previous)
-	if len(workflow.Scopes) != 1 || workflow.Scopes["tests"].Paths[0] != "*_test.go" || workflow.Validate() != nil {
-		t.Fatalf("%+v", workflow)
-	}
-	workflow = Workflow{Name: "w", Kind: "scheduled_prompt", Agents: []string{"lead"}}
-	workflow.KeepRouting(previous)
-	if workflow.SkipPaths != nil || workflow.Validate() != nil {
-		t.Fatalf("%+v", workflow)
-	}
-}
-
 func planWorkflow() ResolvedWorkflow {
 	return ResolvedWorkflow{Version: SnapshotVersion, Kind: "pr_review", MainReviews: MainReviewsUnclaimed, SkipPaths: []string{"*.lock"}, Agents: []ResolvedAgent{
 		{Name: "lead"},

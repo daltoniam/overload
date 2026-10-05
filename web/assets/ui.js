@@ -22,6 +22,13 @@
       form.setAttribute('hx-swap', 'innerHTML');
       window.htmx.process(form);
     });
+    document.querySelectorAll('.sub-agents:not([data-initialized])').forEach(function (list) {
+      list.dataset.initialized = 'true';
+      var extra = list.querySelectorAll('.sub-agent[data-extra]');
+      var add = list.parentElement.querySelector('[data-add-sub-agent]');
+      extra.forEach(function (slot) { slot.hidden = true; });
+      if (add) add.hidden = extra.length === 0;
+    });
     if (window.matchMedia('(max-width: 780px)').matches) {
       var nav = document.querySelector('.sidebar-details');
       if (nav && !nav.dataset.initialized) { nav.open = false; nav.dataset.initialized = 'true'; }
@@ -68,12 +75,22 @@
     if (move) {
       var slot = move.closest('.workflow-slot');
       var neighbor = move.dataset.move === 'up' ? slot.previousElementSibling : slot.nextElementSibling;
-      if (neighbor && neighbor.matches('.workflow-slot')) {
-        var current = slot.querySelector('select');
-        var other = neighbor.querySelector('select');
-        var value = current.value; current.value = other.value; other.value = value;
-        other.focus();
+      if (neighbor && neighbor.matches('.workflow-slot') && !neighbor.hidden) {
+        var fields = slot.querySelectorAll('select, input, textarea');
+        var others = neighbor.querySelectorAll('select, input, textarea');
+        for (var i = 0; i < fields.length && i < others.length; i++) {
+          var value = fields[i].value; fields[i].value = others[i].value; others[i].value = value;
+        }
+        var chips = slot.querySelector('.scope-chips'), otherChips = neighbor.querySelector('.scope-chips');
+        if (chips && otherChips) { var html = chips.innerHTML; chips.innerHTML = otherChips.innerHTML; otherChips.innerHTML = html; }
+        neighbor.querySelector('select').focus();
       }
+    }
+    var add = event.target.closest('[data-add-sub-agent]');
+    if (add) {
+      var hidden = add.parentElement.querySelectorAll('.sub-agent[hidden]');
+      if (hidden.length) { hidden[0].hidden = false; hidden[0].querySelector('select').focus(); }
+      add.hidden = hidden.length <= 1;
     }
     var pause = event.target.closest('[data-pause-events]');
     if (pause) { pause.dataset.paused = pause.dataset.paused === 'true' ? 'false' : 'true'; pause.textContent = pause.dataset.paused === 'true' ? 'Resume updates' : 'Pause updates'; }

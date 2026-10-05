@@ -205,26 +205,25 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 			var existing []string
-			var previous overload.Workflow
 			for _, workflow := range workflows {
 				existing = append(existing, workflow.Name)
-				if workflow.Name == r.PostForm.Get("name") {
-					previous = workflow
-				}
 			}
 			if !namedResourceMatches(r, existing) {
 				http.Error(w, "Workflow name cannot be changed", http.StatusBadRequest)
 				return
 			}
-			var names []string
-			for _, name := range r.PostForm["agents"] {
-				if name != "" {
-					names = append(names, name)
-				}
+			workflow, formErr := workflowFromForm(r.PostForm)
+			if formErr == nil {
+				formErr = workflow.Validate()
 			}
-			workflow := overload.Workflow{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Agents: names, Enabled: r.PostForm.Get("enabled") == "true"}
-			workflow.KeepRouting(previous)
-			err = store.SaveWorkflow(r.Context(), workflow)
+			if formErr != nil {
+				http.Error(w, "Workflow not saved: "+formErr.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := store.SaveWorkflow(r.Context(), workflow); err != nil {
+				http.Error(w, "Workflow not saved: an agent or prompt is missing, disabled or of the wrong type.", http.StatusBadRequest)
+				return
+			}
 		case "bindings":
 			repository := r.PostForm.Get("repository")
 			if repository != "" {

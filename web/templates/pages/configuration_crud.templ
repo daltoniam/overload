@@ -80,7 +80,7 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/agents">Agents</a></p><h1>{ agentFormTitle(agent.Name) }</h1><p class="muted">Select a model and prompts. Saving this agent selects the latest prompt revisions for future jobs. Without saving, it keeps its previously selected revisions.</p></div><a href="/configure/agents">All agents</a></div>
 		<section class="panel"><form method="post" action="/configure/agents"><input type="hidden" name="csrf" value={ nonce }/>
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ agent.Name } readonly?={ agent.Name != "" } placeholder="security-reviewer"/></label>
-			<label class="field"><span>Job type</span><select name="kind"><option value="pr_review" selected?={ agent.Kind == "" || agent.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ agent.Kind == "scheduled_prompt" }>Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. Each agent is one independent review pass with its own model and prompts.</small></label>
+			<label class="field"><span>Job type</span><select name="kind"><option value="pr_review" selected?={ agent.Kind == "" || agent.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ agent.Kind == "scheduled_prompt" }>Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. Each agent has its own model and prompts; a workflow uses it as its main agent or a sub-agent.</small></label>
 			<label class="field"><span>Model connection</span><select name="model" required><option value="">Select a model</option>
 				for _, model := range models {
 					<option value={ model.Name } selected?={ model.Name == agent.Model }>{ model.Name } ({ model.Model })</option>
@@ -93,7 +93,7 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 					}
 				}
 			</select><small><a href="/configure/prompts">Manage prompts</a></small></label>
-			<label class="field"><span>Pass focus prompt (optional)</span><select name="review_prompt"><option value="">None</option>
+			<label class="field"><span>Review focus prompt (optional)</span><select name="review_prompt"><option value="">None</option>
 				for _, prompt := range prompts {
 					if prompt.Kind == "review" {
 						<option value={ prompt.Name } selected?={ prompt.Name == agent.ReviewPrompt }>{ prompt.Name } (latest revision { fmt.Sprint(prompt.Revision) })</option>

@@ -144,3 +144,20 @@ nav a:hover .icon { transform: translateX(2px); }
 @keyframes distribution-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 @media (max-width: 780px) { .stat-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .chart-columns { gap: 4px; } .chart-column > span { writing-mode: vertical-rl; } .chart-column-track { height: 130px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0s !important; transition-duration: 0s !important; transition-delay: 0s !important; } .results.htmx-swapping, .results.htmx-settling { opacity: 1; } }
+.tree-node { border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px 4px; margin: 0 0 20px; }
+.tree-node legend { font-weight: 650; padding: 0 6px; }
+.tree-node.main-agent { border-color: var(--accent); }
+.field-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.sub-agents { display: grid; gap: 12px; margin-bottom: 16px; }
+.workflow-slot.sub-agent { display: block; padding: 12px; border: 1px solid var(--line); border-radius: 8px; border-left: 3px solid var(--accent); margin: 0; }
+.slot-head { display: flex; gap: 8px; align-items: end; }
+.slot-head .field { flex: 1; margin: 0; }
+.scope-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.scope-chips:empty { display: none; }
+.chip { font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding: 0 8px; border-radius: 999px; background: var(--soft); color: var(--accent); border: 1px solid var(--line); }
+.scope { margin-top: 8px; }
+.scope summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.scope[open] summary { margin-bottom: 12px; }
+textarea.short { min-height: 72px; }
+@media (max-width: 780px) { .field-row { grid-template-columns: 1fr; } }
+.badges { display: inline-flex; gap: 6px; flex-shrink: 0; }

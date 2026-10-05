@@ -20,21 +20,24 @@ func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf strin
 			http.Error(w, "Unable to load agents", http.StatusInternalServerError)
 			return
 		}
-		selected := overload.Workflow{Kind: kind}
-		for _, name := range r.URL.Query()["agents"] {
+		prompts, err := store.ListPrompts(r.Context())
+		if err != nil {
+			http.Error(w, "Unable to load prompts", http.StatusInternalServerError)
+			return
+		}
+		selected, _ := workflowFromForm(r.URL.Query())
+		selected.Kind = kind
+		for index, name := range selected.Agents {
 			compatible := ""
 			for _, agent := range agents {
 				if agent.Name == name && agent.Kind == kind {
 					compatible = name
 				}
 			}
-			selected.Agents = append(selected.Agents, compatible)
-			if len(selected.Agents) == 4 {
-				break
-			}
+			selected.Agents[index] = compatible
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = pages.WorkflowAgents(selected, agents).Render(r.Context(), w)
+		_ = pages.WorkflowAgents(selected, agents, prompts).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /configure/prompts", func(w http.ResponseWriter, r *http.Request) {
 		prompts, err := store.ListPrompts(r.Context())
@@ -104,7 +107,12 @@ func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf strin
 			selected.Kind = kind
 			selected.Agents = nil
 		}
-		_ = pages.WorkflowForm(selected, agents, csrf).Render(r.Context(), w)
+		prompts, err := store.ListPrompts(r.Context())
+		if err != nil {
+			http.Error(w, "Unable to load prompts", http.StatusInternalServerError)
+			return
+		}
+		_ = pages.WorkflowForm(selected, agents, prompts, csrf).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/workflows/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {

@@ -48,7 +48,7 @@ func Models(models []overload.ReviewSettings) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Automation / Models</p><h1>Model connections</h1><p class=\"muted\">Connect local or hosted OpenAI-compatible models. Choose prompts and review passes on the Agents page.</p></div><a class=\"button\" href=\"/settings/new\" hx-get=\"/settings/new\" hx-target=\"#modal-root\" hx-swap=\"innerHTML\" data-open-model=\"true\">New model</a></div><section class=\"panel\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Automation / Models</p><h1>Model connections</h1><p class=\"muted\">Connect local or hosted OpenAI-compatible models. Choose prompts on the Agents page and combine agents in Workflows.</p></div><a class=\"button\" href=\"/settings/new\" hx-get=\"/settings/new\" hx-target=\"#modal-root\" hx-swap=\"innerHTML\" data-open-model=\"true\">New model</a></div><section class=\"panel\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -250,7 +250,7 @@ func ModelForm(model overload.ReviewSettings, nonce string) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</h1><p class=\"muted\">Only connection details belong here. Use Agents to select prompts and passes.</p></div><a href=\"/settings\">All models</a></div><section class=\"panel\"><form method=\"post\" action=\"/settings\"><input type=\"hidden\" name=\"csrf\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</h1><p class=\"muted\">Only connection details belong here. Use Agents to select prompts.</p></div><a href=\"/settings\">All models</a></div><section class=\"panel\"><form method=\"post\" action=\"/settings\"><input type=\"hidden\" name=\"csrf\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
+	"strings"
 )
 
 templ SearchToolbar(path string, kinds []string, statuses []string) {
@@ -53,23 +54,97 @@ templ RunEvents(run overload.Run, events []postgres.RunEvent) {
 	</div>
 }
 
-templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinition) {
-	for index := 0; index < 4; index++ {
-		<div class="workflow-slot"><label class="field"><span>Agent { fmt.Sprint(index+1) }</span><select name="agents" required?={ index == 0 }><option value="">{ agentOptionLabel(index) }</option>
-			for _, agent := range agents {
-				if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || workflowAgent(workflow, index) == agent.Name {
-					<option value={ agent.Name } selected?={ workflowAgent(workflow, index) == agent.Name }>{ agent.Name } ({ agentStatus(agent.Enabled) })</option>
-				}
-			}
-		</select></label>
-			if index > 0 {
-				<button type="button" class="secondary" data-move="up" aria-label={ fmt.Sprintf("Move agent %d up", index+1) }>↑</button>
-			}
-			if index < 3 {
-				<button type="button" class="secondary" data-move="down" aria-label={ fmt.Sprintf("Move agent %d down", index+1) }>↓</button>
+// WorkflowAgents edits a workflow's agent tree: one main agent and up to
+// MaxSubAgents sub-agents. PR review workflows also choose each sub-agent's
+// scope, the planner and verifier prompts and the routing limits.
+templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinition, prompts []overload.PromptTemplate) {
+	<fieldset class="tree-node main-agent"><legend>Main agent</legend>
+		<label class="field"><span>Agent</span><select name="main_agent" required>
+			<option value="">Select an agent</option>
+			@agentOptions(workflow, agents, mainAgent(workflow))
+		</select><small>Leads the review. It reviews files no sub-agent claimed (or every file), and runs the planner and verifier on its model.</small></label>
+		if isPRWorkflow(workflow) {
+			<label class="field"><span>Main agent reviews</span><select name="main_reviews">
+				<option value="all" selected?={ workflow.MainReviews == "" || workflow.MainReviews == overload.MainReviewsAll }>Every changed file</option>
+				<option value="unclaimed" selected?={ workflow.MainReviews == overload.MainReviewsUnclaimed }>Only files no sub-agent claimed</option>
+			</select></label>
+			<div class="field-row">
+				<label class="field"><span>Planner prompt</span><select name="planner_prompt">
+					<option value="">No planner</option>
+					@promptOptions(prompts, overload.PromptPlan, workflow.PlannerPrompt)
+				</select><small>One call per review that may send files to sub-agents whatever they are named.</small></label>
+				<label class="field"><span>Verifier prompt</span><select name="verifier_prompt">
+					<option value="">No verifier</option>
+					@promptOptions(prompts, overload.PromptVerify, workflow.VerifierPrompt)
+				</select><small>One call per sub-agent finding; dropped findings are kept on the run but not posted.</small></label>
+			</div>
+		}
+	</fieldset>
+	<fieldset class="tree-node"><legend>Sub-agents</legend>
+		<p class="muted">Up to { fmt.Sprint(overload.MaxSubAgents) } sub-agents. Each reviews only the files it is for. Leave a slot empty to skip it.</p>
+		<div class="sub-agents">
+			for slot := 0; slot < overload.MaxSubAgents; slot++ {
+				@subAgentSlot(workflow, agents, slot)
 			}
 		</div>
+		<button type="button" class="secondary" data-add-sub-agent hidden>Add sub-agent</button>
+	</fieldset>
+	if isPRWorkflow(workflow) {
+		<fieldset class="tree-node"><legend>Routing</legend>
+			<label class="field"><span>Skip paths</span><textarea name="skip_paths" rows="3" class="short" placeholder="*.lock&#10;vendor/**&#10;**/*_templ.go">{ strings.Join(workflow.SkipPaths, "\n") }</textarea><small>One glob per line. Matching files are not reviewed by any agent. * stays in one folder, ** crosses folders, and a pattern without / matches the file name anywhere.</small></label>
+			<label class="field"><span>File review limit</span><input type="number" name="max_file_reviews" min="0" max="10000" value={ optionalNumber(workflow.MaxFileReviews) } placeholder="No limit"/><small>Most (agent, file) reviews per run. A review needing more fails before calling a model; planner additions are dropped first.</small></label>
+		</fieldset>
 	}
+}
+
+templ agentOptions(workflow overload.Workflow, agents []overload.AgentDefinition, selected string) {
+	for _, agent := range agents {
+		if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || selected == agent.Name {
+			<option value={ agent.Name } selected?={ selected == agent.Name }>{ agent.Name } · { agent.Model }</option>
+		}
+	}
+}
+
+templ promptOptions(prompts []overload.PromptTemplate, kind, selected string) {
+	for _, prompt := range prompts {
+		if prompt.Kind == kind {
+			<option value={ prompt.Name } selected?={ selected == prompt.Name }>{ prompt.Name }</option>
+		}
+	}
+}
+
+templ subAgentSlot(workflow overload.Workflow, agents []overload.AgentDefinition, slot int) {
+	<div class="workflow-slot sub-agent" data-slot={ fmt.Sprint(slot) } data-extra?={ slot > subAgentCount(workflow) }>
+		<div class="slot-head">
+			<label class="field"><span>Sub-agent { fmt.Sprint(slot+1) }</span><select name={ slotField(slot, "agent") }>
+				<option value="">None</option>
+				@agentOptions(workflow, agents, subAgent(workflow, slot))
+			</select></label>
+			if slot > 0 {
+				<button type="button" class="secondary" data-move="up" aria-label={ fmt.Sprintf("Move sub-agent %d up", slot+1) }>↑</button>
+			}
+			if slot < overload.MaxSubAgents-1 {
+				<button type="button" class="secondary" data-move="down" aria-label={ fmt.Sprintf("Move sub-agent %d down", slot+1) }>↓</button>
+			}
+		</div>
+		if isPRWorkflow(workflow) {
+			<div class="scope-chips" aria-label="Scope">
+				for _, chip := range scopeChips(subScope(workflow, slot)) {
+					<span class="chip">{ chip }</span>
+				}
+			</div>
+			<details class="scope" open?={ subAgent(workflow, slot) != "" && len(scopeChips(subScope(workflow, slot))) == 0 }><summary>Scope</summary>
+				<label class="field"><span>Files</span><select name={ slotField(slot, "mode") }>
+					<option value="globs" selected?={ subScope(workflow, slot).Mode == "" || subScope(workflow, slot).Mode == overload.ScopeGlobs }>Matching paths, plus files the planner adds</option>
+					<option value="always" selected?={ subScope(workflow, slot).Mode == overload.ScopeAlways }>Only matching paths</option>
+					<option value="planned" selected?={ subScope(workflow, slot).Mode == overload.ScopePlanned }>Only files the planner assigns</option>
+				</select></label>
+				<label class="field"><span>Paths</span><textarea name={ slotField(slot, "paths") } rows="3" class="short" placeholder="**/auth/**&#10;**/*.sql">{ strings.Join(subScope(workflow, slot).Paths, "\n") }</textarea><small>One glob per line. No paths means every changed file (except with "Only files the planner assigns").</small></label>
+				<label class="field"><span>Description for the planner</span><input name={ slotField(slot, "description") } maxlength="300" value={ subScope(workflow, slot).Description } placeholder="Authentication, sessions and access control"/></label>
+				<label class="field"><span>Most findings</span><input type="number" name={ slotField(slot, "max_findings") } min="0" max="50" value={ optionalNumber(subScope(workflow, slot).MaxFindings) } placeholder="No limit"/><small>Keeps the most severe, most confident findings.</small></label>
+			</details>
+		}
+	</div>
 }
 
 templ ValidationError(message string) {

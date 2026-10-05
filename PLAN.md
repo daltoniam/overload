@@ -585,7 +585,17 @@ CLI. The CLI and JSON configuration expose the same tree.
    planted-bug eval gained `TestPlannerRoutingEval`: SQL code in
    `util/textutil.go` must reach a database sub-agent scoped to
    `**/store/**` through the planner.
-4. UI for the tree (main agent, sub-agent list with scope chips, preview).
+4. Done: the workflow page edits the tree: a main agent (with its review
+   mode and the planner and verifier prompts), up to eight sub-agent slots
+   (agent, file mode, paths, planner description, findings cap; scope chips
+   summarize each, unused slots stay hidden behind "Add sub-agent" with
+   JavaScript and the up/down buttons move a whole slot), and the skip
+   paths and file-review limit. Validation errors are shown in the form.
+   The workflow list shows the main agent and sub-agents with their paths.
+   The preview takes a configured repository and pull request number (the
+   server fetches the changed files with the repository's GitHub App
+   installation or the token) or a pasted file list. "Pass" is gone from
+   the UI: the optional second agent prompt is now called a "review focus".
 
 Each stage keeps `make ci`, the macOS install test and the kind sandbox
 test passing, and extends the planted-bug eval: a multi-file fixture where

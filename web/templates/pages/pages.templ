@@ -80,7 +80,7 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 				}
 			</section>
 		} else {
-		<section class="panel"><div class="panel-head"><h2>Findings</h2><span class="badge neutral">{ fmt.Sprint(len(findings)) }</span></div>
+		<section class="panel"><div class="panel-head"><h2>Findings</h2><span class="badge neutral">{ findingCount(findings) }</span></div>
 			if len(findings) == 0 {
 				if run.Status == overload.RunCompleted {
 					<div class="empty">No validated findings in this run. This does not guarantee the PR is free of bugs.</div>
@@ -91,10 +91,11 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 				}
 			}
 			for _, finding := range findings {
-				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span>
+				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badges"><span class="badge neutral">{ finding.Severity }</span>
 					if finding.DropReason != "" {
 						<span class="badge neutral">dropped</span>
 					}
+				</span>
 				</div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p class="multiline">{ finding.Body }</p>
 					if len(finding.Agents) > 0 {
 						<p class="muted">Reported by { strings.Join(finding.Agents, ", ") }</p>

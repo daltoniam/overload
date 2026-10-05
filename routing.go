@@ -492,23 +492,3 @@ func ParseChangedFiles(text string) ([]string, error) {
 	}
 	return paths, nil
 }
-
-// KeepRouting carries routing settings over from the stored version of a
-// workflow when it is saved from a form that does not edit them. Scopes are
-// kept only for agents that are still sub-agents.
-func (workflow *Workflow) KeepRouting(previous Workflow) {
-	if previous.Name != workflow.Name || workflow.Kind != "pr_review" || previous.Kind != "pr_review" {
-		return
-	}
-	workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews = previous.SkipPaths, previous.MainReviews, previous.MaxFileReviews
-	workflow.PlannerPrompt, workflow.VerifierPrompt = previous.PlannerPrompt, previous.VerifierPrompt
-	workflow.Scopes = nil
-	for index, name := range workflow.Agents {
-		if scope, ok := previous.Scopes[name]; ok && index > 0 {
-			if workflow.Scopes == nil {
-				workflow.Scopes = map[string]Scope{}
-			}
-			workflow.Scopes[name] = scope
-		}
-	}
-}
