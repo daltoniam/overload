@@ -15,7 +15,7 @@ import (
 
 func manageConfiguration(resource string, args []string) error {
 	if len(args) == 0 || len(args) > 4 {
-		return errors.New("usage: overload RESOURCE list|show|apply [path]")
+		return errors.New("usage: overload RESOURCE list|show|apply [path], or overload workflows preview NAME [files|-]")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -51,6 +51,18 @@ func manageConfiguration(resource string, args []string) error {
 	}
 	if args[0] == "show" {
 		return showConfiguration(ctx, store, resource, args)
+	}
+	if args[0] == "preview" && resource == "workflows" && (len(args) == 2 || len(args) == 3) {
+		files := io.Reader(os.Stdin)
+		if len(args) == 3 && args[2] != "-" {
+			file, err := os.Open(args[2])
+			if err != nil {
+				return err
+			}
+			defer func() { _ = file.Close() }()
+			files = file
+		}
+		return previewWorkflow(ctx, store, args[1], io.LimitReader(files, 256<<10), os.Stdout)
 	}
 	if args[0] != "apply" || len(args) != 2 {
 		return errors.New("usage: overload RESOURCE list|show|apply [path]")
@@ -172,4 +184,28 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 		return fmt.Errorf("unsupported resource %q", resource)
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
+}
+
+// previewWorkflow prints which agent of a saved PR workflow would review
+// each changed file listed in files (one per line), without calling a model.
+func previewWorkflow(ctx context.Context, store interface {
+	ResolveWorkflow(context.Context, string) (overload.ResolvedWorkflow, error)
+}, name string, files io.Reader, out io.Writer) error {
+	workflow, err := store.ResolveWorkflow(ctx, name)
+	if err != nil {
+		return err
+	}
+	if workflow.Kind != "pr_review" {
+		return errors.New("only PR review workflows route changed files")
+	}
+	text, err := io.ReadAll(files)
+	if err != nil {
+		return err
+	}
+	paths, err := overload.ParseChangedFiles(string(text))
+	if err != nil {
+		return err
+	}
+	preview, _ := workflow.Preview(paths)
+	return json.NewEncoder(out).Encode(preview)
 }

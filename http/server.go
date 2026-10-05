@@ -109,16 +109,20 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		}
 		var findings []overload.Finding
 		var output postgres.JobOutput
+		var routing overload.Routing
 		if run.Kind == "scheduled_prompt" {
 			output, err = reader.ReadJobOutput(r.Context(), id)
 		} else {
 			findings, err = reader.ListFindings(r.Context(), id)
+			if routingReader, ok := reader.(RunRoutingReader); ok && err == nil {
+				routing, err = routingReader.ReadRunRouting(r.Context(), id)
+			}
 		}
 		if err != nil {
 			http.Error(w, "Unable to load run results", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.RunDetail(run, events, findings, output).Render(r.Context(), w)
+		_ = pages.RunDetail(run, events, findings, output, routing).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /runs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

@@ -1,11 +1,13 @@
 package harness
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -54,9 +56,10 @@ func ProfileWorkflow(profile overload.ModelProfile, promptProfile string) (overl
 
 type Reviewer struct{}
 
-// Review runs every agent of a pinned PR workflow over every changed file.
-// The first agent is the main agent and the rest are sub-agents; their file
-// reviews are scheduled together, limited per model server, and the
+// Review runs a pinned PR workflow. Changed files matching the workflow's
+// skip paths are dropped, each sub-agent reviews the files its scope
+// matches, and the main agent reviews every file or only the unclaimed ones.
+// All file reviews are scheduled together, limited per model server, and the
 // validated findings are merged in agent then file order with each finding
 // attributed to the agents that reported it.
 func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS) (overload.ReviewResult, error) {
@@ -67,11 +70,23 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if err := workflow.Verify(); err != nil {
 		return overload.ReviewResult{}, err
 	}
-	batches, paths, err := makeReviewBatches(spec.Diff, repo)
+	changed, err := reviewPaths(spec.Diff)
 	if err != nil {
 		return overload.ReviewResult{}, err
 	}
-	result := overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(batches), "reviewed_files": 0}}
+	routing, routeErr := workflow.Route(changed)
+	result := overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(changed), "skipped_files": len(routing.Skipped), "reviewed_files": 0, "routing": routing}}
+	if routeErr != nil {
+		return result, routeErr
+	}
+	batches, paths, err := makeReviewBatches(spec.Diff, repo, routing.Skipped)
+	if err != nil {
+		return result, err
+	}
+	fileIndex := make(map[string]int, len(paths))
+	for index, path := range paths {
+		fileIndex[path] = index
+	}
 	agents := make([]fantasy.Agent, len(workflow.Agents))
 	plans := make([]reasoningPlan, len(workflow.Agents))
 	agentGroup := make([]int, len(workflow.Agents))
@@ -85,7 +100,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		if agents[index], plans[index], err = newAgent(ctx, resolved.Model, systemPrompt); err != nil {
 			return result, err
 		}
-		key := connectionKey(resolved.Model)
+		key := resolved.Model.ServerKey()
 		group, ok := groupIndex[key]
 		if !ok {
 			group = len(groups)
@@ -93,8 +108,8 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			groups = append(groups, connectionGroup{limit: max(resolved.Model.Concurrency, 1)})
 		}
 		groups[group].limit = min(groups[group].limit, max(resolved.Model.Concurrency, 1))
-		for file := range batches {
-			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: file})
+		for _, path := range routing.Agents[index].Files {
+			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: fileIndex[path]})
 		}
 		agentGroup[index] = group
 		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
@@ -122,6 +137,11 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	for index, resolved := range workflow.Agents {
 		result.Metrics["agent_"+resolved.Name+"_concurrency"] = groups[agentGroup[index]].limit
 		result.Metrics["agent_"+resolved.Name+"_reviewed_files"] = int(completed[index].Load())
+		routing.Agents[index].Reviewed = int(completed[index].Load())
+		for _, outcome := range outcomes[index] {
+			routing.Agents[index].InputTokens += outcome.inputTokens
+			routing.Agents[index].OutputTokens += outcome.outputTokens
+		}
 	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -131,19 +151,68 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	}
 	var summaries []string
 	for index := range outcomes {
+		routing.Agents[index].Capped = capFindings(outcomes[index], workflow.Agents[index].Scope.MaxFindings)
 		merge(&result, &summaries, outcomes[index])
 	}
 	if result.Findings, err = review.Validate(result.Findings, spec.Diff, -1); err != nil {
 		return result, err
 	}
+	for index, resolved := range workflow.Agents {
+		for _, finding := range result.Findings {
+			if slices.Contains(finding.Agents, resolved.Name) {
+				routing.Agents[index].Findings++
+			}
+		}
+	}
 	result.Metrics["reviewed_files"] = len(batches)
-	if len(result.Findings) == 0 {
-		result.Findings = []overload.Finding{}
-		result.Summary = "No actionable findings in reviewed files."
-	} else {
+	switch {
+	case len(result.Findings) > 0:
 		result.Summary = strings.Join(summaries, "\n")
+	case len(batches) == 0:
+		result.Summary = "Every changed file matched the workflow's skip paths; nothing was reviewed."
+	default:
+		result.Summary = "No actionable findings in reviewed files."
 	}
 	return result, nil
+}
+
+// capFindings keeps an agent's limit most severe, most confident findings
+// across its files and returns how many it dropped. A limit of 0 keeps all.
+func capFindings(outcomes []fileOutcome, limit int) int {
+	type ranked struct {
+		file, finding int
+		severity      int
+		confidence    float64
+	}
+	var all []ranked
+	for file, outcome := range outcomes {
+		for index, finding := range outcome.findings {
+			all = append(all, ranked{file: file, finding: index, severity: review.SeverityRank(finding.Severity), confidence: finding.Confidence})
+		}
+	}
+	if limit <= 0 || len(all) <= limit {
+		return 0
+	}
+	slices.SortStableFunc(all, func(a, b ranked) int {
+		if a.severity != b.severity {
+			return a.severity - b.severity
+		}
+		return cmp.Compare(b.confidence, a.confidence)
+	})
+	keep := map[[2]int]bool{}
+	for _, item := range all[:limit] {
+		keep[[2]int{item.file, item.finding}] = true
+	}
+	for file := range outcomes {
+		var kept []overload.Finding
+		for index, finding := range outcomes[file].findings {
+			if keep[[2]int{file, index}] {
+				kept = append(kept, finding)
+			}
+		}
+		outcomes[file].findings = kept
+	}
+	return len(all) - limit
 }
 
 func validateModelHeaders(headers map[string]string) error {

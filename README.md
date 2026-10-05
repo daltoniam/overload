@@ -81,6 +81,15 @@ workflows|bindings|repositories|schedules list|apply`), so an agent can
 configure overload without the UI. Scheduled prompts run workflows on a cron
 schedule with JSON input.
 
+A PR workflow's first agent is its main agent; the rest are sub-agents. In
+the workflow JSON, `skip_paths` drops files such as `*.lock` or
+`vendor/**`, `scopes` limits a sub-agent to matching files (and optionally
+its number of findings), `main_reviews: "unclaimed"` leaves files a
+sub-agent claimed to that sub-agent, and `max_file_reviews` caps the work per
+run. `overload workflows preview NAME < files.txt` shows which agent would
+review each file and roughly how long it would take, without calling a
+model.
+
 ## Other deployments
 
 Linux servers and Kubernetes (with reviews in isolated Agent Sandbox pods)

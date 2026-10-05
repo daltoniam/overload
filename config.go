@@ -65,11 +65,15 @@ func (agent AgentDefinition) Validate() error {
 const MaxSubAgents = 8
 
 type Workflow struct {
-	Name     string   `json:"name"`
-	Kind     string   `json:"kind"`
-	Revision int      `json:"revision"`
-	Agents   []string `json:"agents"`
-	Enabled  bool     `json:"enabled"`
+	Name           string           `json:"name"`
+	Kind           string           `json:"kind"`
+	Revision       int              `json:"revision"`
+	Agents         []string         `json:"agents"`
+	Enabled        bool             `json:"enabled"`
+	Scopes         map[string]Scope `json:"scopes,omitempty"`
+	SkipPaths      []string         `json:"skip_paths,omitempty"`
+	MainReviews    string           `json:"main_reviews,omitempty"`
+	MaxFileReviews int              `json:"max_file_reviews,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -83,7 +87,12 @@ func (workflow Workflow) Validate() error {
 		}
 		seen[name] = true
 	}
-	return nil
+	for name := range workflow.Scopes {
+		if !seen[name] || name == workflow.Agents[0] {
+			return fmt.Errorf("scope for %q: scopes apply to the workflow's sub-agents", name)
+		}
+	}
+	return validateRouting(workflow.Kind, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.Scopes)
 }
 
 type TriggerBinding struct {
@@ -121,13 +130,18 @@ type ResolvedAgent struct {
 	Model        ModelProfile   `json:"model"`
 	EntryPrompt  PromptTemplate `json:"entry_prompt"`
 	ReviewPrompt PromptTemplate `json:"review_prompt"`
+	Scope        Scope          `json:"scope"`
 }
 
 type ResolvedWorkflow struct {
-	Name     string          `json:"name"`
-	Kind     string          `json:"kind"`
-	Revision int             `json:"revision"`
-	Agents   []ResolvedAgent `json:"agents"`
+	Version        int             `json:"version,omitempty"`
+	Name           string          `json:"name"`
+	Kind           string          `json:"kind"`
+	Revision       int             `json:"revision"`
+	Agents         []ResolvedAgent `json:"agents"`
+	SkipPaths      []string        `json:"skip_paths,omitempty"`
+	MainReviews    string          `json:"main_reviews,omitempty"`
+	MaxFileReviews int             `json:"max_file_reviews,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -137,6 +151,22 @@ type ResolvedWorkflow struct {
 func (workflow ResolvedWorkflow) Verify() error {
 	if workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt" {
 		return fmt.Errorf("unsupported workflow kind %q", workflow.Kind)
+	}
+	if workflow.Version != 0 && workflow.Version != SnapshotVersion {
+		return fmt.Errorf("workflow snapshot version %d is not supported", workflow.Version)
+	}
+	scopes := map[string]Scope{}
+	for index, agent := range workflow.Agents {
+		if agent.Scope.empty() {
+			continue
+		}
+		if index == 0 {
+			return errors.New("the main agent cannot have a scope")
+		}
+		scopes[agent.Name] = agent.Scope
+	}
+	if err := validateRouting(workflow.Kind, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, scopes); err != nil {
+		return err
 	}
 	if len(workflow.Agents) == 0 || len(workflow.Agents) > 1+MaxSubAgents {
 		return fmt.Errorf("a workflow needs a main agent and at most %d sub-agents", MaxSubAgents)

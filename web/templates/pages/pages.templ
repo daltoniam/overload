@@ -54,7 +54,7 @@ templ Runs(runs []overload.Run) {
 	}
 }
 
-templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput) {
+templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput, routing overload.Routing) {
 	@layouts.Base(layouts.PageData{Title: "Run detail", CurrentPath: "/runs"}) {
 		<div class="page-header"><div><p class="eyebrow">{ run.Kind } run</p><h1>Run #{ fmt.Sprint(run.ID) }</h1><p class="muted">{ runSource(run) } · <span class={ "badge " + string(run.Status) }>{ string(run.Status) }</span></p></div><a href="/runs">← All runs</a></div>
 		<section class="panel"><h2>Details</h2><dl><dt>Trigger</dt><dd>{ run.Trigger }</dd>
@@ -93,6 +93,9 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span></div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p class="multiline">{ finding.Body }</p></article>
 			}
 		</section>
+		if len(routing.Agents) > 0 {
+			@RunRouting(routing, true)
+		}
 		}
 		<section class="panel"><h2>Timeline</h2>
 			<form id="event-search" class="search-toolbar" method="get" action={ templ.URL(fmt.Sprintf("/runs/%d", run.ID)) } hx-get={ fmt.Sprintf("/runs/%d/events", run.ID) } hx-target="#run-events" hx-swap="innerHTML" hx-trigger="submit, input delay:250ms, refreshEvents" hx-sync="this:replace">

@@ -49,3 +49,24 @@ func TestConfigurationCLIInput(t *testing.T) {
 		})
 	}
 }
+
+type previewStore struct{ workflow overload.ResolvedWorkflow }
+
+func (store previewStore) ResolveWorkflow(context.Context, string) (overload.ResolvedWorkflow, error) {
+	return store.workflow, nil
+}
+
+func TestPreviewWorkflowCLI(t *testing.T) {
+	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Kind: "pr_review", SkipPaths: []string{"*.lock"}, Agents: []overload.ResolvedAgent{{Name: "lead"}}}
+	var out strings.Builder
+	if err := previewWorkflow(context.Background(), previewStore{workflow}, "w", strings.NewReader("a.go\ngo.lock\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), `"skipped":["go.lock"]`) || !strings.Contains(out.String(), `"model_calls":1`) {
+		t.Fatalf("preview %s", out.String())
+	}
+	workflow.Kind = "scheduled_prompt"
+	if err := previewWorkflow(context.Background(), previewStore{workflow}, "w", strings.NewReader("a.go"), &out); err == nil {
+		t.Fatal("previewed a scheduled workflow")
+	}
+}

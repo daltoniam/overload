@@ -143,6 +143,14 @@ func inlineReview(args []string) error {
 		return errors.New(result.Error)
 	}
 	fmt.Printf("PR %s#%d at %s: %d findings (dry run)\n%s\n", options.repo, options.pr, headSHA, len(result.Findings), result.Summary)
+	if routing, ok := result.Metrics["routing"].(overload.Routing); ok {
+		for _, agent := range routing.Agents {
+			fmt.Printf("%s reviewed %d of %d files, %d findings\n", agent.Agent, agent.Reviewed, len(agent.Files), agent.Findings)
+		}
+		if len(routing.Skipped) > 0 {
+			fmt.Printf("Skipped %d files: %s\n", len(routing.Skipped), strings.Join(routing.Skipped, ", "))
+		}
+	}
 	for _, finding := range result.Findings {
 		fmt.Printf("%s:%d [%s] %s (%s): %s\n", finding.Path, finding.Line, finding.Severity, finding.Title, strings.Join(finding.Agents, ", "), finding.Body)
 	}

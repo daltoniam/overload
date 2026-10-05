@@ -8,6 +8,7 @@ import (
 )
 
 func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf string) {
+	registerWorkflowPreview(mux, store)
 	mux.HandleFunc("GET /configure/workflow-agents", func(w http.ResponseWriter, r *http.Request) {
 		kind := r.URL.Query().Get("kind")
 		if kind != "pr_review" && kind != "scheduled_prompt" {

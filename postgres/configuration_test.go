@@ -23,7 +23,7 @@ func TestWorkflowConfiguration(t *testing.T) {
 	t.Cleanup(func() {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM trigger_bindings WHERE repository_full_name='test/workflow-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM workflows WHERE name='test-workflow-configuration'`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name='test-agent-configuration'`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name IN ('test-agent-configuration','test-agent-configuration-security')`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration'))`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration')`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name='test-model-configuration'`)
@@ -77,6 +77,37 @@ func TestWorkflowConfiguration(t *testing.T) {
 	resolved, err := store.ResolveWorkflow(ctx, workflow.Name)
 	if err != nil || len(resolved.Agents) != 1 || resolved.Agents[0].EntryPrompt.Body != entry.Body || resolved.Agents[0].ReviewPrompt.Body != review.Body || resolved.Agents[0].Model.ConnectionKind != "local" {
 		t.Fatalf("workflow: %+v %v", resolved, err)
+	}
+	if resolved.Version != overload.SnapshotVersion || resolved.Agents[0].Scope.Paths != nil || resolved.SkipPaths != nil {
+		t.Fatalf("unrouted workflow snapshot: %+v", resolved)
+	}
+	security := agent
+	security.Name = "test-agent-configuration-security"
+	if err := store.SaveAgent(ctx, security); err != nil {
+		t.Fatal(err)
+	}
+	routed := workflow
+	routed.Agents = []string{agent.Name, security.Name}
+	routed.Scopes = map[string]overload.Scope{security.Name: {Paths: []string{"**/auth/**"}, MaxFindings: 3}}
+	routed.SkipPaths, routed.MainReviews, routed.MaxFileReviews = []string{"*.lock"}, overload.MainReviewsUnclaimed, 40
+	if err := store.SaveWorkflow(ctx, routed); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := store.ListWorkflows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stored := range listed {
+		if stored.Name == routed.Name && (stored.Scopes[security.Name].MaxFindings != 3 || stored.MainReviews != overload.MainReviewsUnclaimed || stored.MaxFileReviews != 40 || len(stored.SkipPaths) != 1) {
+			t.Fatalf("routing not listed: %+v", stored)
+		}
+	}
+	resolvedRouted, err := store.ResolveWorkflow(ctx, routed.Name)
+	if err != nil || resolvedRouted.Verify() != nil || resolvedRouted.Agents[1].Scope.Paths[0] != "**/auth/**" || resolvedRouted.Agents[0].Scope.Paths != nil || resolvedRouted.SkipPaths[0] != "*.lock" || resolvedRouted.MaxFileReviews != 40 {
+		t.Fatalf("routing not resolved: %+v %v", resolvedRouted, err)
+	}
+	if err := store.SaveWorkflow(ctx, workflow); err != nil {
+		t.Fatal(err)
 	}
 	updated, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: entry.Name, Kind: "entry", Body: "Changed prompt."})
 	if err != nil || updated.Revision != entry.Revision+1 {

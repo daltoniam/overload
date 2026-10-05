@@ -101,6 +101,12 @@ func dedupeKey(finding overload.Finding) string {
 	return strings.Join([]string{finding.Path, strings.ToLower(strings.TrimSpace(finding.Title)), finding.Category, strconv.Itoa(finding.Line / 5)}, "|")
 }
 
+// SeverityRank orders severities from critical (0) to low (3); unknown
+// values sort last.
+func SeverityRank(severity string) int {
+	return rank(severity)
+}
+
 func rank(severity string) int {
 	for index, value := range []string{"critical", "high", "medium", "low"} {
 		if value == severity {

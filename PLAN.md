@@ -546,7 +546,23 @@ CLI. The CLI and JSON configuration expose the same tree.
    version field moves to stage 2, where the snapshot format first changes.
    UI wording ("pass") is left to stage 4 because the UI is being reworked
    separately.
-2. Skip globs and sub-agent scopes; the run page breakdown; the preview.
+2. Done: workflows have skip paths, per-sub-agent scopes (path globs and a
+   findings cap), a main-agent mode (`all` or `unclaimed` files) and a
+   file-review limit, stored in `workflows.routing` (migration 018) and
+   pinned in snapshot version 2; version 0 snapshots keep every agent on
+   every file. Skipped files are dropped before the context-size check, so
+   a large lockfile no longer fails a review. A run that would exceed the
+   limit fails before any model call. Scope modes are reduced to "globs" for
+   now (no paths means every file); `always`/`planned` arrive with the
+   planner in stage 3. The findings cap is opt-in (0 means no cap) so
+   migrated workflows keep their behaviour. The run page shows files,
+   findings, findings over the cap and tokens per agent plus skipped files;
+   the preview (workflow page link, and `overload workflows preview NAME`
+   reading a file list) shows routing, model calls, parallelism per model
+   server, a rough duration and a warning when several local models must be
+   loaded at once. Previewing a sample PR by number is left to stage 4.
+   Scopes and limits are edited through `overload workflows apply` until the
+   stage 4 UI; saving a workflow from the current form keeps them.
 3. Planner and verifier with validation and fallbacks.
 4. UI for the tree (main agent, sub-agent list with scope chips, preview).
 

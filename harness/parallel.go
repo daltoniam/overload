@@ -81,10 +81,6 @@ type connectionGroup struct {
 	tasks []reviewTask
 }
 
-func connectionKey(model overload.ModelProfile) string {
-	return model.BaseURL + "\x00" + model.Model
-}
-
 // runGroups runs every group at the same time, each with at most its limit
 // of tasks in flight, starting tasks in order. The first failure cancels all
 // remaining work.

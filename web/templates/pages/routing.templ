@@ -1,0 +1,93 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+	"strings"
+	"time"
+)
+
+func roughDuration(duration time.Duration) string {
+	switch {
+	case duration <= 0:
+		return "no model calls"
+	case duration < time.Hour:
+		return fmt.Sprintf("about %d min", int(duration/time.Minute))
+	default:
+		return fmt.Sprintf("about %d h %d min", int(duration/time.Hour), int(duration%time.Hour/time.Minute))
+	}
+}
+
+func agentRole(index int) string {
+	if index == 0 {
+		return "Main agent"
+	}
+	return "Sub-agent"
+}
+
+func serverKind(local bool) string {
+	if local {
+		return "Local"
+	}
+	return "Hosted"
+}
+
+func fileList(files []string) string {
+	if len(files) == 0 {
+		return "None"
+	}
+	return strings.Join(files, "\n")
+}
+
+// RunRouting shows which agent reviews which changed files. For a finished
+// run (executed) it also shows what each agent reported.
+templ RunRouting(routing overload.Routing, executed bool) {
+	<section class="panel"><div class="panel-head"><h2>Agents and files</h2><span class="badge neutral">{ fmt.Sprint(routing.FileReviews()) } file reviews</span></div>
+		<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Role</th><th>Files</th>
+			if executed {
+				<th>Reviewed</th><th>Findings</th><th>Over cap</th><th>Tokens in / out</th>
+			}
+		</tr></thead><tbody>
+			for index, agent := range routing.Agents {
+				<tr><td><strong>{ agent.Agent }</strong></td><td>{ agentRole(index) }</td><td>{ fmt.Sprint(len(agent.Files)) }</td>
+					if executed {
+						<td>{ fmt.Sprint(agent.Reviewed) }</td><td>{ fmt.Sprint(agent.Findings) }</td><td>{ fmt.Sprint(agent.Capped) }</td><td>{ fmt.Sprint(agent.InputTokens) } / { fmt.Sprint(agent.OutputTokens) }</td>
+					}
+				</tr>
+			}
+		</tbody></table></div>
+		for _, agent := range routing.Agents {
+			<details><summary>{ agent.Agent }: { fmt.Sprint(len(agent.Files)) } files</summary><pre>{ fileList(agent.Files) }</pre></details>
+		}
+		if len(routing.Skipped) > 0 {
+			<details><summary>Skipped by skip paths: { fmt.Sprint(len(routing.Skipped)) } files</summary><pre>{ fileList(routing.Skipped) }</pre></details>
+		}
+	</section>
+}
+
+// WorkflowPreview routes a pasted list of changed files through a workflow
+// without calling any model.
+templ WorkflowPreview(workflow overload.ResolvedWorkflow, files string, preview *overload.Preview, message string) {
+	@layouts.Base(layouts.PageData{Title: "Workflow preview", CurrentPath: "/configure/workflows"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Preview</p><h1>Preview { workflow.Name }</h1><p class="muted">Paste a pull request's changed files, one per line, to see which agent reviews which file. No model is called.</p></div><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>Edit workflow</a></div>
+		<section class="panel"><form method="get"><label class="field"><span>Changed files</span><textarea name="files" rows="10" placeholder="internal/auth/session.go&#10;postgres/migrations/018_example.sql">{ files }</textarea></label><button type="submit">Preview</button></form></section>
+		if message != "" {
+			<p class="notice">{ message }</p>
+		}
+		if preview != nil {
+			<section class="panel"><h2>Summary</h2><dl><dt>Model calls</dt><dd>{ fmt.Sprint(preview.Calls) }</dd><dt>Rough duration</dt><dd>{ roughDuration(preview.Estimate) }</dd><dt>Skipped files</dt><dd>{ fmt.Sprint(len(preview.Routing.Skipped)) }</dd></dl>
+				for _, warning := range preview.Warnings {
+					<p class="notice">{ warning }</p>
+				}
+				<div class="table-wrap"><table><thead><tr><th>Model server</th><th>Type</th><th>Reviews</th><th>In parallel</th><th>Rough duration</th></tr></thead><tbody>
+					for _, server := range preview.Servers {
+						<tr><td><strong>{ server.Model }</strong> <span class="muted">{ server.BaseURL }</span></td><td>{ serverKind(server.Local) }</td><td>{ fmt.Sprint(server.Reviews) }</td><td>{ fmt.Sprint(server.Parallel) }</td><td>{ roughDuration(server.Estimate()) }</td></tr>
+					}
+				</tbody></table></div>
+				<p class="muted">Model servers run at the same time; agents on one server share its parallel limit. Durations assume about 8 minutes per file on a local model and 1 minute on a hosted one.</p>
+			</section>
+			@RunRouting(preview.Routing, false)
+		}
+	}
+}

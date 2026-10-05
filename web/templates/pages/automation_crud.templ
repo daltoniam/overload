@@ -67,7 +67,11 @@ templ Workflows(workflows []overload.Workflow) {
 
 templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Workflow", CurrentPath: "/configure/workflows"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Edit</p><h1>{ workflowFormTitle(workflow.Name) }</h1><p class="muted">Choose one to four distinct agents. A disabled workflow will not start new runs.</p></div><a href="/configure/workflows">All workflows</a></div>
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Edit</p><h1>{ workflowFormTitle(workflow.Name) }</h1><p class="muted">Choose one to four distinct agents. A disabled workflow will not start new runs.</p></div><div>
+			if workflow.Name != "" && workflow.Kind == "pr_review" && workflow.Enabled {
+				<a href={ templ.URL("/configure/workflows/" + workflow.Name + "/preview") }>Preview routing</a> · 
+			}
+			<a href="/configure/workflows">All workflows</a></div></div>
 		<section class="panel"><form method="post" action="/configure/workflows"><input type="hidden" name="csrf" value={ nonce }/>
 			if workflow.Name != "" {
 				<input type="hidden" name="existing" value={ workflow.Name }/>

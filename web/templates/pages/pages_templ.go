@@ -381,7 +381,7 @@ func Runs(runs []overload.Run) templ.Component {
 	})
 }
 
-func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput) templ.Component {
+func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput, routing overload.Routing) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -741,6 +741,12 @@ func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
+				if len(routing.Agents) > 0 {
+					templ_7745c5c3_Err = RunRouting(routing, true).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
 			}
 			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 65, " <section class=\"panel\"><h2>Timeline</h2><form id=\"event-search\" class=\"search-toolbar\" method=\"get\" action=\"")
 			if templ_7745c5c3_Err != nil {
@@ -749,7 +755,7 @@ func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload
 			var templ_7745c5c3_Var42 templ.SafeURL
 			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(fmt.Sprintf("/runs/%d", run.ID)))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 98, Col: 114}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 101, Col: 114}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 			if templ_7745c5c3_Err != nil {
@@ -762,7 +768,7 @@ func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload
 			var templ_7745c5c3_Var43 string
 			templ_7745c5c3_Var43, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("/runs/%d/events", run.ID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 98, Col: 164}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 101, Col: 164}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var43))
 			if templ_7745c5c3_Err != nil {
@@ -775,7 +781,7 @@ func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload
 			var templ_7745c5c3_Var44 string
 			templ_7745c5c3_Var44, templ_7745c5c3_Err = templ.JoinStringErrs(uiState(ctx).Query)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 99, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 102, Col: 101}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var44))
 			if templ_7745c5c3_Err != nil {
@@ -798,7 +804,7 @@ func RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload
 			var templ_7745c5c3_Var45 string
 			templ_7745c5c3_Var45, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprint(run.Status == overload.RunQueued || run.Status == overload.RunRunning))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 105, Col: 119}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 108, Col: 119}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var45))
 			if templ_7745c5c3_Err != nil {
@@ -881,7 +887,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var48 string
 					templ_7745c5c3_Var48, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.ReceivedAt.Format("Jan 2 · 15:04"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 60}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 60}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var48))
 					if templ_7745c5c3_Err != nil {
@@ -894,7 +900,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var49 string
 					templ_7745c5c3_Var49, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.Event)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 87}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 87}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var49))
 					if templ_7745c5c3_Err != nil {
@@ -907,7 +913,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var50 string
 					templ_7745c5c3_Var50, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.Action)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 109}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 109}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var50))
 					if templ_7745c5c3_Err != nil {
@@ -920,7 +926,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var51 string
 					templ_7745c5c3_Var51, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.Repository)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 141}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 141}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var51))
 					if templ_7745c5c3_Err != nil {
@@ -955,7 +961,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var54 string
 					templ_7745c5c3_Var54, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.Outcome)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 214}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 214}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var54))
 					if templ_7745c5c3_Err != nil {
@@ -968,7 +974,7 @@ func Webhooks(deliveries []postgres.Delivery) templ.Component {
 					var templ_7745c5c3_Var55 string
 					templ_7745c5c3_Var55, templ_7745c5c3_Err = templ.JoinStringErrs(delivery.SkipReason)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 121, Col: 253}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/pages.templ`, Line: 124, Col: 253}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var55))
 					if templ_7745c5c3_Err != nil {

@@ -111,12 +111,32 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	_, err = s.Pool.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled) VALUES ($1,$2,$3,$4) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,revision=workflows.revision+1,updated_at=now()`, workflow.Name, workflow.Kind, data, workflow.Enabled)
+	routing, err := json.Marshal(workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews})
+	if err != nil {
+		return err
+	}
+	_, err = s.Pool.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now()`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing)
 	return err
 }
 
+// workflowRouting is the stored form of a workflow's skip paths, sub-agent
+// scopes, main agent review mode and file-review limit.
+type workflowRouting struct {
+	Scopes         map[string]overload.Scope `json:"scopes,omitempty"`
+	SkipPaths      []string                  `json:"skip_paths,omitempty"`
+	MainReviews    string                    `json:"main_reviews,omitempty"`
+	MaxFileReviews int                       `json:"max_file_reviews,omitempty"`
+}
+
+func (routing workflowRouting) apply(workflow *overload.Workflow) {
+	workflow.Scopes = routing.Scopes
+	workflow.SkipPaths = routing.SkipPaths
+	workflow.MainReviews = routing.MainReviews
+	workflow.MaxFileReviews = routing.MaxFileReviews
+}
+
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name,kind,revision,agent_names,enabled FROM workflows ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `SELECT name,kind,revision,agent_names,enabled,routing FROM workflows ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -124,13 +144,18 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 	var workflows []overload.Workflow
 	for rows.Next() {
 		var workflow overload.Workflow
-		var data []byte
-		if err := rows.Scan(&workflow.Name, &workflow.Kind, &workflow.Revision, &data, &workflow.Enabled); err != nil {
+		var data, routingData []byte
+		if err := rows.Scan(&workflow.Name, &workflow.Kind, &workflow.Revision, &data, &workflow.Enabled, &routingData); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(data, &workflow.Agents); err != nil {
 			return nil, err
 		}
+		var routing workflowRouting
+		if err := json.Unmarshal(routingData, &routing); err != nil {
+			return nil, err
+		}
+		routing.apply(&workflow)
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()
@@ -148,9 +173,9 @@ func (s *Store) ResolveWorkflow(ctx context.Context, name string) (overload.Reso
 // prompts and models through q, so callers inside a transaction pin a
 // consistent snapshot.
 func resolveWorkflow(ctx context.Context, q querier, name string) (overload.ResolvedWorkflow, error) {
-	var result overload.ResolvedWorkflow
-	var names []byte
-	err := q.QueryRow(ctx, `SELECT name,kind,revision,agent_names FROM workflows WHERE name=$1 AND enabled`, name).Scan(&result.Name, &result.Kind, &result.Revision, &names)
+	result := overload.ResolvedWorkflow{Version: overload.SnapshotVersion}
+	var names, routingData []byte
+	err := q.QueryRow(ctx, `SELECT name,kind,revision,agent_names,routing FROM workflows WHERE name=$1 AND enabled`, name).Scan(&result.Name, &result.Kind, &result.Revision, &names, &routingData)
 	if err != nil {
 		return result, err
 	}
@@ -158,11 +183,17 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	if err := json.Unmarshal(names, &agents); err != nil {
 		return result, err
 	}
+	var routing workflowRouting
+	if err := json.Unmarshal(routingData, &routing); err != nil {
+		return result, err
+	}
+	result.SkipPaths, result.MainReviews, result.MaxFileReviews = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews
 	for _, agentName := range agents {
 		var agent overload.ResolvedAgent
 		var entryID int64
 		var reviewID *int64
 		agent.Name = agentName
+		agent.Scope = routing.Scopes[agentName]
 		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id,a.review_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled`, agentName).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID, &reviewID)
 		if err != nil {
 			return result, err

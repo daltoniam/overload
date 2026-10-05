@@ -57,3 +57,78 @@ func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
 		t.Fatalf("finding reported by both agents should list both in workflow order, got %q", got)
 	}
 }
+
+func TestWorkflowRoutesFilesByScope(t *testing.T) {
+	var mu sync.Mutex
+	reviewed := []string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model    string `json:"model"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+		}
+		text := fmt.Sprint(request.Messages)
+		path := "b.go"
+		if strings.Contains(text, "diff --git a/auth/a.go") {
+			path = "auth/a.go"
+		}
+		if strings.Contains(text, "go.lock") {
+			t.Error("skipped file sent to a model")
+		}
+		mu.Lock()
+		reviewed = append(reviewed, request.Model+":"+path)
+		mu.Unlock()
+		content := `{"summary":"None","findings":[]}`
+		if path == "auth/a.go" {
+			var findings []string
+			for index, severity := range []string{"low", "critical", "medium"} {
+				findings = append(findings, fmt.Sprintf(`{"path":"auth/a.go","line":%d,"side":"RIGHT","severity":%q,"category":"security","title":"Issue %d","body":"Fix it","confidence":0.9,"evidence":"bad%d()"}`, index+1, severity, index+1, index+1))
+			}
+			content = `{"summary":"Issues","findings":[` + strings.Join(findings, ",") + `]}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":123,"model":%q,"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":10,"completion_tokens":2}}`, request.Model, content)
+	}))
+	defer server.Close()
+	prompt := overload.PromptTemplate{Name: "entry", Kind: "entry", Body: "Review.", Revision: 1, SHA256: overload.PromptDigest("Review.")}
+	model := func(name string) overload.ModelProfile {
+		return overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: name}
+	}
+	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Name: "routed", Kind: "pr_review", Revision: 1, SkipPaths: []string{"*.lock"}, MainReviews: overload.MainReviewsUnclaimed, Agents: []overload.ResolvedAgent{
+		{Name: "lead", Model: model("lead-model"), EntryPrompt: prompt},
+		{Name: "security", Model: model("security-model"), EntryPrompt: prompt, Scope: overload.Scope{Paths: []string{"**/auth/**"}, MaxFindings: 1}},
+	}}
+	lock := "diff --git a/go.lock b/go.lock\n+++ b/go.lock\n@@ -1 +1 @@\n-old\n+" + strings.Repeat("x", 40000) + "\n"
+	diff := "diff --git a/auth/a.go b/auth/a.go\n+++ b/auth/a.go\n@@ -1 +1,3 @@\n-old\n+bad1()\n+bad2()\n+bad3()\n" +
+		"diff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+ok()\n" + lock
+	result, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	slices.Sort(reviewed)
+	if strings.Join(reviewed, ",") != "lead-model:b.go,security-model:auth/a.go" {
+		t.Fatalf("reviews %v", reviewed)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Severity != "critical" || result.Findings[0].Agents[0] != "security" {
+		t.Fatalf("findings %+v", result.Findings)
+	}
+	routing := result.Metrics["routing"].(overload.Routing)
+	if len(routing.Skipped) != 1 || routing.Agents[1].Capped != 2 || routing.Agents[1].Findings != 1 || routing.Agents[0].Reviewed != 1 || routing.Agents[1].InputTokens == 0 || result.Metrics["skipped_files"] != 1 {
+		t.Fatalf("routing %+v metrics %+v", routing, result.Metrics)
+	}
+
+	onlyLock := overload.ReviewSpec{Diff: lock, Workflow: workflow}
+	result, err = (Reviewer{}).Review(context.Background(), onlyLock, fstest.MapFS{})
+	if err != nil || len(result.Findings) != 0 || !strings.Contains(result.Summary, "skip paths") {
+		t.Fatalf("all skipped: %+v %v", result, err)
+	}
+
+	workflow.MaxFileReviews = 1
+	if _, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{}); err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Fatalf("file review limit: %v", err)
+	}
+}
