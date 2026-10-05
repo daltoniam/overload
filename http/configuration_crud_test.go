@@ -80,7 +80,7 @@ func TestConfigurationCRUDPages(t *testing.T) {
 		path, text string
 		status     int
 	}{
-		{"/", "Manage agents", http.StatusOK},
+		{"/", "Run statistics", http.StatusOK},
 		{"/configure", "See Other", http.StatusSeeOther},
 		{"/configure/agents", "View / edit", http.StatusOK},
 		{"/configure/agents/new", "New agent", http.StatusOK},
@@ -128,8 +128,8 @@ func TestConfigurationCRUDPages(t *testing.T) {
 	if store.repos[0].DryRun {
 		t.Fatal("posting opt-in not saved")
 	}
-	post("/configure/agents/reviewer/delete", url.Values{"csrf": {token[1]}}, http.StatusSeeOther)
-	post("/configure/repositories/1/delete", url.Values{"csrf": {token[1]}}, http.StatusSeeOther)
+	post("/configure/agents/reviewer/delete", url.Values{"csrf": {token[1]}, "confirmed": {"true"}}, http.StatusSeeOther)
+	post("/configure/repositories/1/delete", url.Values{"csrf": {token[1]}, "confirmed": {"true"}}, http.StatusSeeOther)
 	if len(store.agents) != 0 || len(store.repos) != 0 {
 		t.Fatalf("deletion failed: agents=%v repos=%v", store.agents, store.repos)
 	}

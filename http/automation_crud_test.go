@@ -159,9 +159,9 @@ func TestAutomationCRUDPages(t *testing.T) {
 	if store.schedules[0].Enabled || store.schedules[0].Cron != "0 8 * * *" {
 		t.Fatalf("schedule: %+v", store.schedules)
 	}
-	post("/configure/prompts/entry/base/delete", url.Values{"csrf": {csrf}}, http.StatusSeeOther)
-	post("/configure/workflows/review/delete", url.Values{"csrf": {csrf}}, http.StatusSeeOther)
-	post("/configure/schedules/daily/delete", url.Values{"csrf": {csrf}}, http.StatusSeeOther)
+	post("/configure/prompts/entry/base/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
+	post("/configure/workflows/review/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
+	post("/configure/schedules/daily/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
 	if len(store.prompts)+len(store.workflows)+len(store.schedules) != 0 {
 		t.Fatal("delete did not remove resources")
 	}

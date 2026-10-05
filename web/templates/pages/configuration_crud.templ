@@ -60,7 +60,14 @@ templ Agents(agents []overload.AgentDefinition) {
 			} else {
 				<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Job type</th><th>Model</th><th>Entry prompt</th><th>Status</th><th></th></tr></thead><tbody>
 					for _, agent := range agents {
-						<tr><td><strong>{ agent.Name }</strong></td><td>{ agentKindLabel(agent.Kind) }</td><td>{ agent.Model }</td><td>{ agent.EntryPrompt }</td><td><span class="badge neutral">{ agentStatus(agent.Enabled) }</span></td><td><a href={ templ.URL("/configure/agents/" + agent.Name) }>View / edit</a></td></tr>
+						<tr><td><strong>{ agent.Name }</strong></td><td>{ agentKindLabel(agent.Kind) }</td><td>{ agent.Model }</td><td>{ agent.EntryPrompt }
+							if agent.EntryRevision > 0 {
+								<span class="secondary-line">Pinned revision { fmt.Sprint(agent.EntryRevision) }</span>
+							}
+							if agent.ReviewPrompt != "" {
+								<span class="secondary-line">Review: { agent.ReviewPrompt } · revision { fmt.Sprint(agent.ReviewRevision) }</span>
+							}
+						</td><td><span class={ "badge " + agentStatus(agent.Enabled) }>{ agentStatus(agent.Enabled) }</span></td><td><a href={ templ.URL("/configure/agents/" + agent.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -94,7 +101,7 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 				}
 			</select></label>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ agent.Enabled }/> Allow this agent in future runs</label><p class="muted">Turn off to pause this agent without deleting its setup. Workflows using a disabled agent cannot start new runs; already queued runs keep their saved configuration.</p>
-			<button type="submit">Save agent</button>
+			<div class="actions"><button type="submit">Save agent</button><a class="button secondary" href="/configure/agents">Cancel</a></div>
 		</form></section>
 		if agent.Name != "" {
 			<section class="panel"><h2>Remove agent</h2><p class="muted">Agents used in workflows cannot be deleted. Disable this agent instead if it is still in use.</p><form method="post" action={ templ.URL("/configure/agents/" + agent.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete agent</button></form></section>
@@ -128,8 +135,8 @@ templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBindin
 			}
 			<label class="field"><span>GitHub owner/repo</span><input name="name" required placeholder="owner/repo" value={ repo.FullName } readonly?={ repo.ID != 0 }/></label>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ repo.Enabled }/> Enable processing for this repository</label>
-			<label class="check"><input type="checkbox" name="post" value="true" checked?={ !repo.DryRun }/> Post reviews as GitHub comments</label>
-			<button type="submit">Save repository</button>
+			<label class="check"><input type="checkbox" name="post" value="true" checked?={ repo.ID != 0 && !repo.DryRun }/> Post reviews as GitHub comments</label>
+			<div class="actions"><button type="submit">Save repository</button><a class="button secondary" href="/configure/repositories">Cancel</a></div>
 		</form></section>
 		if repo.ID != 0 {
 			<section class="panel"><div class="panel-head"><div><h2>PR event bindings</h2><p class="muted">Choose which PR actions run a workflow for this repository.</p></div></div>
@@ -166,5 +173,5 @@ func repositoryMode(dryRun bool) string {
 	if dryRun {
 		return "Dry run"
 	}
-	return "Posts reviews"
+	return "Posting opted in"
 }

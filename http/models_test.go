@@ -63,7 +63,7 @@ func TestModelCRUDAndLegacyPassPreservation(t *testing.T) {
 		t.Fatalf("model update lost legacy configuration: %+v", store.settings[0])
 	}
 	post("/settings/legacy/delete", url.Values{}, http.StatusForbidden)
-	post("/settings/legacy/delete", url.Values{"csrf": {csrf}}, http.StatusSeeOther)
+	post("/settings/legacy/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
 	if len(store.settings) != 0 {
 		t.Fatal("model deletion failed")
 	}

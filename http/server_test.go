@@ -130,7 +130,7 @@ func TestConfigureAuthAndCSRF(t *testing.T) {
 	request.SetBasicAuth("admin", "password")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Manage agents") || strings.Contains(response.Body.String(), `href="/configure"`) || !strings.Contains(response.Body.String(), `class="sidebar"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Run statistics") || strings.Contains(response.Body.String(), `href="/configure"`) || !strings.Contains(response.Body.String(), `class="sidebar"`) {
 		t.Fatalf("overview navigation: %d", response.Code)
 	}
 	form := url.Values{"name": {"security"}, "kind": {"entry"}, "body": {"Check authorization."}}

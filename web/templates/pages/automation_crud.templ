@@ -40,7 +40,7 @@ templ PromptForm(prompt overload.PromptTemplate, nonce string) {
 			if prompt.Name != "" {
 				<p class="muted">Current revision { fmt.Sprint(prompt.Revision) }. Saving creates revision { fmt.Sprint(prompt.Revision + 1) }.</p>
 			}
-			<button type="submit">Save prompt revision</button>
+			<div class="actions"><button type="submit">Save prompt revision</button><a class="button secondary" href="/configure/prompts">Cancel</a></div>
 		</form></section>
 		if prompt.Name != "" {
 			<section class="panel"><h2>Delete prompt</h2><p class="muted">Only prompts unused by agents can be deleted. Revision history is removed with the prompt.</p><form method="post" action={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete prompt</button></form></section>
@@ -73,18 +73,13 @@ templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition
 				<input type="hidden" name="existing" value={ workflow.Name }/>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ workflow.Name } readonly?={ workflow.Name != "" } placeholder="go-pr-review"/></label>
-			<label class="field"><span>Type</span><select name="kind" required><option value="pr_review" selected?={ workflow.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ workflow.Kind == "scheduled_prompt" }>Scheduled prompt</option></select></label>
-			for index := 0; index < 4; index++ {
-				<label class="field"><span>Agent { fmt.Sprint(index + 1) }</span><select name="agents" required?={ index == 0 }><option value="">{ agentOptionLabel(index) }</option>
-					for _, agent := range agents {
-						if (agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review")) || workflowAgent(workflow, index) == agent.Name {
-							<option value={ agent.Name } selected?={ workflowAgent(workflow, index) == agent.Name }>{ agent.Name } ({ agentStatus(agent.Enabled) })</option>
-						}
-					}
-				</select></label>
-			}
+			<label class="field"><span>Type</span><select name="kind" required hx-get="/configure/workflow-agents" hx-target="#workflow-agents" hx-include="closest form" hx-trigger="change" hx-swap="innerHTML"><option value="pr_review" selected?={ workflow.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ workflow.Kind == "scheduled_prompt" }>Scheduled prompt</option></select></label>
+			<noscript><p class="notice">After changing type, choose the matching options: <a href="/configure/workflows/new?kind=pr_review">PR review agents</a> or <a href="/configure/workflows/new?kind=scheduled_prompt">scheduled agents</a>. This starts a new form.</p></noscript>
+			<div id="workflow-agents">
+				@WorkflowAgents(workflow, agents)
+			</div>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ workflow.Enabled }/> Enabled for future runs</label>
-			<button type="submit">Save workflow</button>
+			<div class="actions"><button type="submit">Save workflow</button><a class="button secondary" href="/configure/workflows">Cancel</a></div>
 		</form></section>
 		if workflow.Name != "" {
 			<section class="panel"><h2>Delete workflow</h2><p class="muted">Workflows with repository bindings or schedules cannot be deleted. Disable one instead to preserve its history.</p><form method="post" action={ templ.URL("/configure/workflows/" + workflow.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete workflow</button></form></section>
@@ -177,7 +172,7 @@ templ ScheduleForm(schedule overload.Schedule, workflows []overload.Workflow, no
 			if !schedule.NextRunAt.IsZero() {
 				<p class="muted">Next scheduled occurrence: { schedule.NextRunAt.Format("Jan 2, 2006 15:04 MST") }</p>
 			}
-			<button type="submit">Save schedule</button>
+			<div class="actions"><button type="submit">Save schedule</button><a class="button secondary" href="/configure/schedules">Cancel</a></div>
 		</form></section>
 		if schedule.Name != "" {
 			<section class="panel"><h2>Delete schedule</h2><p class="muted">Schedules with run history cannot be deleted; disable the schedule to preserve its results.</p><form method="post" action={ templ.URL("/configure/schedules/" + schedule.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete schedule</button></form></section>

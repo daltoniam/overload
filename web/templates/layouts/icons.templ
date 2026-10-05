@@ -1,0 +1,30 @@
+package layouts
+
+func iconPath(name string) string {
+	switch name {
+	case "Overview": return "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z"
+	case "Runs": return "M4 16l4-7 4 4 4-9 4 4 M3 21h18"
+	case "Models": return "M7 7h10v10H7z M9 3v4 M15 3v4 M9 17v4 M15 17v4 M3 9h4 M3 15h4 M17 9h4 M17 15h4"
+	case "Prompts": return "M5 4h14v16H5z M8 8h8 M8 12h8 M8 16h5"
+	case "Agents": return "M5 8h14v12H5z M12 4v4 M9 12h.01 M15 12h.01 M9 16h6 M2 11v6 M22 11v6"
+	case "Repositories": return "M3 6h7l2 3h9v11H3z M3 6V4h7l2 2"
+	case "Workflows": return "M5 3v12 M5 7h9c3 0 5 2 5 5v3 M3 3h4v4H3z M3 17h4v4H3z M17 17h4v4h-4z"
+	case "Schedules": return "M4 5h16v16H4z M8 3v4 M16 3v4 M4 10h16 M8 14h2 M14 14h2 M8 18h2"
+	case "GitHub": return "M8 3H4v18h16V3h-4 M8 3v4h8V3 M8 3h8 M8 12h8 M8 16h5"
+	case "Webhooks": return "M5 12a7 7 0 0 1 12-5 M19 12a7 7 0 0 1-12 5 M3 8l2 4 4-2 M21 16l-2-4-4 2"
+	default: return "M12 5v14 M5 12h14"
+	}
+}
+
+templ Icon(name string) {
+	<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d={ iconPath(name) }></path></svg>
+}
+
+templ NavigationLink(path string, label string, current string) {
+	<a href={ templ.URL(path) } aria-current={ navigationCurrent(path,current) }>@Icon(label)<span>{ label }</span></a>
+}
+
+func navigationCurrent(path,current string) string {
+	if path == current { return "page" }
+	return "false"
+}

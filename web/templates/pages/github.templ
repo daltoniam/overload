@@ -23,11 +23,13 @@ templ GitHubSetup(data GitHubSetupData) {
 	@layouts.Base(layouts.PageData{Title: "GitHub", CurrentPath: "/setup/github"}) {
 		<div class="page-header"><div><p class="eyebrow">Setup</p><h1>GitHub App</h1><p class="muted">Overload reads pull requests through a GitHub App installed on the repositories you choose.</p></div></div>
 		if data.Error != "" {
-			<p class="notice">{ data.Error }</p>
+			<p class="notice error" role="alert">{ data.Error }</p>
 		}
 		if data.Configured {
 			<section class="panel"><dl>
-				<dt>App ID</dt><dd>{ strconv.FormatInt(data.AppID, 10) }</dd>
+				if data.AppID > 0 {
+					<dt>App ID</dt><dd>{ strconv.FormatInt(data.AppID, 10) }</dd>
+				}
 				if data.Slug != "" {
 					<dt>App</dt><dd><a href={ templ.URL(data.HTMLURL) }>{ data.Slug }</a></dd>
 				}

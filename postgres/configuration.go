@@ -80,7 +80,7 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,entry.name,COALESCE(review.name,''),a.enabled FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions er ON er.id=a.entry_prompt_revision_id JOIN prompt_templates entry ON entry.id=er.template_id LEFT JOIN prompt_revisions rr ON rr.id=a.review_prompt_revision_id LEFT JOIN prompt_templates review ON review.id=rr.template_id ORDER BY a.name`)
+	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,entry.name,COALESCE(review.name,''),a.enabled,er.revision,COALESCE(rr.revision,0) FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions er ON er.id=a.entry_prompt_revision_id JOIN prompt_templates entry ON entry.id=er.template_id LEFT JOIN prompt_revisions rr ON rr.id=a.review_prompt_revision_id LEFT JOIN prompt_templates review ON review.id=rr.template_id ORDER BY a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 	var agents []overload.AgentDefinition
 	for rows.Next() {
 		var agent overload.AgentDefinition
-		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.EntryPrompt, &agent.ReviewPrompt, &agent.Enabled); err != nil {
+		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.EntryPrompt, &agent.ReviewPrompt, &agent.Enabled, &agent.EntryRevision, &agent.ReviewRevision); err != nil {
 			return nil, err
 		}
 		agents = append(agents, agent)

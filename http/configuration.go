@@ -299,6 +299,20 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 		case "bindings":
 			destination = "/configure/repositories"
 		}
+		if resource == "bindings" || resource == "repositories" {
+			repos, listErr := store.ListRepositories(r.Context())
+			if listErr == nil {
+				name := r.PostForm.Get("repository")
+				if resource == "repositories" {
+					name = r.PostForm.Get("name")
+				}
+				for _, repo := range repos {
+					if repo.FullName == name {
+						destination = "/configure/repositories/" + strconv.FormatInt(repo.ID, 10)
+					}
+				}
+			}
+		}
 		http.Redirect(w, r, destination, http.StatusSeeOther)
 	})
 }

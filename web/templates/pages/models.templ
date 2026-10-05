@@ -9,14 +9,14 @@ import (
 
 templ Models(models []overload.ReviewSettings) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Choose prompts and review passes on the Agents page.</p></div><a class="button" href="/settings/new">New model</a></div>
+		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Choose prompts and review passes on the Agents page.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
 		<section class="panel">
 			if len(models) == 0 {
 				<div class="empty">No models yet. <a href="/settings/new">Add a model connection</a> to begin.</div>
 			} else {
-				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Default</th><th></th></tr></thead><tbody>
+				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, model := range models {
-						<tr><td><strong>{ model.Name }</strong></td><td>{ model.ConnectionKind }</td><td>{ model.Model }</td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
+						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -36,6 +36,7 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			<label class="field"><span>Endpoint URL</span><input name="base_url" type="url" required value={ model.BaseURL } placeholder="http://127.0.0.1:8080/v1"/></label>
 			<label class="field"><span>Model ID</span><input name="model" required value={ model.Model } placeholder="bonsai-2-27b"/></label>
 			<label class="field"><span>API key environment variable (optional for local)</span><input name="api_key_env" value={ model.APIKeyEnv } autocomplete="off" placeholder="MODEL_API_KEY"/><small>Only enter a variable name; supply its value in the worker environment.</small></label>
+			<details class="advanced"><summary>Advanced review settings</summary>
 			<label class="field"><span>Reasoning control</span><select name="reasoning_param"><option value="" selected?={ model.ReasoningParam == "" }>Automatic (local: chat template at xhigh; hosted: none)</option><option value="none" selected?={ model.ReasoningParam == "none" }>Don't send a reasoning setting</option><option value="chat_template" selected?={ model.ReasoningParam == "chat_template" }>Chat template switch (llama.cpp models such as Bonsai)</option><option value="reasoning_effort" selected?={ model.ReasoningParam == "reasoning_effort" }>reasoning_effort field (OpenAI API, DwarfStar ds4)</option></select></label>
 			<label class="field"><span>Reasoning effort</span><select name="reasoning_effort"><option value="" selected?={ model.ReasoningEffort == "" }>Not set</option>
 				for _, level := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
@@ -45,7 +46,8 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			<label class="field"><span>Max output tokens per call</span><input name="max_output_tokens" type="number" min="0" max="262144" value={ strconv.Itoa(model.MaxOutputTokens) }/><small>Thinking counts against this. 0 uses the default (local 49,152; hosted 16,384). Keep it below the server's per-request context minus ~11k for the prompt.</small></label>
 			<label class="field"><span>Parallel files</span><input name="concurrency" type="number" min="1" max="32" required value={ strconv.Itoa(max(model.Concurrency, 1)) }/><small>Changed files reviewed at once. Match the server's parallel slots (llama-server <code>-np</code>); 1 reviews files one at a time.</small></label>
 			<label class="check"><input type="checkbox" name="is_default" value="true" checked?={ model.IsDefault }/> Default for legacy local reviews</label>
-			<button type="submit">Save model</button>
+			</details>
+			<div class="actions"><button type="submit">Save model</button><a class="button secondary" href="/settings">Cancel</a></div>
 		</form></section>
 		if model.Name != "" {
 			<section class="panel"><h2>Delete model</h2><p class="muted">Default models and models in use by agents cannot be deleted.</p><form method="post" action={ templ.URL("/settings/" + model.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete model</button></form></section>

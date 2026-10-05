@@ -1,0 +1,238 @@
+{
+  "base": "http://127.0.0.1:8082",
+  "capturedAt": "2026-10-04T20:39:29.403Z",
+  "entries": [
+    {
+      "file": "existing/overview-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/",
+      "title": "Overview · overload"
+    },
+    {
+      "file": "existing/runs-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/runs",
+      "title": "Runs · overload"
+    },
+    {
+      "file": "existing/runs-599-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/runs/599",
+      "title": "Run detail · overload"
+    },
+    {
+      "file": "existing/runs-597-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/runs/597",
+      "title": "Run detail · overload"
+    },
+    {
+      "file": "existing/runs-588-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/runs/588",
+      "title": "Run detail · overload"
+    },
+    {
+      "file": "existing/settings-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/settings",
+      "title": "Models · overload"
+    },
+    {
+      "file": "existing/settings-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/settings/new",
+      "title": "Model · overload"
+    },
+    {
+      "file": "existing/settings-crush-gpt-6-sol-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/settings/crush-gpt-6-sol",
+      "title": "Model · overload"
+    },
+    {
+      "file": "existing/configure-prompts-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/prompts",
+      "title": "Prompts · overload"
+    },
+    {
+      "file": "existing/configure-prompts-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/prompts/new",
+      "title": "Prompt · overload"
+    },
+    {
+      "file": "existing/configure-prompts-entry-bonsai-go-review-skill-entry-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/prompts/entry/bonsai-go-review-skill-entry",
+      "title": "Prompt · overload"
+    },
+    {
+      "file": "existing/configure-prompts-review-demo-security-pass-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/prompts/review/demo-security-pass",
+      "title": "Prompt · overload"
+    },
+    {
+      "file": "existing/configure-agents-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/agents",
+      "title": "Agents · overload"
+    },
+    {
+      "file": "existing/configure-agents-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/agents/new",
+      "title": "Agent · overload"
+    },
+    {
+      "file": "existing/configure-agents-bonsai-go-review-skill-agent-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/agents/bonsai-go-review-skill-agent",
+      "title": "Agent · overload"
+    },
+    {
+      "file": "existing/configure-repositories-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/repositories",
+      "title": "Repositories · overload"
+    },
+    {
+      "file": "existing/configure-repositories-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/repositories/new",
+      "title": "Repository · overload"
+    },
+    {
+      "file": "existing/configure-repositories-212-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/repositories/212",
+      "title": "Repository · overload"
+    },
+    {
+      "file": "existing/configure-workflows-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/workflows",
+      "title": "Workflows · overload"
+    },
+    {
+      "file": "existing/configure-workflows-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/workflows/new",
+      "title": "Workflow · overload"
+    },
+    {
+      "file": "existing/configure-workflows-bonsai-go-review-skill-workflow-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/workflows/bonsai-go-review-skill-workflow",
+      "title": "Workflow · overload"
+    },
+    {
+      "file": "existing/configure-schedules-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/schedules",
+      "title": "Schedules · overload"
+    },
+    {
+      "file": "existing/configure-schedules-new-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/schedules/new",
+      "title": "Schedule · overload"
+    },
+    {
+      "file": "existing/configure-schedules-demo-daily-summary-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/configure/schedules/demo-daily-summary",
+      "title": "Schedule · overload"
+    },
+    {
+      "file": "existing/setup-github-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/setup/github",
+      "title": "GitHub · overload"
+    },
+    {
+      "file": "existing/webhooks-light.png",
+      "mobile": false,
+      "mode": "light",
+      "route": "/webhooks",
+      "title": "Webhooks · overload"
+    },
+    {
+      "file": "existing/overview-dark.png",
+      "mobile": false,
+      "mode": "dark",
+      "route": "/",
+      "title": "Overview · overload"
+    },
+    {
+      "file": "existing/settings-dark.png",
+      "mobile": false,
+      "mode": "dark",
+      "route": "/settings",
+      "title": "Models · overload"
+    },
+    {
+      "file": "existing/settings-new-dark.png",
+      "mobile": false,
+      "mode": "dark",
+      "route": "/settings/new",
+      "title": "Model · overload"
+    },
+    {
+      "file": "existing/runs-dark.png",
+      "mobile": false,
+      "mode": "dark",
+      "route": "/runs",
+      "title": "Runs · overload"
+    },
+    {
+      "file": "existing/webhooks-dark.png",
+      "mobile": false,
+      "mode": "dark",
+      "route": "/webhooks",
+      "title": "Webhooks · overload"
+    },
+    {
+      "file": "existing/settings-light-mobile.png",
+      "mobile": true,
+      "mode": "light",
+      "route": "/settings",
+      "title": "Models · overload"
+    },
+    {
+      "file": "existing/runs-dark-mobile.png",
+      "mobile": true,
+      "mode": "dark",
+      "route": "/runs",
+      "title": "Runs · overload"
+    }
+  ],
+  "viewport": "1440x1000"
+}

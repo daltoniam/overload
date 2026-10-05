@@ -24,7 +24,7 @@ func themeScriptPolicy() string {
 		digest := sha256.Sum256(match[1])
 		hashes = append(hashes, "'sha256-"+base64.StdEncoding.EncodeToString(digest[:])+"'")
 	}
-	if len(hashes) != 2 {
+	if len(hashes) != 1 {
 		panic("theme scripts missing from layout")
 	}
 	return strings.Join(hashes, " ")

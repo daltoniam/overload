@@ -1,0 +1,92 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
+)
+
+templ SearchToolbar(path string, kinds []string, statuses []string) {
+	<form class="search-toolbar" method="get" action={ templ.URL(path) } hx-get={ path } hx-target="#list-results" hx-swap="innerHTML swap:80ms settle:120ms" hx-trigger="submit, input delay:250ms, change" hx-sync="this:replace" hx-replace-url="true">
+		<label class="search-field">Search<input type="search" name="q" value={ uiState(ctx).Query } placeholder="Search names, IDs or details" maxlength="200" autocomplete="off"/></label>
+		if len(kinds) > 0 {
+			<label>Type<select name="kind"><option value="">All types</option>
+				for _, kind := range kinds {
+					<option value={ kind } selected?={ uiState(ctx).Kind == kind }>{ kind }</option>
+				}
+			</select></label>
+		}
+		if len(statuses) > 0 {
+			<label>Status<select name="status"><option value="">All statuses</option>
+				for _, status := range statuses {
+					<option value={ status } selected?={ uiState(ctx).Status == status }>{ status }</option>
+				}
+			</select></label>
+		}
+		<button type="submit" class="secondary">Search</button><a href={ templ.URL(path) }>Clear</a><span class="htmx-indicator" role="status">Updating…</span>
+	</form>
+}
+
+templ ResultsFooter(path string) {
+	if uiState(ctx).Paginated {
+		<div class="result-footer"><span role="status">{ fmt.Sprintf("%d matching records · page %d", uiState(ctx).Total, uiState(ctx).Page) }</span><div class="pagination">
+			if uiState(ctx).Page > 1 {
+				<a class="button secondary" href={ templ.URL(pageURL(ctx, path, uiState(ctx).Page-1)) } hx-get={ pageURL(ctx, path, uiState(ctx).Page-1) } hx-target="#list-results" hx-swap="innerHTML" hx-replace-url="true">Previous</a>
+			}
+			if uiState(ctx).Page*25 < uiState(ctx).Total {
+				<a class="button secondary" href={ templ.URL(pageURL(ctx, path, uiState(ctx).Page+1)) } hx-get={ pageURL(ctx, path, uiState(ctx).Page+1) } hx-target="#list-results" hx-swap="innerHTML" hx-replace-url="true">Next</a>
+			}
+		</div></div>
+	}
+}
+
+templ RunEvents(run overload.Run, events []postgres.RunEvent) {
+	<div data-run-active={ fmt.Sprint(run.Status == overload.RunQueued || run.Status == overload.RunRunning) }>
+		<div class="table-wrap"><table class="log-table wrap"><thead><tr><th>Timestamp</th><th>Level</th><th>Step</th><th>Message</th></tr></thead><tbody>
+			for _, event := range events {
+				if matches(ctx, "", "", event.Step, event.Message, event.Level) {
+					<tr><td class="mono">{ event.At.Format("Jan 2 · 15:04:05") }</td><td>{ event.Level }</td><td>{ event.Step }</td><td class="message">{ event.Message }</td></tr>
+				}
+			}
+		</tbody></table></div>
+		<p class="result-footer">{ fmt.Sprintf("%d recorded events", len(events)) }</p>
+	</div>
+}
+
+templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinition) {
+	for index := 0; index < 4; index++ {
+		<div class="workflow-slot"><label class="field"><span>Agent { fmt.Sprint(index+1) }</span><select name="agents" required?={ index == 0 }><option value="">{ agentOptionLabel(index) }</option>
+			for _, agent := range agents {
+				if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || workflowAgent(workflow, index) == agent.Name {
+					<option value={ agent.Name } selected?={ workflowAgent(workflow, index) == agent.Name }>{ agent.Name } ({ agentStatus(agent.Enabled) })</option>
+				}
+			}
+		</select></label>
+			if index > 0 {
+				<button type="button" class="secondary" data-move="up" aria-label={ fmt.Sprintf("Move agent %d up", index+1) }>↑</button>
+			}
+			if index < 3 {
+				<button type="button" class="secondary" data-move="down" aria-label={ fmt.Sprintf("Move agent %d down", index+1) }>↓</button>
+			}
+		</div>
+	}
+}
+
+templ ValidationError(message string) {
+	<p class="notice error">{ message }</p>
+}
+
+templ Confirmation(action string, nonce string, values map[string][]string) {
+	<div class="page-header"><div><p class="eyebrow">Confirm removal</p><h1>Delete this resource?</h1><p class="muted">This cannot be undone. Resources with dependent configuration or history cannot be removed.</p></div></div>
+	<section class="panel danger-zone"><form method="post" action={ templ.URL(action) }>
+		<input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="confirmed" value="true"/>
+		for name, entries := range values {
+			if name != "csrf" && name != "confirmed" {
+				for _, value := range entries {
+					<input type="hidden" name={ name } value={ value }/>
+				}
+			}
+		}
+		<div class="actions"><a class="button secondary" href="/">Cancel</a><button class="danger" type="submit">Confirm deletion</button></div>
+	</form></section>
+}

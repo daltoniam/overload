@@ -12,6 +12,9 @@ templ Base(data PageData) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="color-scheme" content="light dark"/>
+			<meta name="htmx-config" content='{"allowEval":false,"allowScriptTags":false,"includeIndicatorStyles":false,"historyRestoreAsHxRequest":false,"historyCacheSize":0,"reportValidityOfForms":true}'/>
+			<script src="/assets/htmx.min.js" defer></script>
+			<script src="/assets/ui.js" defer></script>
 			<title>{ data.Title } · overload</title>
 			<script>try { var theme = localStorage.getItem('overload-theme'); if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; } catch (_) {}</script>
 			<style>
@@ -82,77 +85,24 @@ templ Base(data PageData) {
 				@media (max-width: 780px) { .app-shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 18px; gap: 9px; } .sidebar .brand { padding: 0; } .sidebar-details { display: block; } .sidebar-details summary { display: list-item; cursor: pointer; color: var(--accent); font-weight: 650; } .sidebar-details:not([open]) nav { display: none; } nav { padding-top: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .sidebar-footer { margin-top: 0; padding: 0; } .grid { grid-template-columns: 1fr; } main { padding-top: 27px !important; } .page-header { align-items: flex-start; flex-direction: column; } }
 				@media (max-width: 480px) { .shell { padding-left: 16px; padding-right: 16px; } .panel { padding: 18px; } .field-row { grid-template-columns: 1fr; gap: 0; } }
 			</style>
+			<link rel="stylesheet" href="/assets/ui.css"/>
 		</head>
-		<body>
+		<body hx-history="false">
+			<a class="skip-link" href="#page-content">Skip to content</a>
 			<div class="app-shell"><aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">o</span> overload</a><details class="sidebar-details" open><summary>Navigation</summary><nav aria-label="Main navigation">
-				if data.CurrentPath == "/" {
-					<a href="/" aria-current="page">Overview</a>
-				} else {
-					<a href="/">Overview</a>
-				}
-				if data.CurrentPath == "/runs" {
-					<a href="/runs" aria-current="page">Runs</a>
-				} else {
-					<a href="/runs">Runs</a>
-				}
-				if data.CurrentPath == "/settings" {
-					<a href="/settings" aria-current="page">Models</a>
-				} else {
-					<a href="/settings">Models</a>
-				}
-				if data.CurrentPath == "/configure/prompts" {
-					<a href="/configure/prompts" aria-current="page">Prompts</a>
-				} else {
-					<a href="/configure/prompts">Prompts</a>
-				}
-				if data.CurrentPath == "/configure/agents" {
-					<a href="/configure/agents" aria-current="page">Agents</a>
-				} else {
-					<a href="/configure/agents">Agents</a>
-				}
-				if data.CurrentPath == "/configure/repositories" {
-					<a href="/configure/repositories" aria-current="page">Repositories</a>
-				} else {
-					<a href="/configure/repositories">Repositories</a>
-				}
-				if data.CurrentPath == "/configure/workflows" {
-					<a href="/configure/workflows" aria-current="page">Workflows</a>
-				} else {
-					<a href="/configure/workflows">Workflows</a>
-				}
-				if data.CurrentPath == "/configure/schedules" {
-					<a href="/configure/schedules" aria-current="page">Schedules</a>
-				} else {
-					<a href="/configure/schedules">Schedules</a>
-				}
-				if data.CurrentPath == "/setup/github" {
-					<a href="/setup/github" aria-current="page">GitHub</a>
-				} else {
-					<a href="/setup/github">GitHub</a>
-				}
-				if data.CurrentPath == "/webhooks" {
-					<a href="/webhooks" aria-current="page">Webhooks</a>
-				} else {
-					<a href="/webhooks">Webhooks</a>
-				}
-			</nav></details><div class="sidebar-footer"><button type="button" class="theme-toggle secondary" id="theme-toggle" aria-label="Toggle color theme">Theme: Auto</button></div></aside>
-			<div class="content"><main class="shell">{ children... }</main></div></div>
-			<script>
-				(function () {
-					var button = document.getElementById('theme-toggle');
-					var themes = ['auto', 'light', 'dark'];
-					function current() { return document.documentElement.dataset.theme || 'auto'; }
-					function label() { button.textContent = 'Theme: ' + current().replace(/^./, function (letter) { return letter.toUpperCase(); }); }
-					button.addEventListener('click', function () {
-						var next = themes[(themes.indexOf(current()) + 1) % themes.length];
-						if (next === 'auto') document.documentElement.removeAttribute('data-theme');
-						else document.documentElement.dataset.theme = next;
-						try { localStorage.setItem('overload-theme', next); } catch (_) {}
-						label();
-					});
-					label();
-				})();
-			</script>
+				@NavigationLink("/", "Overview", data.CurrentPath)
+				@NavigationLink("/runs", "Runs", data.CurrentPath)
+				@NavigationLink("/settings", "Models", data.CurrentPath)
+				@NavigationLink("/configure/prompts", "Prompts", data.CurrentPath)
+				@NavigationLink("/configure/agents", "Agents", data.CurrentPath)
+				@NavigationLink("/configure/repositories", "Repositories", data.CurrentPath)
+				@NavigationLink("/configure/workflows", "Workflows", data.CurrentPath)
+				@NavigationLink("/configure/schedules", "Schedules", data.CurrentPath)
+				@NavigationLink("/setup/github", "GitHub", data.CurrentPath)
+				@NavigationLink("/webhooks", "Webhooks", data.CurrentPath)
+			</nav></details><div class="sidebar-footer"><label class="theme-control"><span>Appearance</span><select id="theme-select" aria-label="Color theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></aside>
+			<div class="content"><main class="shell" id="page-content" tabindex="-1"><p id="ui-status" class="notice error" role="status" hidden></p><div id="form-errors" tabindex="-1" role="alert"></div>{ children... }</main></div></div>
+			<div id="modal-root"></div>
 		</body>
 	</html>
 }

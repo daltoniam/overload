@@ -15,6 +15,7 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/web/assets"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -35,6 +36,7 @@ type PRIngest func(context.Context, string, string, []byte, github.PullRequestEv
 
 func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	mux := http.NewServeMux()
+	mux.Handle("GET /assets/", http.StripPrefix("/assets/", assets.Handler()))
 	var nonce [32]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		panic("unable to initialize settings form")
@@ -61,10 +63,28 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			http.Error(w, "Unable to load runs", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.Dashboard(runs).Render(r.Context(), w)
+		var statistics postgres.DashboardStats
+		if source, ok := reader.(interface {
+			DashboardStatistics(context.Context, time.Time) (postgres.DashboardStats, error)
+		}); ok {
+			statistics, err = source.DashboardStatistics(r.Context(), time.Now())
+			if err != nil {
+				http.Error(w, "Unable to load dashboard statistics", http.StatusInternalServerError)
+				return
+			}
+		}
+		_ = pages.Dashboard(runs, statistics).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /runs", func(w http.ResponseWriter, r *http.Request) {
-		runs, err := reader.ListRuns(r.Context())
+		state := parseUI(r)
+		var runs []overload.Run
+		var err error
+		if search, ok := reader.(searchableReader); ok {
+			runs, state.Total, err = search.SearchRuns(r.Context(), postgres.ListFilter{Query: state.Query, Kind: state.Kind, Status: state.Status, Page: state.Page})
+			w.Header().Set("X-UI-Total", strconv.Itoa(state.Total))
+		} else {
+			runs, err = reader.ListRuns(r.Context())
+		}
 		if err != nil {
 			http.Error(w, "Unable to load runs", http.StatusInternalServerError)
 			return
@@ -100,6 +120,25 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		}
 		_ = pages.RunDetail(run, events, findings, output).Render(r.Context(), w)
 	})
+	mux.HandleFunc("GET /runs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			http.NotFound(w, r)
+			return
+		}
+		run, err := reader.GetRun(r.Context(), id)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		events, err := reader.ListRunEvents(r.Context(), id)
+		if err != nil {
+			http.Error(w, "Unable to refresh events", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = pages.RunEvents(run, events).Render(pages.WithUI(r.Context(), parseUI(r)), w)
+	})
 	mux.HandleFunc("GET /runs/{id}/artifacts/{name}", func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 		name := r.PathValue("name")
@@ -126,7 +165,15 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	})
 	registerModels(mux, reader, csrf)
 	mux.HandleFunc("GET /webhooks", func(w http.ResponseWriter, r *http.Request) {
-		deliveries, err := reader.ListDeliveries(r.Context())
+		state := parseUI(r)
+		var deliveries []postgres.Delivery
+		var err error
+		if search, ok := reader.(searchableReader); ok {
+			deliveries, state.Total, err = search.SearchDeliveries(r.Context(), postgres.ListFilter{Query: state.Query, Kind: state.Kind, Status: state.Status, Page: state.Page})
+			w.Header().Set("X-UI-Total", strconv.Itoa(state.Total))
+		} else {
+			deliveries, err = reader.ListDeliveries(r.Context())
+		}
 		if err != nil {
 			http.Error(w, "Unable to load webhooks", http.StatusInternalServerError)
 			return
@@ -187,7 +234,7 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
-	return secure(mux)
+	return secure(uiMiddleware(mux, csrf))
 }
 
 func secure(next http.Handler) http.Handler {
@@ -196,7 +243,7 @@ func secure(next http.Handler) http.Handler {
 	insecure := os.Getenv("OVERLOAD_UI_INSECURE") == "1"
 	hosts := newHostPolicy(os.Getenv("OVERLOAD_BASE_URL"))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src "+themePolicy+"; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.URL.Path == "/healthz" || r.URL.Path == "/webhooks/github" {
 			next.ServeHTTP(w, r)

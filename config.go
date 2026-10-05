@@ -37,12 +37,14 @@ func PromptDigest(body string) string {
 }
 
 type AgentDefinition struct {
-	Name         string `json:"name"`
-	Kind         string `json:"kind,omitempty"`
-	Model        string `json:"model"`
-	EntryPrompt  string `json:"entry_prompt"`
-	ReviewPrompt string `json:"review_prompt,omitempty"`
-	Enabled      bool   `json:"enabled"`
+	Name           string `json:"name"`
+	Kind           string `json:"kind,omitempty"`
+	Model          string `json:"model"`
+	EntryPrompt    string `json:"entry_prompt"`
+	ReviewPrompt   string `json:"review_prompt,omitempty"`
+	Enabled        bool   `json:"enabled"`
+	EntryRevision  int    `json:"-"`
+	ReviewRevision int    `json:"-"`
 }
 
 func (agent AgentDefinition) Validate() error {

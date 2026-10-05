@@ -100,7 +100,7 @@ func registerGitHubSetup(mux *http.ServeMux, store GitHubAppStore, csrf string) 
 			render(w, r, err.Error())
 			return
 		}
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src "+themePolicy+"; form-action https://github.com; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action https://github.com; base-uri 'none'; frame-ancestors 'none'")
 		_ = pages.GitHubManifestRedirect(action, manifest, states.issue()).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /setup/github/callback", func(w http.ResponseWriter, r *http.Request) {

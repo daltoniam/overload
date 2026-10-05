@@ -8,6 +8,33 @@ import (
 )
 
 func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf string) {
+	mux.HandleFunc("GET /configure/workflow-agents", func(w http.ResponseWriter, r *http.Request) {
+		kind := r.URL.Query().Get("kind")
+		if kind != "pr_review" && kind != "scheduled_prompt" {
+			http.Error(w, "Invalid workflow type", http.StatusBadRequest)
+			return
+		}
+		agents, err := store.ListAgents(r.Context())
+		if err != nil {
+			http.Error(w, "Unable to load agents", http.StatusInternalServerError)
+			return
+		}
+		selected := overload.Workflow{Kind: kind}
+		for _, name := range r.URL.Query()["agents"] {
+			compatible := ""
+			for _, agent := range agents {
+				if agent.Name == name && agent.Kind == kind {
+					compatible = name
+				}
+			}
+			selected.Agents = append(selected.Agents, compatible)
+			if len(selected.Agents) == 4 {
+				break
+			}
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = pages.WorkflowAgents(selected, agents).Render(r.Context(), w)
+	})
 	mux.HandleFunc("GET /configure/prompts", func(w http.ResponseWriter, r *http.Request) {
 		prompts, err := store.ListPrompts(r.Context())
 		if err != nil {
@@ -71,6 +98,10 @@ func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf strin
 				http.NotFound(w, r)
 				return
 			}
+		}
+		if kind := r.URL.Query().Get("kind"); kind == "pr_review" || kind == "scheduled_prompt" {
+			selected.Kind = kind
+			selected.Agents = nil
 		}
 		_ = pages.WorkflowForm(selected, agents, csrf).Render(r.Context(), w)
 	})

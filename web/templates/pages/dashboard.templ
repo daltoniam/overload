@@ -1,0 +1,62 @@
+package pages
+
+import (
+	"fmt"
+	"github.com/daltoniam/overload/postgres"
+)
+
+func chartMaximum(values []postgres.ChartValue) int {
+	maximum := 1
+	for _, value := range values {
+		maximum = max(maximum, value.Count)
+	}
+	return maximum
+}
+
+func chartPercent(count, maximum int) string {
+	return fmt.Sprintf("%.2f%%", float64(count)*100/float64(max(maximum,1)))
+}
+
+templ DashboardGraphs(stats postgres.DashboardStats) {
+	if !stats.Available {
+		<section class="panel"><h2>Run statistics</h2><p class="empty">Statistics are unavailable from this data source. Recent runs are shown below.</p></section>
+	} else {
+		<p class="muted dashboard-period">{ stats.Since.Format("Jan 2") } through { stats.Until.Format("Jan 2, 2006") } · 14 calendar days · UTC · runs grouped by creation time</p>
+		<div class="stat-grid">
+			<section class="panel stat-card"><span class="muted">Total runs</span><strong>{ fmt.Sprint(stats.Total) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Completed</span><strong>{ fmt.Sprint(stats.Completed) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Failed</span><strong>{ fmt.Sprint(stats.Failed) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Queued / running</span><strong>{ fmt.Sprint(stats.Active) }</strong></section>
+		</div>
+		if stats.Total == 0 {
+			<p class="empty">No runs were created in this period. Charts will fill as jobs arrive.</p>
+		}
+		<section class="panel"><div class="panel-head"><h2>Run activity</h2><span class="muted">Daily volume</span></div>
+			<div class="activity-chart" role="img" aria-label={ fmt.Sprintf("Daily run volume over 14 UTC calendar days. %d total runs. Exact values are in the table below.",stats.Total) }>
+				<span class="chart-axis">{ fmt.Sprint(chartMaximum(stats.Days)) }</span>
+				<div class="chart-columns">
+					for _, day := range stats.Days {
+						<div class="chart-column" title={ fmt.Sprintf("%s: %d runs",day.Label,day.Count) }><div class="chart-column-track"><span class="chart-bar" style={ "height:"+chartPercent(day.Count,chartMaximum(stats.Days)) }></span></div><span>{ day.Label }</span></div>
+					}
+				</div>
+			</div>
+			<details class="chart-data"><summary>View daily values</summary><div class="table-wrap"><table><thead><tr><th>Date (UTC)</th><th>Runs</th></tr></thead><tbody>
+				for _, day := range stats.Days {
+					<tr><td>{ day.Label }</td><td>{ fmt.Sprint(day.Count) }</td></tr>
+				}
+			</tbody></table></div></details>
+		</section>
+		<div class="grid chart-grid">
+			@DistributionChart("Run status", "Current status of runs created in this period", stats.Outcomes)
+			@DistributionChart("Job types", "Workload mix for this period", stats.Kinds)
+		</div>
+	}
+}
+
+templ DistributionChart(title string, description string, values []postgres.ChartValue) {
+	<section class="panel"><h2>{ title }</h2><p class="muted">{ description }</p><ul class="distribution-chart">
+		for _, value := range values {
+			<li><div class="chart-label"><span>{ value.Label }</span><strong>{ fmt.Sprint(value.Count) }</strong></div><div class="distribution-track" aria-hidden="true"><span class={ "distribution-bar " + value.Label } style={ "width:"+chartPercent(value.Count,chartMaximum(values)) }></span></div></li>
+		}
+	</ul></section>
+}

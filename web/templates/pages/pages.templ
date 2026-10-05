@@ -14,31 +14,39 @@ func runSource(run overload.Run) string {
 	return fmt.Sprintf("PR #%d", run.PRNumber)
 }
 
-templ Dashboard(runs []overload.Run) {
+templ Dashboard(runs []overload.Run, statistics ...postgres.DashboardStats) {
 	@layouts.Base(layouts.PageData{Title: "Overview", CurrentPath: "/"}) {
-		<div class="page-header"><div><p class="eyebrow">Overview</p><h1>Automation, on your terms.</h1><p class="muted">Manage models, prompts, agents, workflows, repositories and scheduled jobs. GitHub reviews remain dry-run only.</p></div></div>
-		<div class="grid">
-			<section class="panel"><h2>Models</h2><p class="muted">Connect a model endpoint before creating agents.</p><a href="/settings">Manage models →</a></section>
-			<section class="panel"><h2>Prompts</h2><p class="muted">Edit versioned entry and review instructions.</p><a href="/configure/prompts">Manage prompts →</a></section>
-			<section class="panel"><h2>Agents</h2><p class="muted">Choose a model and prompts for each agent.</p><a href="/configure/agents">Manage agents →</a></section>
-			<section class="panel"><h2>Workflows</h2><p class="muted">Group agents for PR reviews or scheduled tasks.</p><a href="/configure/workflows">Manage workflows →</a></section>
-			<section class="panel"><h2>Repositories</h2><p class="muted">Set PR actions and workflows per repository.</p><a href="/configure/repositories">Manage repositories →</a></section>
-			<section class="panel"><h2>Scheduled agents</h2><p class="muted">Configure cron expressions, timezones and input.</p><a href="/configure/schedules">Manage schedules →</a></section>
-		</div>
-		<section class="panel"><div class="panel-head"><div><p class="kicker">Recent activity</p><h2>{ fmt.Sprintf("%d job runs", len(runs)) }</h2></div><a href="/runs">View run history →</a></div><p class="muted">No GitHub comments are posted automatically.</p></section>
+		<div class="page-header"><div><p class="eyebrow">Overview</p><h1>Overview</h1><p class="muted">Manage models, prompts, agents, workflows, repositories and scheduled jobs.</p></div></div>
+		<p class="notice">Posting GitHub reviews is opt-in and requires repository configuration, the server posting gate, and a GitHub App.</p>
+		if len(statistics) > 0 {
+			@DashboardGraphs(statistics[0])
+		} else {
+			@DashboardGraphs(postgres.DashboardStats{})
+		}
+		<section class="panel"><div class="panel-head"><h2>Latest runs</h2><a href="/runs">View run history →</a></div>
+			if len(runs) == 0 {
+				<p class="empty">No runs yet. Configure a model and workflow to get started.</p>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Run</th><th>Type</th><th>Source</th><th>Status</th><th>Created</th></tr></thead><tbody>
+					for _, run := range runs[:min(5, len(runs))] {
+						<tr><td><a href={ templ.URL(fmt.Sprintf("/runs/%d", run.ID)) }>#{ fmt.Sprint(run.ID) }</a></td><td>{ run.Kind }</td><td>{ runSource(run) }</td><td><span class={ "badge " + string(run.Status) }>{ string(run.Status) }</span></td><td>{ run.CreatedAt.Format("Jan 2 · 15:04") }</td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
 	}
 }
 
 templ Runs(runs []overload.Run) {
 	@layouts.Base(layouts.PageData{Title: "Runs", CurrentPath: "/runs"}) {
-		<div class="page-header"><div><p class="eyebrow">Activity</p><h1>Job runs</h1><p class="muted">Dry-run reviews and scheduled agents.</p></div></div>
+		<div class="page-header"><div><p class="eyebrow">Activity</p><h1>Job runs</h1><p class="muted">Execution history for pull request reviews and scheduled agents.</p></div></div>
 		<section class="panel">
 			if len(runs) == 0 {
 				<div class="empty">No runs yet. Set up a model and workflow. <a href="/">Start on the overview →</a></div>
 			} else {
 				<div class="table-wrap"><table><thead><tr><th>Run</th><th>Type</th><th>Source</th><th>Status</th><th>Created</th></tr></thead><tbody>
 					for _, run := range runs {
-						<tr><td><a href={ templ.URL(fmt.Sprintf("/runs/%d", run.ID)) }>#{ fmt.Sprint(run.ID) }</a></td><td>{ run.Kind }</td><td>{ runSource(run) }</td><td><span class="badge neutral">{ string(run.Status) }</span></td><td>{ run.CreatedAt.Format("Jan 2, 2006 · 15:04") }</td></tr>
+						<tr><td><a href={ templ.URL(fmt.Sprintf("/runs/%d", run.ID)) }>#{ fmt.Sprint(run.ID) }</a></td><td>{ run.Kind }</td><td>{ runSource(run) }</td><td><span class={ "badge " + string(run.Status) }>{ string(run.Status) }</span></td><td>{ run.CreatedAt.Format("Jan 2, 2006 · 15:04") }</td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -48,14 +56,14 @@ templ Runs(runs []overload.Run) {
 
 templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput) {
 	@layouts.Base(layouts.PageData{Title: "Run detail", CurrentPath: "/runs"}) {
-		<div class="page-header"><div><p class="eyebrow">{ run.Kind } run</p><h1>Run #{ fmt.Sprint(run.ID) }</h1><p class="muted">{ runSource(run) } · <span class="badge neutral">{ string(run.Status) }</span></p></div><a href="/runs">← All runs</a></div>
+		<div class="page-header"><div><p class="eyebrow">{ run.Kind } run</p><h1>Run #{ fmt.Sprint(run.ID) }</h1><p class="muted">{ runSource(run) } · <span class={ "badge " + string(run.Status) }>{ string(run.Status) }</span></p></div><a href="/runs">← All runs</a></div>
 		<section class="panel"><h2>Details</h2><dl><dt>Trigger</dt><dd>{ run.Trigger }</dd>
 			if run.Kind != "scheduled_prompt" {
 				<dt>Head SHA</dt><dd><code>{ run.HeadSHA }</code></dd>
 			}
 		</dl>
 			if run.ErrorMessage != "" {
-				<p class="notice"><strong>Job failed:</strong> { run.ErrorMessage }</p>
+				<p class="notice error"><strong>Job failed:</strong> { run.ErrorMessage }</p>
 			}
 			if run.Kind != "scheduled_prompt" {
 				<p><a href={ templ.URL(fmt.Sprintf("/runs/%d/artifacts/spec.json", run.ID)) }>Download input</a> · <a href={ templ.URL(fmt.Sprintf("/runs/%d/artifacts/result.json", run.ID)) }>Download result</a></p>
@@ -67,26 +75,36 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 					<p class="muted">No output available yet.</p>
 				}
 				for _, agent := range output.Agents {
-					<article class="profile"><h3>{ agent.Name }</h3><p>{ agent.Text }</p></article>
+					<article class="profile"><h3>{ agent.Name }</h3><p class="multiline">{ agent.Text }</p></article>
 				}
 			</section>
 		} else {
 		<section class="panel"><div class="panel-head"><h2>Findings</h2><span class="badge neutral">{ fmt.Sprint(len(findings)) }</span></div>
 			if len(findings) == 0 {
-				<div class="empty">No validated findings in this run. This does not guarantee the PR is free of bugs.</div>
+				if run.Status == overload.RunCompleted {
+					<div class="empty">No validated findings in this run. This does not guarantee the PR is free of bugs.</div>
+				} else if run.Status == overload.RunFailed {
+					<div class="empty">Findings unavailable for this failed run. Results may be incomplete.</div>
+				} else {
+					<div class="empty">Results are not available yet.</div>
+				}
 			}
 			for _, finding := range findings {
-				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span></div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p>{ finding.Body }</p></article>
+				<article class="profile"><div class="profile-top"><h3>{ finding.Title }</h3><span class="badge neutral">{ finding.Severity }</span></div><p>{ finding.Path }:{ fmt.Sprint(finding.Line) }</p><p class="multiline">{ finding.Body }</p></article>
 			}
 		</section>
 		}
 		<section class="panel"><h2>Timeline</h2>
-			if len(events) == 0 {
-				<p class="muted">No events recorded.</p>
-			}
-			for _, event := range events {
-				<p><span class="muted">{ event.At.Format("Jan 2 · 15:04") }</span> · { event.Step } · { event.Message }</p>
-			}
+			<form id="event-search" class="search-toolbar" method="get" action={ templ.URL(fmt.Sprintf("/runs/%d", run.ID)) } hx-get={ fmt.Sprintf("/runs/%d/events", run.ID) } hx-target="#run-events" hx-swap="innerHTML" hx-trigger="submit, input delay:250ms, refreshEvents" hx-sync="this:replace">
+				<label class="search-field">Search events<input type="search" name="q" value={ uiState(ctx).Query } maxlength="200" placeholder="Search step or message"/></label><button type="submit" class="secondary">Refresh</button>
+				<label class="check"><input id="wrap-lines" type="checkbox" checked/>Wrap lines</label>
+				if run.Status == overload.RunQueued || run.Status == overload.RunRunning {
+					<button type="button" class="secondary" data-pause-events="true" data-paused="false">Pause updates</button>
+				}
+			</form>
+			<div id="run-events" data-active={ fmt.Sprint(run.Status == overload.RunQueued || run.Status == overload.RunRunning) }>
+				@RunEvents(run, events)
+			</div>
 		</section>
 	}
 }
@@ -100,7 +118,7 @@ templ Webhooks(deliveries []postgres.Delivery) {
 			} else {
 				<div class="table-wrap"><table><thead><tr><th>Received</th><th>Event</th><th>Repository</th><th>Outcome</th><th>Reason</th></tr></thead><tbody>
 					for _, delivery := range deliveries {
-						<tr><td>{ delivery.ReceivedAt.Format("Jan 2 · 15:04") }</td><td>{ delivery.Event } / { delivery.Action }</td><td>{ delivery.Repository }</td><td><span class="badge neutral">{ delivery.Outcome }</span></td><td>{ delivery.SkipReason }</td></tr>
+						<tr><td>{ delivery.ReceivedAt.Format("Jan 2 · 15:04") }</td><td>{ delivery.Event } / { delivery.Action }</td><td>{ delivery.Repository }</td><td><span class={ "badge " + delivery.Outcome }>{ delivery.Outcome }</span></td><td>{ delivery.SkipReason }</td></tr>
 					}
 				</tbody></table></div>
 			}
