@@ -1,4 +1,8 @@
 (function () {
+  // A form field named "action" shadows form.action, so read the attribute.
+  function formAction(form) {
+    return new URL(form.getAttribute('action') || '', document.baseURI).href;
+  }
   var reduced = window.matchMedia('(prefers-reduced-motion: reduce)');
   var opener = null;
   function status(message) {
@@ -16,7 +20,7 @@
     var theme = document.getElementById('theme-select');
     if (theme) theme.value = document.documentElement.dataset.theme || 'auto';
     document.querySelectorAll('form[data-enhance]').forEach(function (form) {
-      form.setAttribute('hx-post', form.action);
+      form.setAttribute('hx-post', formAction(form));
       var errorTarget = form.closest('dialog') ? '#dialog-form-errors' : '#form-errors';
       form.setAttribute('hx-target', errorTarget);
       form.setAttribute('hx-swap', 'innerHTML');
@@ -48,7 +52,7 @@
   });
   document.addEventListener('submit', function (event) {
     var form = event.target;
-    if (!form.action.endsWith('/delete') || form.querySelector('[name="confirmed"]')) return;
+    if (!(form instanceof HTMLFormElement) || !formAction(form).endsWith('/delete') || form.querySelector('[name="confirmed"]')) return;
     event.preventDefault();
     opener = form.querySelector('button');
     var root = document.getElementById('modal-root');
@@ -59,7 +63,7 @@
     var body = document.createElement('div');
     body.className = 'dialog-body';
     var title = document.createElement('h2'); title.id = 'delete-title'; title.textContent = 'Confirm deletion'; body.appendChild(title);
-    var description = document.createElement('p'); description.textContent = 'Delete ' + new URL(form.action).pathname.replace('/delete', '').split('/').pop() + '? This cannot be undone. Dependent configuration or history may prevent removal.'; body.appendChild(description);
+    var description = document.createElement('p'); description.textContent = 'Delete ' + new URL(formAction(form)).pathname.replace('/delete', '').split('/').pop() + '? This cannot be undone. Dependent configuration or history may prevent removal.'; body.appendChild(description);
     var copy = form.cloneNode(true);
     var confirmed = document.createElement('input'); confirmed.type = 'hidden'; confirmed.name = 'confirmed'; confirmed.value = 'true'; copy.appendChild(confirmed);
     var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'secondary'; cancel.dataset.closeDialog = 'true'; cancel.textContent = 'Cancel'; copy.prepend(cancel); copy.classList.add('actions');
