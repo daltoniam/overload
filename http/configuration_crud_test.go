@@ -74,7 +74,7 @@ func (store *crudStore) SaveBinding(_ context.Context, binding overload.TriggerB
 
 func TestConfigurationCRUDPages(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
-	store := &crudStore{agents: []overload.AgentDefinition{{Name: "reviewer", Model: "local", EntryPrompt: "base", Enabled: true}}, repos: []overload.Repository{{ID: 1, FullName: "owner/repo", Enabled: true, DryRun: true}}}
+	store := &crudStore{agents: []overload.AgentDefinition{{Name: "reviewer", Model: "local", Prompt: "Review carefully.", PromptRevision: 2, Enabled: true}}, repos: []overload.Repository{{ID: 1, FullName: "owner/repo", Enabled: true, DryRun: true}}}
 	handler := Handler(store)
 	for _, test := range []struct {
 		path, text string
@@ -97,6 +97,13 @@ func TestConfigurationCRUDPages(t *testing.T) {
 			t.Errorf("%s: %d %s", test.path, response.Code, response.Body.String())
 		}
 	}
+	for query, visible := range map[string]bool{"kind=pr_review": true, "kind=scheduled_prompt": false, "status=Enabled": true, "status=Disabled": false} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/configure/agents?"+query, nil))
+		if strings.Contains(response.Body.String(), "<strong>reviewer</strong>") != visible {
+			t.Errorf("agents?%s: reviewer visible=%v", query, !visible)
+		}
+	}
 	formPage := httptest.NewRecorder()
 	handler.ServeHTTP(formPage, httptest.NewRequest(http.MethodGet, "/configure/agents/reviewer", nil))
 	token := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(formPage.Body.String())
@@ -114,9 +121,22 @@ func TestConfigurationCRUDPages(t *testing.T) {
 		}
 		return response
 	}
-	post("/configure/agents", url.Values{"name": {"reviewer"}, "model": {"local"}, "entry_prompt": {"base"}}, http.StatusForbidden)
-	post("/configure/agents", url.Values{"csrf": {token[1]}, "name": {"reviewer"}, "model": {"other"}, "entry_prompt": {"base"}}, http.StatusSeeOther)
-	if store.agents[0].Model != "other" || store.agents[0].Enabled {
+	if page := formPage.Body.String(); !strings.Contains(page, "Review carefully.") || !strings.Contains(page, "Version 2.") || strings.Contains(page, "Start from") {
+		t.Fatal("agent form does not show its instructions and version")
+	}
+	if page := httptest.NewRecorder(); true {
+		handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/configure/agents/new?start=context", nil))
+		if body := page.Body.String(); !strings.Contains(body, "Start from") || !strings.Contains(body, "You are reviewing a pull request for real, actionable bugs") {
+			t.Fatal("new agent form does not start from a built-in prompt")
+		}
+	}
+	post("/configure/agents", url.Values{"name": {"reviewer"}, "model": {"local"}, "prompt": {"x"}}, http.StatusForbidden)
+	post("/configure/agents", url.Values{"csrf": {token[1]}, "name": {"reviewer"}, "model": {"local"}, "prompt": {"Overwrite."}}, http.StatusBadRequest)
+	if response := post("/configure/agents", url.Values{"csrf": {token[1]}, "existing": {"reviewer"}, "name": {"reviewer"}, "model": {"local"}, "prompt": {"  "}}, http.StatusBadRequest); !strings.Contains(response.Body.String(), "the agent prompt is required") {
+		t.Fatalf("empty prompt message: %s", response.Body.String())
+	}
+	post("/configure/agents", url.Values{"csrf": {token[1]}, "existing": {"reviewer"}, "name": {"reviewer"}, "model": {"other"}, "prompt": {"Line one.\r\nLine two."}}, http.StatusSeeOther)
+	if store.agents[0].Model != "other" || store.agents[0].Enabled || store.agents[0].Prompt != "Line one.\nLine two." {
 		t.Fatalf("agent edit: %+v", store.agents[0])
 	}
 	post("/configure/repositories", url.Values{"csrf": {token[1]}, "id": {"1"}, "name": {"other/repo"}}, http.StatusBadRequest)

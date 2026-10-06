@@ -69,7 +69,7 @@ func run(args []string) error {
 		return inlineReview(args[1:])
 	case "settings":
 		return manageSettings(args[1:])
-	case "prompts", "agents", "workflows", "bindings", "repositories", "schedules":
+	case "agents", "workflows", "bindings", "repositories", "schedules":
 		return manageConfiguration(args[0], args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])

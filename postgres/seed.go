@@ -21,13 +21,13 @@ func (s *Store) SeedLocalDemo(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	var existing int
-	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM model_profiles WHERE name='demo-local-model') + (SELECT count(*) FROM prompt_templates WHERE name IN ('demo-review-entry','demo-summary-entry')) + (SELECT count(*) FROM agent_definitions WHERE name IN ('demo-pr-reviewer','demo-summary-agent')) + (SELECT count(*) FROM workflows WHERE name IN ('demo-pr-workflow','demo-scheduled-workflow')) + (SELECT count(*) FROM repositories WHERE full_name IN ('demo/alpha','demo/beta')) + (SELECT count(*) FROM schedules WHERE name='demo-daily-summary') + (SELECT count(*) FROM trigger_bindings WHERE repository_full_name IN ('demo/alpha','demo/beta'))`).Scan(&existing); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM model_profiles WHERE name='demo-local-model') + (SELECT count(*) FROM prompt_templates WHERE name IN ('agent:demo-pr-reviewer','agent:demo-summary-agent')) + (SELECT count(*) FROM agent_definitions WHERE name IN ('demo-pr-reviewer','demo-summary-agent')) + (SELECT count(*) FROM workflows WHERE name IN ('demo-pr-workflow','demo-scheduled-workflow')) + (SELECT count(*) FROM repositories WHERE full_name IN ('demo/alpha','demo/beta')) + (SELECT count(*) FROM schedules WHERE name='demo-daily-summary') + (SELECT count(*) FROM trigger_bindings WHERE repository_full_name IN ('demo/alpha','demo/beta'))`).Scan(&existing); err != nil {
 		return false, err
 	}
 	if existing != 0 {
 		var complete bool
 		if existing == 12 {
-			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM model_profiles WHERE name='demo-local-model' AND base_url='http://127.0.0.1:8080/v1' AND model='demo-model') AND (SELECT count(*) FROM prompt_revisions r JOIN prompt_templates p ON p.id=r.template_id WHERE p.name IN ('demo-review-entry','demo-summary-entry') AND p.kind='entry')=2 AND EXISTS(SELECT 1 FROM agent_definitions WHERE name='demo-pr-reviewer' AND kind='pr_review') AND EXISTS(SELECT 1 FROM agent_definitions WHERE name='demo-summary-agent' AND kind='scheduled_prompt') AND EXISTS(SELECT 1 FROM schedules WHERE name='demo-daily-summary' AND NOT enabled) AND (SELECT count(*) FROM repositories WHERE full_name IN ('demo/alpha','demo/beta') AND NOT enabled AND dry_run)=2 AND (SELECT count(*) FROM trigger_bindings WHERE repository_full_name IN ('demo/alpha','demo/beta'))=2 AND EXISTS(SELECT 1 FROM runs WHERE trigger='demo_seed' AND schedule_id=(SELECT id FROM schedules WHERE name='demo-daily-summary') AND status='completed') AND EXISTS(SELECT 1 FROM job_outputs WHERE run_id IN (SELECT id FROM runs WHERE trigger='demo_seed' AND schedule_id=(SELECT id FROM schedules WHERE name='demo-daily-summary')))`).Scan(&complete)
+			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM model_profiles WHERE name='demo-local-model' AND base_url='http://127.0.0.1:8080/v1' AND model='demo-model') AND (SELECT count(*) FROM prompt_revisions r JOIN prompt_templates p ON p.id=r.template_id WHERE p.name IN ('agent:demo-pr-reviewer','agent:demo-summary-agent') AND p.kind='entry')=2 AND EXISTS(SELECT 1 FROM agent_definitions WHERE name='demo-pr-reviewer' AND kind='pr_review') AND EXISTS(SELECT 1 FROM agent_definitions WHERE name='demo-summary-agent' AND kind='scheduled_prompt') AND EXISTS(SELECT 1 FROM schedules WHERE name='demo-daily-summary' AND NOT enabled) AND (SELECT count(*) FROM repositories WHERE full_name IN ('demo/alpha','demo/beta') AND NOT enabled AND dry_run)=2 AND (SELECT count(*) FROM trigger_bindings WHERE repository_full_name IN ('demo/alpha','demo/beta'))=2 AND EXISTS(SELECT 1 FROM runs WHERE trigger='demo_seed' AND schedule_id=(SELECT id FROM schedules WHERE name='demo-daily-summary') AND status='completed') AND EXISTS(SELECT 1 FROM job_outputs WHERE run_id IN (SELECT id FROM runs WHERE trigger='demo_seed' AND schedule_id=(SELECT id FROM schedules WHERE name='demo-daily-summary')))`).Scan(&complete)
 			if err != nil {
 				return false, err
 			}
@@ -40,23 +40,15 @@ func (s *Store) SeedLocalDemo(ctx context.Context) (bool, error) {
 	if _, err := tx.Exec(ctx, `INSERT INTO model_profiles(name,provider,base_url,model,prompt_profile,is_default) VALUES ('demo-local-model','openaicompat','http://127.0.0.1:8080/v1','demo-model','context',false)`); err != nil {
 		return false, err
 	}
-	for _, prompt := range []overload.PromptTemplate{
-		{Name: "demo-review-entry", Kind: "entry", Body: "Review this pull request for concrete bugs. Return only actionable findings.\n\nFocus on authorization checks and unsafe data handling."},
-		{Name: "demo-summary-entry", Kind: "entry", Body: "Summarize the supplied status data concisely."},
+	for _, agent := range []struct{ name, prompt, kind string }{
+		{"demo-pr-reviewer", "Review this pull request for concrete bugs. Return only actionable findings.\n\nFocus on authorization checks and unsafe data handling.", "pr_review"},
+		{"demo-summary-agent", "Summarize the supplied status data concisely.", "scheduled_prompt"},
 	} {
-		var id int64
-		if err := tx.QueryRow(ctx, `INSERT INTO prompt_templates(name,kind) VALUES ($1,$2) RETURNING id`, prompt.Name, prompt.Kind).Scan(&id); err != nil {
+		revisionID, _, err := savePromptText(ctx, tx, agentPromptName(agent.name), overload.PromptEntry, agent.prompt)
+		if err != nil {
 			return false, err
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO prompt_revisions(template_id,revision,body,content_sha256) VALUES ($1,1,$2,$3)`, id, prompt.Body, overload.PromptDigest(prompt.Body)); err != nil {
-			return false, err
-		}
-	}
-	for _, agent := range []struct{ name, entry, kind string }{
-		{"demo-pr-reviewer", "demo-review-entry", "pr_review"},
-		{"demo-summary-agent", "demo-summary-entry", "scheduled_prompt"},
-	} {
-		if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,(SELECT id FROM model_profiles WHERE name='demo-local-model'),(SELECT r.id FROM prompt_revisions r JOIN prompt_templates p ON p.id=r.template_id WHERE p.name=$2 AND p.kind='entry'),true,$3)`, agent.name, agent.entry, agent.kind); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,(SELECT id FROM model_profiles WHERE name='demo-local-model'),$2,true,$3)`, agent.name, revisionID, agent.kind); err != nil {
 			return false, err
 		}
 	}

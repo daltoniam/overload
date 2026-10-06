@@ -4,18 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"slices"
 	"strconv"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/harness"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
 type ConfigurationStore interface {
 	ListReviewSettings(context.Context) ([]overload.ReviewSettings, error)
-	ListPrompts(context.Context) ([]overload.PromptTemplate, error)
-	GetPrompt(context.Context, string, string, int) (overload.PromptTemplate, error)
-	SavePrompt(context.Context, overload.PromptTemplate) (overload.PromptTemplate, error)
-	DeletePrompt(context.Context, string, string) error
 	ListAgents(context.Context) ([]overload.AgentDefinition, error)
 	SaveAgent(context.Context, overload.AgentDefinition) error
 	DeleteAgent(context.Context, string) error
@@ -50,11 +48,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			http.Error(w, "Unable to load models", http.StatusInternalServerError)
 			return
 		}
-		prompts, err := store.ListPrompts(r.Context())
-		if err != nil {
-			http.Error(w, "Unable to load prompts", http.StatusInternalServerError)
-			return
-		}
+		var starters []pages.StarterPrompt
 		var selected overload.AgentDefinition
 		if r.PathValue("name") != "new" {
 			agents, err := store.ListAgents(r.Context())
@@ -75,8 +69,14 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			}
 		} else {
 			selected.Enabled = true
+			for _, builtin := range harness.BuiltinPrompts() {
+				starters = append(starters, pages.StarterPrompt{Name: builtin.Name, Label: builtin.Label})
+				if builtin.Name == r.URL.Query().Get("start") {
+					selected.Prompt = builtin.Body
+				}
+			}
 		}
-		_ = pages.AgentForm(selected, models, prompts, csrf).Render(r.Context(), w)
+		_ = pages.AgentForm(selected, models, starters, csrf).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /configure/repositories", func(w http.ResponseWriter, r *http.Request) {
 		repos, err := store.ListRepositories(r.Context())
@@ -185,19 +185,33 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 		}
 		var err error
 		switch resource {
-		case "prompts":
-			prompts, listErr := store.ListPrompts(r.Context())
-			if listErr != nil {
-				http.Error(w, "Unable to load prompts", http.StatusInternalServerError)
-				return
-			}
-			if !promptIdentityMatches(r, prompts) {
-				http.Error(w, "Prompt identity cannot be changed", http.StatusBadRequest)
-				return
-			}
-			_, err = store.SavePrompt(r.Context(), overload.PromptTemplate{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Body: r.PostForm.Get("body")})
 		case "agents":
-			err = store.SaveAgent(r.Context(), overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), EntryPrompt: r.PostForm.Get("entry_prompt"), Enabled: r.PostForm.Get("enabled") == "true"})
+			agents, listErr := store.ListAgents(r.Context())
+			if listErr != nil {
+				http.Error(w, "Unable to load agents", http.StatusInternalServerError)
+				return
+			}
+			var existing []string
+			for _, agent := range agents {
+				existing = append(existing, agent.Name)
+			}
+			if !namedResourceMatches(r, existing) {
+				http.Error(w, "Agent name cannot be changed", http.StatusBadRequest)
+				return
+			}
+			if r.PostForm.Get("existing") == "" && slices.Contains(existing, r.PostForm.Get("name")) {
+				http.Error(w, "Agent not saved: an agent named "+r.PostForm.Get("name")+" already exists.", http.StatusBadRequest)
+				return
+			}
+			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: promptText(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true"}
+			if err := agent.Validate(); err != nil {
+				http.Error(w, "Agent not saved: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if err := store.SaveAgent(r.Context(), agent); err != nil {
+				http.Error(w, "Agent not saved: the model connection is missing.", http.StatusBadRequest)
+				return
+			}
 		case "workflows":
 			workflows, listErr := store.ListWorkflows(r.Context())
 			if listErr != nil {
@@ -212,6 +226,10 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				http.Error(w, "Workflow name cannot be changed", http.StatusBadRequest)
 				return
 			}
+			if r.PostForm.Get("existing") == "" && slices.Contains(existing, r.PostForm.Get("name")) {
+				http.Error(w, "Workflow not saved: a workflow named "+r.PostForm.Get("name")+" already exists.", http.StatusBadRequest)
+				return
+			}
 			workflow, formErr := workflowFromForm(r.PostForm)
 			if formErr == nil {
 				formErr = workflow.Validate()
@@ -221,7 +239,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 			if err := store.SaveWorkflow(r.Context(), workflow); err != nil {
-				http.Error(w, "Workflow not saved: an agent or prompt is missing, disabled or of the wrong type.", http.StatusBadRequest)
+				http.Error(w, "Workflow not saved: an agent is missing, disabled or for a different job type.", http.StatusBadRequest)
 				return
 			}
 		case "bindings":
@@ -291,8 +309,6 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 		}
 		destination := "/configure"
 		switch resource {
-		case "prompts":
-			destination = "/configure/prompts"
 		case "workflows":
 			destination = "/configure/workflows"
 		case "schedules":

@@ -64,7 +64,7 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 	if mode := values.Get("main_reviews"); mode != overload.MainReviewsAll {
 		workflow.MainReviews = mode
 	}
-	workflow.PlannerPrompt, workflow.VerifierPrompt = values.Get("planner_prompt"), values.Get("verifier_prompt")
+	workflow.PlannerPrompt, workflow.VerifierPrompt = promptText(values.Get("planner_prompt")), promptText(values.Get("verifier_prompt"))
 	if text := strings.TrimSpace(values.Get("max_file_reviews")); text != "" {
 		limit, err := strconv.Atoi(text)
 		if err != nil {
@@ -83,4 +83,14 @@ func lines(text string) []string {
 		}
 	}
 	return out
+}
+
+// promptText normalizes instructions typed into a form: browsers send CRLF
+// line endings, and whitespace-only text means no prompt.
+func promptText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return text
 }

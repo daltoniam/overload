@@ -61,8 +61,8 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE full_name=$1`, repo)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM workflows WHERE name=$1`, name)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM agent_definitions WHERE name=$1`, name)
-		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=$1)`, name)
-		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_templates WHERE name=$1`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=$1)`, "agent:"+name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_templates WHERE name=$1`, "agent:"+name)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM model_profiles WHERE name=$1`, name)
 	})
 	calls := 0
@@ -88,12 +88,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, prompt := range []overload.PromptTemplate{{Name: name, Kind: "entry", Body: "Pinned PR entry"}} {
-		if _, err := store.SavePrompt(ctx, prompt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, EntryPrompt: name, Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, Prompt: "Pinned PR entry", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true}); err != nil {
@@ -117,7 +112,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1) AND head_sha=$2 ORDER BY id DESC LIMIT 1`, repo, sha).Scan(&runID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: name, Kind: "entry", Body: "Edited PR entry"}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, Prompt: "Edited PR entry", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	var archive bytes.Buffer

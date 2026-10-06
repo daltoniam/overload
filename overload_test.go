@@ -87,7 +87,7 @@ func TestLegacyFocusSnapshots(t *testing.T) {
 	if err != nil || strings.Contains(string(data), "review_prompt") {
 		t.Fatalf("new snapshots must not carry a focus prompt: %s %v", data, err)
 	}
-	if (PromptTemplate{Name: "x", Kind: "review", Body: "b"}).Validate() == nil {
-		t.Fatal("review focus prompts can no longer be created")
+	if (AgentDefinition{Name: "a", Model: "m", Prompt: " "}).Validate() == nil {
+		t.Fatal("an agent needs a prompt")
 	}
 }

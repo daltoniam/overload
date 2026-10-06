@@ -38,8 +38,8 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM schedules WHERE name=$1`, name)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM workflows WHERE name=$1`, name)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM agent_definitions WHERE name=$1`, name)
-		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=$1)`, name)
-		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_templates WHERE name=$1`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=$1)`, "agent:"+name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_templates WHERE name=$1`, "agent:"+name)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM model_profiles WHERE name=$1`, name)
 	})
 	calls := 0
@@ -69,10 +69,7 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: name, Kind: "entry", Body: "Pinned entry"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Kind: "scheduled_prompt", Model: name, EntryPrompt: name, Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Kind: "scheduled_prompt", Model: name, Prompt: "Pinned entry", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "scheduled_prompt", Agents: []string{name}, Enabled: true}); err != nil {

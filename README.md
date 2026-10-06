@@ -71,7 +71,8 @@ parallel slots.
    Tailscale Funnel) at port 8082 and use `https://<host>/webhooks/github`.
 2. Install the App on your repositories. They appear under **Repositories**,
    disabled and dry-run.
-3. Create **Prompts**, **Agents** and a PR **Workflow**, then enable a
+3. Create **Agents** (a model and its instructions) and a PR **Workflow**,
+   then enable a
    repository and bind its PR actions to the workflow. A workflow has a
    main agent and up to eight sub-agents, each limited to the files it is
    for; **Preview routing** on the workflow shows who would review what
@@ -79,9 +80,10 @@ parallel slots.
 4. To post reviews as comments, check **Post reviews as GitHub comments** on
    the repository and set `OVERLOAD_ENABLE_POSTING=1` in `overload.env`.
 
-Every setting is also available from the CLI (`overload prompts|agents|
-workflows|bindings|repositories|schedules list|apply`), so an agent can
-configure overload without the UI. Scheduled prompts run workflows on a cron
+Every setting is also available from the CLI (`overload agents|workflows|
+bindings|repositories|schedules list|apply`), so an agent can configure
+overload without the UI. Agent JSON holds the instructions directly:
+`{"name": "security", "model": "qwen", "prompt": "...", "enabled": true}`. Scheduled prompts run workflows on a cron
 schedule with JSON input.
 
 A PR workflow's first agent is its main agent; the rest are sub-agents. In
@@ -91,10 +93,11 @@ its number of findings), `main_reviews: "unclaimed"` leaves files a
 sub-agent claimed to that sub-agent, and `max_file_reviews` caps the work per
 run. A scope's `mode` is `globs` (default), `always` (only its paths) or
 `planned` (only files the planner assigns), and its `description` tells the
-planner what the sub-agent is for. `planner_prompt` names a `plan` prompt
-that lets the main agent's model send files to sub-agents whatever they are
-called; `verifier_prompt` names a `verify` prompt that keeps or drops each
-sub-agent finding before posting. `overload workflows preview NAME <
+planner what the sub-agent is for. `planner_prompt` holds instructions that
+let the main agent's model send files to sub-agents whatever they are called;
+`verifier_prompt` holds instructions that keep or drop each sub-agent finding
+before posting. Changed instructions are saved as new versions; each run
+records the exact text it used. `overload workflows preview NAME <
 files.txt` shows which agent would review each file and roughly how long it
 would take, without calling a model.
 

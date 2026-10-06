@@ -12,6 +12,13 @@ import (
 	"unicode/utf8"
 )
 
+// MaxPromptLength bounds an agent, planner or verifier prompt.
+const MaxPromptLength = 16000
+
+// PromptTemplate is one pinned version of an agent's, planner's or
+// verifier's instructions. Agents and workflows own their prompts; every
+// change to the text is stored as a new revision so runs record exactly
+// what they ran with.
 type PromptTemplate struct {
 	Name     string `json:"name"`
 	Kind     string `json:"kind"`
@@ -20,43 +27,48 @@ type PromptTemplate struct {
 	SHA256   string `json:"sha256"`
 }
 
-func (prompt PromptTemplate) Validate() error {
-	if !settingName.MatchString(prompt.Name) || !validPromptKind(prompt.Kind) || strings.TrimSpace(prompt.Body) == "" || len(prompt.Body) > 16000 {
-		return errors.New("invalid prompt template")
+func validatePromptText(label, text string, required bool) error {
+	switch {
+	case strings.TrimSpace(text) == "" && required:
+		return fmt.Errorf("%s is required", label)
+	case len(text) > MaxPromptLength:
+		return fmt.Errorf("%s must be at most %d bytes", label, MaxPromptLength)
+	case !utf8.ValidString(text) || strings.ContainsRune(text, 0):
+		return fmt.Errorf("%s must be valid text", label)
 	}
 	return nil
 }
 
-// Prompt kinds: an agent's prompt, and a workflow's optional planner and
-// verifier prompts, which run on the main agent's model. Focus areas are
-// separate sub-agents rather than extra prompts on one agent.
+// Prompt kinds: an agent's instructions, and a workflow's optional planner
+// and verifier instructions, which run on the main agent's model.
 const (
 	PromptEntry  = "entry"
 	PromptPlan   = "plan"
 	PromptVerify = "verify"
 )
 
-func validPromptKind(kind string) bool {
-	return kind == PromptEntry || kind == PromptPlan || kind == PromptVerify
-}
-
 func PromptDigest(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
 }
 
+// AgentDefinition is a model and the instructions it reviews with.
+// PromptRevision counts saved changes to Prompt and is read-only.
 type AgentDefinition struct {
-	Name          string `json:"name"`
-	Kind          string `json:"kind,omitempty"`
-	Model         string `json:"model"`
-	EntryPrompt   string `json:"entry_prompt"`
-	Enabled       bool   `json:"enabled"`
-	EntryRevision int    `json:"-"`
+	Name           string `json:"name"`
+	Kind           string `json:"kind,omitempty"`
+	Model          string `json:"model"`
+	Prompt         string `json:"prompt"`
+	Enabled        bool   `json:"enabled"`
+	PromptRevision int    `json:"prompt_revision,omitempty"`
 }
 
 func (agent AgentDefinition) Validate() error {
-	if !settingName.MatchString(agent.Name) || !settingName.MatchString(agent.Model) || !settingName.MatchString(agent.EntryPrompt) {
+	if !settingName.MatchString(agent.Name) || !settingName.MatchString(agent.Model) {
 		return errors.New("invalid agent definition")
+	}
+	if err := validatePromptText("the agent prompt", agent.Prompt, true); err != nil {
+		return err
 	}
 	if agent.Kind != "" && agent.Kind != "pr_review" && agent.Kind != "scheduled_prompt" {
 		return errors.New("invalid agent type")
@@ -78,8 +90,10 @@ type Workflow struct {
 	SkipPaths      []string         `json:"skip_paths,omitempty"`
 	MainReviews    string           `json:"main_reviews,omitempty"`
 	MaxFileReviews int              `json:"max_file_reviews,omitempty"`
-	PlannerPrompt  string           `json:"planner_prompt,omitempty"`
-	VerifierPrompt string           `json:"verifier_prompt,omitempty"`
+	// PlannerPrompt and VerifierPrompt are the planner's and verifier's
+	// instructions; empty means no planner or verifier.
+	PlannerPrompt  string `json:"planner_prompt,omitempty"`
+	VerifierPrompt string `json:"verifier_prompt,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -98,12 +112,13 @@ func (workflow Workflow) Validate() error {
 			return fmt.Errorf("scope for %q: scopes apply to the workflow's sub-agents", name)
 		}
 	}
-	for _, prompt := range []string{workflow.PlannerPrompt, workflow.VerifierPrompt} {
-		if prompt != "" && !settingName.MatchString(prompt) {
-			return errors.New("invalid planner or verifier prompt name")
-		}
+	if err := validatePromptText("the planner prompt", workflow.PlannerPrompt, false); err != nil {
+		return err
 	}
-	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: workflow.Scopes, planner: workflow.PlannerPrompt != "", verifier: workflow.VerifierPrompt != ""})
+	if err := validatePromptText("the verifier prompt", workflow.VerifierPrompt, false); err != nil {
+		return err
+	}
+	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
 }
 
 type TriggerBinding struct {

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -35,8 +35,6 @@ func manageConfiguration(resource string, args []string) error {
 	}
 	if args[0] == "list" && len(args) == 1 {
 		switch resource {
-		case "prompts":
-			return write(store.ListPrompts(ctx))
 		case "agents":
 			return write(store.ListAgents(ctx))
 		case "workflows":
@@ -80,35 +78,18 @@ func manageConfiguration(resource string, args []string) error {
 
 func showConfiguration(ctx context.Context, store interface {
 	ResolveWorkflow(context.Context, string) (overload.ResolvedWorkflow, error)
-	GetPrompt(context.Context, string, string, int) (overload.PromptTemplate, error)
 }, resource string, args []string) error {
-	if resource == "workflows" && len(args) == 2 {
-		workflow, err := store.ResolveWorkflow(ctx, args[1])
-		if err != nil {
-			return err
-		}
-		return json.NewEncoder(os.Stdout).Encode(workflow)
+	if resource != "workflows" || len(args) != 2 {
+		return errors.New("usage: overload workflows show NAME")
 	}
-	if resource != "prompts" || (len(args) != 3 && len(args) != 4) {
-		return errors.New("usage: overload prompts show KIND NAME [REVISION]")
-	}
-	revision := 0
-	if len(args) == 4 {
-		var err error
-		revision, err = strconv.Atoi(args[3])
-		if err != nil || revision < 1 {
-			return errors.New("invalid prompt revision")
-		}
-	}
-	prompt, err := store.GetPrompt(ctx, args[1], args[2], revision)
+	workflow, err := store.ResolveWorkflow(ctx, args[1])
 	if err != nil {
 		return err
 	}
-	return json.NewEncoder(os.Stdout).Encode(prompt)
+	return json.NewEncoder(os.Stdout).Encode(workflow)
 }
 
 type configurationStore interface {
-	SavePrompt(context.Context, overload.PromptTemplate) (overload.PromptTemplate, error)
 	SaveAgent(context.Context, overload.AgentDefinition) error
 	SaveWorkflow(context.Context, overload.Workflow) error
 	SaveBinding(context.Context, overload.TriggerBinding) error
@@ -121,20 +102,13 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 	decoder.DisallowUnknownFields()
 	var result any
 	switch resource {
-	case "prompts":
-		var prompt overload.PromptTemplate
-		if err := decoder.Decode(&prompt); err != nil {
-			return errors.New("invalid prompt JSON")
-		}
-		stored, err := store.SavePrompt(ctx, prompt)
-		result = stored
-		if err != nil {
-			return err
-		}
 	case "agents":
 		var agent overload.AgentDefinition
 		if err := decoder.Decode(&agent); err != nil {
-			return errors.New("invalid agent JSON")
+			if strings.Contains(err.Error(), `"entry_prompt"`) || strings.Contains(err.Error(), `"review_prompt"`) {
+				return errors.New(`invalid agent JSON: agents now hold their prompt text in "prompt" instead of naming a prompt`)
+			}
+			return fmt.Errorf("invalid agent JSON: %w", err)
 		}
 		if err := store.SaveAgent(ctx, agent); err != nil {
 			return err

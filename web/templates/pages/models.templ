@@ -9,7 +9,7 @@ import (
 
 templ Models(models []overload.ReviewSettings) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Choose prompts on the Agents page and combine agents in Workflows.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
+		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
 		<section class="panel">
 			if len(models) == 0 {
 				<div class="empty">No models yet. <a href="/settings/new">Add a model connection</a> to begin.</div>
@@ -26,7 +26,7 @@ templ Models(models []overload.ReviewSettings) {
 
 templ ModelForm(model overload.ReviewSettings, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Model", CurrentPath: "/settings"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / Edit</p><h1>{ modelFormTitle(model.Name) }</h1><p class="muted">Only connection details belong here. Use Agents to select prompts.</p></div><a href="/settings">All models</a></div>
+		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / Edit</p><h1>{ modelFormTitle(model.Name) }</h1><p class="muted">Only connection details belong here. Agents hold the instructions.</p></div><a href="/settings">All models</a></div>
 		<section class="panel"><form method="post" action="/settings"><input type="hidden" name="csrf" value={ nonce }/>
 			if model.Name != "" {
 				<input type="hidden" name="existing" value={ model.Name }/>

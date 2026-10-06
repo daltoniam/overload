@@ -56,7 +56,7 @@ func Dashboard(runs []overload.Run, statistics ...postgres.DashboardStats) templ
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Overview</p><h1>Overview</h1><p class=\"muted\">Manage models, prompts, agents, workflows, repositories and scheduled jobs.</p></div></div><p class=\"notice\">Posting GitHub reviews is opt-in and requires repository configuration, the server posting gate, and a GitHub App.</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Overview</p><h1>Overview</h1><p class=\"muted\">Manage models, agents, workflows, repositories and scheduled jobs.</p></div></div><p class=\"notice\">Posting GitHub reviews is opt-in and requires repository configuration, the server posting gate, and a GitHub App.</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

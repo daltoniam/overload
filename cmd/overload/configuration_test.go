@@ -9,18 +9,17 @@ import (
 )
 
 type fakeConfigurationStore struct {
-	prompt overload.PromptTemplate
+	agent overload.AgentDefinition
 }
 
-func (store *fakeConfigurationStore) SavePrompt(_ context.Context, prompt overload.PromptTemplate) (overload.PromptTemplate, error) {
-	if err := prompt.Validate(); err != nil {
-		return prompt, err
+func (store *fakeConfigurationStore) SaveAgent(_ context.Context, agent overload.AgentDefinition) error {
+	if err := agent.Validate(); err != nil {
+		return err
 	}
-	store.prompt = prompt
-	return prompt, nil
+	store.agent = agent
+	return nil
 }
-func (*fakeConfigurationStore) SaveAgent(context.Context, overload.AgentDefinition) error { return nil }
-func (*fakeConfigurationStore) SaveWorkflow(context.Context, overload.Workflow) error     { return nil }
+func (*fakeConfigurationStore) SaveWorkflow(context.Context, overload.Workflow) error { return nil }
 func (*fakeConfigurationStore) SaveBinding(context.Context, overload.TriggerBinding) error {
 	return nil
 }
@@ -31,20 +30,21 @@ func TestConfigurationCLIInput(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		json      string
-		wantError bool
+		wantError string
 	}{
-		{"valid prompt", `{"name":"security","kind":"entry","body":"Inspect authorization."}`, false},
-		{"unknown field", `{"name":"security","kind":"entry","body":"Inspect authorization.","api_key":"secret"}`, true},
-		{"invalid prompt", `{"name":"security","kind":"entry","body":""}`, true},
+		{"valid agent", `{"name":"security","model":"qwen","prompt":"Inspect authorization.","enabled":true}`, ""},
+		{"unknown field", `{"name":"security","model":"qwen","prompt":"Inspect authorization.","api_key":"secret"}`, "unknown field"},
+		{"missing prompt", `{"name":"security","model":"qwen","prompt":""}`, "prompt is required"},
+		{"old prompt reference", `{"name":"security","model":"qwen","entry_prompt":"base"}`, `hold their prompt text in "prompt"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			store := &fakeConfigurationStore{}
-			err := applyConfiguration(context.Background(), store, "prompts", strings.NewReader(test.json))
-			if (err != nil) != test.wantError || err != nil && strings.Contains(err.Error(), "secret") {
+			err := applyConfiguration(context.Background(), store, "agents", strings.NewReader(test.json))
+			if test.wantError == "" && err != nil || test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) || err != nil && strings.Contains(err.Error(), "secret") {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if err == nil && store.prompt.Name != "security" {
-				t.Fatal("prompt not saved")
+			if err == nil && store.agent.Prompt != "Inspect authorization." {
+				t.Fatal("agent not saved")
 			}
 		})
 	}

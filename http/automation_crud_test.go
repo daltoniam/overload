@@ -14,43 +14,10 @@ import (
 
 type automationStore struct {
 	crudStore
-	prompts   []overload.PromptTemplate
 	workflows []overload.Workflow
 	schedules []overload.Schedule
 }
 
-func (store *automationStore) ListPrompts(context.Context) ([]overload.PromptTemplate, error) {
-	return store.prompts, nil
-}
-func (store *automationStore) GetPrompt(_ context.Context, kind, name string, revision int) (overload.PromptTemplate, error) {
-	for _, prompt := range store.prompts {
-		if prompt.Kind == kind && prompt.Name == name && (revision == 0 || prompt.Revision == revision) {
-			return prompt, nil
-		}
-	}
-	return overload.PromptTemplate{}, http.ErrMissingFile
-}
-func (store *automationStore) SavePrompt(_ context.Context, prompt overload.PromptTemplate) (overload.PromptTemplate, error) {
-	for index, current := range store.prompts {
-		if current.Name == prompt.Name && current.Kind == prompt.Kind {
-			prompt.Revision = current.Revision + 1
-			store.prompts[index] = prompt
-			return prompt, nil
-		}
-	}
-	prompt.Revision = 1
-	store.prompts = append(store.prompts, prompt)
-	return prompt, nil
-}
-func (store *automationStore) DeletePrompt(_ context.Context, kind, name string) error {
-	for index, prompt := range store.prompts {
-		if prompt.Kind == kind && prompt.Name == name {
-			store.prompts = append(store.prompts[:index], store.prompts[index+1:]...)
-			return nil
-		}
-	}
-	return http.ErrMissingFile
-}
 func (store *automationStore) ListWorkflows(context.Context) ([]overload.Workflow, error) {
 	return store.workflows, nil
 }
@@ -98,16 +65,14 @@ func (store *automationStore) DeleteSchedule(_ context.Context, name string) err
 
 func TestAutomationCRUDPages(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
-	store := &automationStore{prompts: []overload.PromptTemplate{{Name: "base", Kind: "entry", Body: "Original", Revision: 1}}, workflows: []overload.Workflow{{Name: "review", Kind: "pr_review", Agents: []string{"agent"}, Enabled: true}}, schedules: []overload.Schedule{{Name: "daily", Workflow: "scheduled", Cron: "0 9 * * *", Timezone: "UTC", Input: []byte(`{"topic":"status"}`), Enabled: true}}}
+	store := &automationStore{workflows: []overload.Workflow{{Name: "review", Kind: "pr_review", Agents: []string{"agent"}, Enabled: true}}, schedules: []overload.Schedule{{Name: "daily", Workflow: "scheduled", Cron: "0 9 * * *", Timezone: "UTC", Input: []byte(`{"topic":"status"}`), Enabled: true}}}
 	handler := Handler(store)
 	for _, test := range []struct {
 		path, text string
 		status     int
 	}{
-		{"/configure/prompts", "View / edit", http.StatusOK},
-		{"/configure/prompts/new", "New prompt", http.StatusOK},
-		{"/configure/prompts/entry/base", "Original", http.StatusOK},
-		{"/configure/prompts/entry/missing", "404", http.StatusNotFound},
+		{"/configure/prompts", "See Other", http.StatusSeeOther},
+		{"/configure/prompts/entry/base", "See Other", http.StatusSeeOther},
 		{"/configure/workflows", "review", http.StatusOK},
 		{"/configure/workflows/new", "New workflow", http.StatusOK},
 		{"/configure/workflows/review", "Save workflow", http.StatusOK},
@@ -124,9 +89,9 @@ func TestAutomationCRUDPages(t *testing.T) {
 		}
 	}
 	formPage := httptest.NewRecorder()
-	handler.ServeHTTP(formPage, httptest.NewRequest(http.MethodGet, "/configure/prompts/entry/base", nil))
-	if strings.Contains(formPage.Body.String(), `<select name="kind"`) || !strings.Contains(formPage.Body.String(), `value="Agent"`) || !strings.Contains(formPage.Body.String(), `class="danger"`) {
-		t.Fatal("existing prompt type or delete button rendered incorrectly")
+	handler.ServeHTTP(formPage, httptest.NewRequest(http.MethodGet, "/configure/workflows/review", nil))
+	if !strings.Contains(formPage.Body.String(), `class="danger"`) || strings.Contains(formPage.Body.String(), `href="/configure/prompts"`) {
+		t.Fatal("workflow delete button missing or prompts still linked")
 	}
 	match := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(formPage.Body.String())
 	if len(match) != 2 {
@@ -143,12 +108,8 @@ func TestAutomationCRUDPages(t *testing.T) {
 		}
 	}
 	csrf := match[1]
-	post("/configure/prompts", url.Values{"name": {"base"}, "kind": {"entry"}, "body": {"Changed"}}, http.StatusForbidden)
-	post("/configure/prompts", url.Values{"csrf": {csrf}, "existing": {"entry/base"}, "name": {"other"}, "kind": {"entry"}, "body": {"Changed"}}, http.StatusBadRequest)
-	post("/configure/prompts", url.Values{"csrf": {csrf}, "existing": {"entry/base"}, "name": {"base"}, "kind": {"entry"}, "body": {"Changed"}}, http.StatusSeeOther)
-	if store.prompts[0].Revision != 2 || store.prompts[0].Body != "Changed" {
-		t.Fatalf("prompt: %+v", store.prompts)
-	}
+	post("/configure/workflows", url.Values{"name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusForbidden)
+	post("/configure/workflows", url.Values{"csrf": {csrf}, "name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusBadRequest)
 	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"other"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusBadRequest)
 	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusSeeOther)
 	if store.workflows[0].Enabled {
@@ -159,10 +120,9 @@ func TestAutomationCRUDPages(t *testing.T) {
 	if store.schedules[0].Enabled || store.schedules[0].Cron != "0 8 * * *" {
 		t.Fatalf("schedule: %+v", store.schedules)
 	}
-	post("/configure/prompts/entry/base/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
 	post("/configure/workflows/review/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
 	post("/configure/schedules/daily/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
-	if len(store.prompts)+len(store.workflows)+len(store.schedules) != 0 {
+	if len(store.workflows)+len(store.schedules) != 0 {
 		t.Fatal("delete did not remove resources")
 	}
 }

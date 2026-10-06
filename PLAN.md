@@ -601,7 +601,18 @@ CLI. The CLI and JSON configuration expose the same tree.
    both texts joined as reviews joined them, so behaviour is unchanged, and
    former focus prompts became ordinary agent prompts. Focus areas are now
    separate sub-agents. Snapshots pinned earlier still carry and verify
-   their focus prompt. Prompt types are Agent, Planner and Verifier.
+   their focus prompt.
+6. Done: agents and workflows own their instructions (migration 021). The
+   agent page has an Instructions box (new agents can start from a built-in
+   prompt) and the workflow page has Planner and Verifier boxes; the
+   Prompts page and `overload prompts` are gone. Changed text is saved as a
+   new version that the agent or workflow uses from then on, and runs keep
+   the text they started with. The migration gave each agent and workflow
+   its own copy of the text it used, so agents that shared a prompt now
+   have identical copies; old shared prompts stay in the database, unused.
+   Agent JSON takes `prompt` text; `planner_prompt` and `verifier_prompt`
+   are text. The UI refuses to create an agent or workflow whose name is
+   already taken, since that would overwrite its instructions.
 
 Each stage keeps `make ci`, the macOS install test and the kind sandbox
 test passing, and extends the planted-bug eval: a multi-file fixture where
@@ -731,27 +742,27 @@ the desired mental model. Replace it with a small navigation structure:
 
 1. **Models**: endpoint, model ID, capabilities, secret *reference*, health
    probe. Never place prompts inside a model connection form.
-2. **Prompts**: edit named entry, review and final templates as real text;
-   show variable reference, version history, preview with redacted sample
-   context, and a clear warning that a prompt is not a secret store.
-3. **Agents / Workflows**: configure each agent's model and independent
-   entry/review/final prompt, then see ordered/parallel steps, output kind,
-   caps and failure policy in a readable workflow diagram/list. Provide a
-   starter single-pass PR workflow; advanced options can be progressive.
-4. **Repositories**: list installed GitHub repos; each detail page shows
+2. **Agents / Workflows**: an agent is a model and its instructions, edited
+   on the agent page with a version number and a warning that instructions
+   are not a secret store (version history and diffs are a follow-up); a
+   workflow's planner and verifier instructions live on the workflow. Show
+   the main agent and sub-agents with their scopes in a readable list.
+   Provide a starter single-agent PR workflow; advanced options can be
+   progressive.
+3. **Repositories**: list installed GitHub repos; each detail page shows
    enabled/dry-run state, matching event actions, bound workflow and effective
    config (workspace defaults vs repo override). Provide a test-match action
    using a sample verified event, without executing a job or posting.
-5. **Schedules / Sources**: create a cron schedule with timezone and next
+4. **Schedules / Sources**: create a cron schedule with timezone and next
    three fire times, pause/resume and a dry-run `Run now`. List webhook sources
    with auth status and matching bindings. Do not imply Sentry works before an
    adapter exists.
-6. **Runs**: group by source/kind/repo/schedule and show the resolved workflow
+5. **Runs**: group by source/kind/repo/schedule and show the resolved workflow
    and prompt revisions, per-agent step outcomes, deduped output and clear
    skip/failure reasons. From a failed binding, link to its configuration.
 
 All these resources must be manageable through a local CLI (`models`,
-`prompts`, `agents`, `workflows`, `bindings`, `schedules` with list/show/apply
+`agents`, `workflows`, `bindings`, `schedules` with list/show/apply
 or set/disable), using the same validation and persistence as the UI. Favor
 versioned declarative JSON/YAML input for agents and repeatable installs; do
 not expose an unauthenticated settings API. A guided setup path should be:

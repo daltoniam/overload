@@ -14,6 +14,13 @@ func agentStatus(enabled bool) string {
 	return "Disabled"
 }
 
+func agentKindValue(kind string) string {
+	if kind == "" {
+		return "pr_review"
+	}
+	return kind
+}
+
 func agentKindLabel(kind string) string {
 	if kind == "scheduled_prompt" {
 		return "Scheduled prompt"
@@ -54,18 +61,14 @@ func repositoryBindings(bindings []overload.TriggerBinding, name string) []overl
 
 templ Agents(agents []overload.AgentDefinition) {
 	@layouts.Base(layouts.PageData{Title: "Agents", CurrentPath: "/configure/agents"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Agents</p><h1>Agents</h1><p class="muted">Each agent is a model and one prompt. Give each focus area its own agent and combine them in a workflow. Editing an agent affects future runs only.</p></div><a class="button" href="/configure/agents/new">New agent</a></div>
+		<div class="page-header"><div><p class="eyebrow">Automation / Agents</p><h1>Agents</h1><p class="muted">Each agent is a model and its instructions. Give each focus area its own agent and combine them in a workflow. Editing an agent affects future runs only.</p></div><a class="button" href="/configure/agents/new">New agent</a></div>
 		<section class="panel">
 			if len(agents) == 0 {
-				<div class="empty">No agents yet. <a href="/configure/agents/new">Create an agent</a> after adding a model and an agent prompt.</div>
+				<div class="empty">No agents yet. <a href="/configure/agents/new">Create an agent</a> after adding a model connection.</div>
 			} else {
-				<div class="table-wrap"><table><thead><tr><th>Agent</th><th>Job type</th><th>Model</th><th>Prompt</th><th>Status</th><th></th></tr></thead><tbody>
+				<div class="table-wrap"><table class="agents-table"><thead><tr><th>Agent</th><th>Model</th><th>Instructions</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, agent := range agents {
-						<tr><td><strong>{ agent.Name }</strong></td><td>{ agentKindLabel(agent.Kind) }</td><td>{ agent.Model }</td><td>{ agent.EntryPrompt }
-							if agent.EntryRevision > 0 {
-								<span class="secondary-line">Pinned revision { fmt.Sprint(agent.EntryRevision) }</span>
-							}
-						</td><td><span class={ "badge " + strings.ToLower(agentStatus(agent.Enabled)) }>{ agentStatus(agent.Enabled) }</span></td><td><a href={ templ.URL("/configure/agents/" + agent.Name) }>View / edit</a></td></tr>
+						<tr data-kind={ agentKindValue(agent.Kind) } data-status={ agentStatus(agent.Enabled) }><td class="nowrap"><strong>{ agent.Name }</strong><span class="secondary-line">{ agentKindLabel(agent.Kind) }</span></td><td class="nowrap">{ agent.Model }</td><td class="prompt-cell"><span class="prompt-excerpt">{ promptExcerpt(agent.Prompt) }</span><span class="secondary-line">Version { fmt.Sprint(agent.PromptRevision) }</span></td><td class="nowrap"><span class={ "badge " + strings.ToLower(agentStatus(agent.Enabled)) }>{ agentStatus(agent.Enabled) }</span></td><td class="nowrap"><a href={ templ.URL("/configure/agents/" + agent.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -73,10 +76,13 @@ templ Agents(agents []overload.AgentDefinition) {
 	}
 }
 
-templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings, prompts []overload.PromptTemplate, nonce string) {
+templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings, starters []StarterPrompt, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Agent", CurrentPath: "/configure/agents"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/agents">Agents</a></p><h1>{ agentFormTitle(agent.Name) }</h1><p class="muted">An agent is a model and one prompt. For several focus areas, create one agent per area and add them to a workflow as sub-agents. Saving selects the prompt's latest revision for future jobs; without saving, the agent keeps its current revision.</p></div><a href="/configure/agents">All agents</a></div>
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/agents">Agents</a></p><h1>{ agentFormTitle(agent.Name) }</h1><p class="muted">An agent is a model and its instructions. For several focus areas, create one agent per area and add them to a workflow as sub-agents. Changes apply to future runs; runs already queued keep the instructions they started with.</p></div><a href="/configure/agents">All agents</a></div>
 		<section class="panel"><form method="post" action="/configure/agents"><input type="hidden" name="csrf" value={ nonce }/>
+			if agent.Name != "" {
+				<input type="hidden" name="existing" value={ agent.Name }/>
+			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ agent.Name } readonly?={ agent.Name != "" } placeholder="security-reviewer"/></label>
 			<label class="field"><span>Job type</span><select name="kind"><option value="pr_review" selected?={ agent.Kind == "" || agent.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ agent.Kind == "scheduled_prompt" }>Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. A workflow uses the agent as its main agent or a sub-agent.</small></label>
 			<label class="field"><span>Model connection</span><select name="model" required><option value="">Select a model</option>
@@ -84,13 +90,22 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 					<option value={ model.Name } selected?={ model.Name == agent.Model }>{ model.Name } ({ model.Model })</option>
 				}
 			</select><small><a href="/settings">Manage model connections</a></small></label>
-			<label class="field"><span>Prompt</span><select name="entry_prompt" required><option value="">Select a prompt</option>
-				for _, prompt := range prompts {
-					if prompt.Kind == "entry" {
-						<option value={ prompt.Name } selected?={ prompt.Name == agent.EntryPrompt }>{ prompt.Name } (latest revision { fmt.Sprint(prompt.Revision) })</option>
-					}
+			<label class="field"><span>Instructions</span>
+				if agent.Name == "" && len(starters) > 0 {
+					<span class="starters">Start from:
+						for _, starter := range starters {
+							<a href={ templ.URL("/configure/agents/new?start=" + starter.Name) }>{ starter.Label }</a>
+						}
+					</span>
 				}
-			</select><small><a href="/configure/prompts">Manage prompts</a></small></label>
+				<textarea name="prompt" required maxlength="16000" rows="16" placeholder="Describe what this agent reviews and what counts as a finding.">{ agent.Prompt }</textarea>
+				<small>
+					if agent.PromptRevision > 0 {
+						Version { fmt.Sprint(agent.PromptRevision) }. Saving changed instructions creates version { fmt.Sprint(agent.PromptRevision + 1) }.
+					}
+					overload adds its own rules around these instructions: repository text is untrusted, and replies must be JSON findings. Do not put secrets here.
+				</small>
+			</label>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ agent.Enabled }/> Allow this agent in future runs</label><p class="muted">Turn off to pause this agent without deleting its setup. Workflows using a disabled agent cannot start new runs; already queued runs keep their saved configuration.</p>
 			<div class="actions"><button type="submit">Save agent</button><a class="button secondary" href="/configure/agents">Cancel</a></div>
 		</form></section>

@@ -57,7 +57,7 @@ templ RunEvents(run overload.Run, events []postgres.RunEvent) {
 // WorkflowAgents edits a workflow's agent tree: one main agent and up to
 // MaxSubAgents sub-agents. PR review workflows also choose each sub-agent's
 // scope, the planner and verifier prompts and the routing limits.
-templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinition, prompts []overload.PromptTemplate) {
+templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinition) {
 	<fieldset class="tree-node main-agent"><legend>Main agent</legend>
 		<label class="field"><span>Agent</span><select name="main_agent" required>
 			<option value="">Select an agent</option>
@@ -68,16 +68,12 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 				<option value="all" selected?={ workflow.MainReviews == "" || workflow.MainReviews == overload.MainReviewsAll }>Every changed file</option>
 				<option value="unclaimed" selected?={ workflow.MainReviews == overload.MainReviewsUnclaimed }>Only files no sub-agent claimed</option>
 			</select></label>
-			<div class="field-row">
-				<label class="field"><span>Planner prompt</span><select name="planner_prompt">
-					<option value="">No planner</option>
-					@promptOptions(prompts, overload.PromptPlan, workflow.PlannerPrompt)
-				</select><small>One call per review that may send files to sub-agents whatever they are named.</small></label>
-				<label class="field"><span>Verifier prompt</span><select name="verifier_prompt">
-					<option value="">No verifier</option>
-					@promptOptions(prompts, overload.PromptVerify, workflow.VerifierPrompt)
-				</select><small>One call per sub-agent finding; dropped findings are kept on the run but not posted.</small></label>
-			</div>
+			<details class="scope" open?={ workflow.PlannerPrompt != "" }><summary>Planner { onOff(workflow.PlannerPrompt) }</summary>
+				<label class="field"><span>Planner instructions</span><textarea name="planner_prompt" rows="5" class="short" maxlength="16000" placeholder="Send files that touch the database to the sub-agent whose description covers database access, whatever their path. Only assign files clearly in a sub-agent's area.">{ workflow.PlannerPrompt }</textarea><small>One model call per review that may give sub-agents extra files whatever they are named. It sees each sub-agent's description. Leave empty for no planner.</small></label>
+			</details>
+			<details class="scope" open?={ workflow.VerifierPrompt != "" }><summary>Verifier { onOff(workflow.VerifierPrompt) }</summary>
+				<label class="field"><span>Verifier instructions</span><textarea name="verifier_prompt" rows="5" class="short" maxlength="16000" placeholder="Drop findings that are style preferences or speculation not shown by the changed lines. Keep real bugs.">{ workflow.VerifierPrompt }</textarea><small>One model call per sub-agent finding that keeps or drops it. Dropped findings stay on the run but are not posted. Leave empty for no verifier.</small></label>
+			</details>
 		}
 	</fieldset>
 	<fieldset class="tree-node"><legend>Sub-agents</legend>
@@ -101,14 +97,6 @@ templ agentOptions(workflow overload.Workflow, agents []overload.AgentDefinition
 	for _, agent := range agents {
 		if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || selected == agent.Name {
 			<option value={ agent.Name } selected?={ selected == agent.Name }>{ agent.Name } · { agent.Model }</option>
-		}
-	}
-}
-
-templ promptOptions(prompts []overload.PromptTemplate, kind, selected string) {
-	for _, prompt := range prompts {
-		if prompt.Kind == kind {
-			<option value={ prompt.Name } selected?={ selected == prompt.Name }>{ prompt.Name }</option>
 		}
 	}
 }

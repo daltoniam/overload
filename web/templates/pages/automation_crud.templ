@@ -1,53 +1,10 @@
 package pages
 
 import (
-	"fmt"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
 	"strings"
 )
-
-templ Prompts(prompts []overload.PromptTemplate) {
-	@layouts.Base(layouts.PageData{Title: "Prompts", CurrentPath: "/configure/prompts"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Prompts</p><h1>Prompts</h1><p class="muted">Edit instructions as new revisions. Agents keep their selected revision until saved again.</p></div><a class="button" href="/configure/prompts/new">New prompt</a></div>
-		<section class="panel">
-			if len(prompts) == 0 {
-				<div class="empty">No prompts yet. <a href="/configure/prompts/new">Create an agent prompt</a> to get started.</div>
-			} else {
-				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Latest revision</th><th></th></tr></thead><tbody>
-					for _, prompt := range prompts {
-						<tr data-kind={ prompt.Kind }><td><strong>{ prompt.Name }</strong></td><td>{ promptKindLabel(prompt.Kind) }</td><td>{ fmt.Sprint(prompt.Revision) }</td><td><a href={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name) }>View / edit</a></td></tr>
-					}
-				</tbody></table></div>
-			}
-		</section>
-	}
-}
-
-templ PromptForm(prompt overload.PromptTemplate, nonce string) {
-	@layouts.Base(layouts.PageData{Title: "Prompt", CurrentPath: "/configure/prompts"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/configure/prompts">Prompts</a> / Edit</p><h1>{ promptFormTitle(prompt.Name) }</h1><p class="muted">Saving a prompt creates a new revision; existing agents remain pinned to their previous revision.</p></div><a href="/configure/prompts">All prompts</a></div>
-		<section class="panel"><form method="post" action="/configure/prompts"><input type="hidden" name="csrf" value={ nonce }/>
-			if prompt.Name != "" {
-				<input type="hidden" name="existing" value={ prompt.Kind + "/" + prompt.Name }/>
-			}
-			if prompt.Name != "" {
-				<label class="field"><span>Type</span><input value={ promptKindLabel(prompt.Kind) } readonly/><small>Type is fixed for this prompt. Create another prompt for a different type.</small></label><input type="hidden" name="kind" value={ prompt.Kind }/>
-			} else {
-				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Agent</option><option value="plan">Planner</option><option value="verify">Verifier</option></select><small>Agent prompts are an agent's instructions. Planner and verifier prompts belong to a PR workflow and run on its main agent's model.</small></label>
-			}
-			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ prompt.Name } readonly?={ prompt.Name != "" } placeholder="security"/></label>
-			<label class="field"><span>Instructions</span><textarea name="body" required maxlength="16000" placeholder="Describe the agent's task.">{ prompt.Body }</textarea></label>
-			if prompt.Name != "" {
-				<p class="muted">Current revision { fmt.Sprint(prompt.Revision) }. Saving creates revision { fmt.Sprint(prompt.Revision + 1) }.</p>
-			}
-			<div class="actions"><button type="submit">Save prompt revision</button><a class="button secondary" href="/configure/prompts">Cancel</a></div>
-		</form></section>
-		if prompt.Name != "" {
-			<section class="panel"><h2>Delete prompt</h2><p class="muted">Only prompts no agent or workflow uses can be deleted. Revision history is removed with the prompt.</p><form method="post" action={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete prompt</button></form></section>
-		}
-	}
-}
 
 templ Workflows(workflows []overload.Workflow) {
 	@layouts.Base(layouts.PageData{Title: "Workflows", CurrentPath: "/configure/workflows"}) {
@@ -80,7 +37,7 @@ templ Workflows(workflows []overload.Workflow) {
 	}
 }
 
-templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition, prompts []overload.PromptTemplate, nonce string) {
+templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Workflow", CurrentPath: "/configure/workflows"}) {
 		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workflows">Workflows</a> / Edit</p><h1>{ workflowFormTitle(workflow.Name) }</h1><p class="muted">A main agent leads the review and sub-agents review the files they are for. A disabled workflow will not start new runs.</p></div><div>
 			if workflow.Name != "" && workflow.Kind == "pr_review" && workflow.Enabled {
@@ -95,7 +52,7 @@ templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition
 			<label class="field"><span>Type</span><select name="kind" required hx-get="/configure/workflow-agents" hx-target="#workflow-agents" hx-include="closest form" hx-trigger="change" hx-swap="innerHTML"><option value="pr_review" selected?={ workflow.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ workflow.Kind == "scheduled_prompt" }>Scheduled prompt</option></select></label>
 			<noscript><p class="notice">After changing type, choose the matching options: <a href="/configure/workflows/new?kind=pr_review">PR review agents</a> or <a href="/configure/workflows/new?kind=scheduled_prompt">scheduled agents</a>. This starts a new form.</p></noscript>
 			<div id="workflow-agents">
-				@WorkflowAgents(workflow, agents, prompts)
+				@WorkflowAgents(workflow, agents)
 			</div>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ workflow.Enabled }/> Enabled for future runs</label>
 			<div class="actions"><button type="submit">Save workflow</button><a class="button secondary" href="/configure/workflows">Cancel</a></div>
@@ -106,25 +63,7 @@ templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition
 	}
 }
 
-func promptKindLabel(kind string) string {
-	switch kind {
-	case "entry":
-		return "Agent"
-	case "plan":
-		return "Planner"
-	case "verify":
-		return "Verifier"
-	default:
-		return kind
-	}
-}
 
-func promptFormTitle(name string) string {
-	if name == "" {
-		return "New prompt"
-	}
-	return "Edit prompt"
-}
 
 func workflowFormTitle(name string) string {
 	if name == "" {

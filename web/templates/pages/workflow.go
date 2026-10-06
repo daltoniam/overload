@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/daltoniam/overload"
 )
@@ -124,8 +125,6 @@ func filterLabel(value string) string {
 		return "PR review"
 	case "scheduled_prompt":
 		return "Scheduled prompt"
-	case "entry", "plan", "verify":
-		return promptKindLabel(value)
 	case "local":
 		return "Local"
 	case "hosted":
@@ -133,4 +132,29 @@ func filterLabel(value string) string {
 	default:
 		return value
 	}
+}
+
+// StarterPrompt is built-in text a new agent can start from.
+type StarterPrompt struct {
+	Name, Label string
+}
+
+// promptExcerpt shortens instructions for a table cell.
+func promptExcerpt(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= 140 {
+		return text
+	}
+	cut := 140
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "…"
+}
+
+func onOff(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return "(off)"
+	}
+	return "(on)"
 }

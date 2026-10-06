@@ -10,56 +10,49 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) SavePrompt(ctx context.Context, prompt overload.PromptTemplate) (overload.PromptTemplate, error) {
-	if err := prompt.Validate(); err != nil {
-		return prompt, err
-	}
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return prompt, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+// Owned prompt names. Agents and workflows own their prompts; the names use a
+// ':' that user-chosen names cannot contain, so they never collide.
+func agentPromptName(agent string) string       { return "agent:" + agent }
+func workflowPromptName(workflow string) string { return "workflow:" + workflow }
+
+// savePromptText stores text as the latest revision of an owned prompt,
+// adding a revision only when the text changed, and returns that revision's
+// ID and number.
+func savePromptText(ctx context.Context, tx pgx.Tx, name, kind, text string) (int64, int, error) {
 	var templateID int64
-	if err := tx.QueryRow(ctx, `INSERT INTO prompt_templates(name, kind) VALUES ($1,$2) ON CONFLICT(name,kind) DO UPDATE SET name=EXCLUDED.name RETURNING id`, prompt.Name, prompt.Kind).Scan(&templateID); err != nil {
-		return prompt, err
+	if err := tx.QueryRow(ctx, `INSERT INTO prompt_templates(name, kind) VALUES ($1,$2) ON CONFLICT(name,kind) DO UPDATE SET name=EXCLUDED.name RETURNING id`, name, kind).Scan(&templateID); err != nil {
+		return 0, 0, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, templateID+801000); err != nil {
-		return prompt, err
+		return 0, 0, err
 	}
-	if err := tx.QueryRow(ctx, `SELECT COALESCE(max(revision),0)+1 FROM prompt_revisions WHERE template_id=$1`, templateID).Scan(&prompt.Revision); err != nil {
-		return prompt, err
+	var id int64
+	var revision int
+	var body string
+	err := tx.QueryRow(ctx, `SELECT id,revision,body FROM prompt_revisions WHERE template_id=$1 ORDER BY revision DESC LIMIT 1`, templateID).Scan(&id, &revision, &body)
+	if err == nil && body == text {
+		return id, revision, nil
 	}
-	prompt.SHA256 = overload.PromptDigest(prompt.Body)
-	if _, err := tx.Exec(ctx, `INSERT INTO prompt_revisions(template_id,revision,body,content_sha256) VALUES ($1,$2,$3,$4)`, templateID, prompt.Revision, prompt.Body, prompt.SHA256); err != nil {
-		return prompt, err
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return 0, 0, err
 	}
-	return prompt, tx.Commit(ctx)
+	revision++
+	err = tx.QueryRow(ctx, `INSERT INTO prompt_revisions(template_id,revision,body,content_sha256) VALUES ($1,$2,$3,$4) RETURNING id`, templateID, revision, text, overload.PromptDigest(text)).Scan(&id)
+	return id, revision, err
 }
 
-func (s *Store) GetPrompt(ctx context.Context, kind, name string, revision int) (overload.PromptTemplate, error) {
-	var prompt overload.PromptTemplate
-	query := `SELECT t.name,t.kind,r.revision,r.body,r.content_sha256 FROM prompt_templates t JOIN prompt_revisions r ON r.template_id=t.id WHERE t.kind=$1 AND t.name=$2 AND ($3=0 OR r.revision=$3) ORDER BY r.revision DESC LIMIT 1`
-	err := s.Pool.QueryRow(ctx, query, kind, name, revision).Scan(&prompt.Name, &prompt.Kind, &prompt.Revision, &prompt.Body, &prompt.SHA256)
-	return prompt, err
+// deleteOwnedPrompts removes an agent's or workflow's prompts once nothing
+// references them. Runs keep their prompts in their pinned snapshots.
+func deleteOwnedPrompts(ctx context.Context, tx pgx.Tx, name string) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=$1)`, name); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `DELETE FROM prompt_templates WHERE name=$1`, name)
+	return err
 }
 
-func (s *Store) ListPrompts(ctx context.Context) ([]overload.PromptTemplate, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT DISTINCT ON (t.kind,t.name) t.name,t.kind,r.revision,r.body,r.content_sha256 FROM prompt_templates t JOIN prompt_revisions r ON r.template_id=t.id ORDER BY t.kind,t.name,r.revision DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var prompts []overload.PromptTemplate
-	for rows.Next() {
-		var prompt overload.PromptTemplate
-		if err := rows.Scan(&prompt.Name, &prompt.Kind, &prompt.Revision, &prompt.Body, &prompt.SHA256); err != nil {
-			return nil, err
-		}
-		prompts = append(prompts, prompt)
-	}
-	return prompts, rows.Err()
-}
-
+// SaveAgent saves an agent with its prompt. Changed prompt text becomes a new
+// revision that the agent uses from then on.
 func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) error {
 	if err := agent.Validate(); err != nil {
 		return err
@@ -67,15 +60,27 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if agent.Kind == "" {
 		agent.Kind = "pr_review"
 	}
-	if _, err := s.GetPrompt(ctx, "entry", agent.EntryPrompt, 0); err != nil {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,(SELECT id FROM model_profiles WHERE name=$2),(SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$3 AND t.kind='entry' ORDER BY r.revision DESC LIMIT 1),$4,$5) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,updated_at=now()`, agent.Name, agent.Model, agent.EntryPrompt, agent.Enabled, agent.Kind)
-	return err
+	defer func() { _ = tx.Rollback(ctx) }()
+	var modelID int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM model_profiles WHERE name=$1`, agent.Model).Scan(&modelID); err != nil {
+		return fmt.Errorf("model connection %q not found", agent.Model)
+	}
+	revisionID, _, err := savePromptText(ctx, tx, agentPromptName(agent.Name), overload.PromptEntry, agent.Prompt)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,updated_at=now()`, agent.Name, modelID, revisionID, agent.Enabled, agent.Kind); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,entry.name,a.enabled,er.revision FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions er ON er.id=a.entry_prompt_revision_id JOIN prompt_templates entry ON entry.id=er.template_id ORDER BY a.name`)
+	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,r.body,r.revision,a.enabled FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions r ON r.id=a.entry_prompt_revision_id ORDER BY a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +88,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 	var agents []overload.AgentDefinition
 	for rows.Next() {
 		var agent overload.AgentDefinition
-		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.EntryPrompt, &agent.Enabled, &agent.EntryRevision); err != nil {
+		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.Prompt, &agent.PromptRevision, &agent.Enabled); err != nil {
 			return nil, err
 		}
 		agents = append(agents, agent)
@@ -91,14 +96,21 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 	return agents, rows.Err()
 }
 
+// SaveWorkflow saves a workflow with its planner and verifier prompts.
+// Changed prompt text becomes a new revision.
 func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) error {
 	if err := workflow.Validate(); err != nil {
 		return err
 	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	for _, name := range workflow.Agents {
 		var enabled bool
 		var kind string
-		if err := s.Pool.QueryRow(ctx, `SELECT enabled,kind FROM agent_definitions WHERE name=$1`, name).Scan(&enabled, &kind); err != nil || !enabled || kind != workflow.Kind {
+		if err := tx.QueryRow(ctx, `SELECT enabled,kind FROM agent_definitions WHERE name=$1`, name).Scan(&enabled, &kind); err != nil || !enabled || kind != workflow.Kind {
 			return fmt.Errorf("workflow agent %q not available for %s", name, workflow.Kind)
 		}
 	}
@@ -106,52 +118,42 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, PlannerPrompt: workflow.PlannerPrompt, VerifierPrompt: workflow.VerifierPrompt}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews}
 	for _, prompt := range []struct {
-		name, kind string
+		text, kind string
 		id         *int64
 	}{{workflow.PlannerPrompt, overload.PromptPlan, &stored.PlannerRevisionID}, {workflow.VerifierPrompt, overload.PromptVerify, &stored.VerifierRevisionID}} {
-		if prompt.name == "" {
+		if prompt.text == "" {
 			continue
 		}
-		if err := s.Pool.QueryRow(ctx, `SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$1 AND t.kind=$2 ORDER BY r.revision DESC LIMIT 1`, prompt.name, prompt.kind).Scan(prompt.id); err != nil {
-			return fmt.Errorf("workflow %s prompt %q not found", prompt.kind, prompt.name)
+		if *prompt.id, _, err = savePromptText(ctx, tx, workflowPromptName(workflow.Name), prompt.kind, prompt.text); err != nil {
+			return err
 		}
 	}
 	routing, err := json.Marshal(stored)
 	if err != nil {
 		return err
 	}
-	_, err = s.Pool.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now()`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing)
-	return err
+	if _, err := tx.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now()`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // workflowRouting is the stored form of a workflow's skip paths, sub-agent
-// scopes, main agent review mode, file-review limit and planner and verifier
-// prompts. The prompts are pinned to the revision current when the workflow
-// was saved, like an agent's prompts.
+// scopes, main agent review mode, file-review limit and the revisions of its
+// planner and verifier prompts.
 type workflowRouting struct {
 	Scopes             map[string]overload.Scope `json:"scopes,omitempty"`
 	SkipPaths          []string                  `json:"skip_paths,omitempty"`
 	MainReviews        string                    `json:"main_reviews,omitempty"`
 	MaxFileReviews     int                       `json:"max_file_reviews,omitempty"`
-	PlannerPrompt      string                    `json:"planner_prompt,omitempty"`
 	PlannerRevisionID  int64                     `json:"planner_prompt_revision_id,omitempty"`
-	VerifierPrompt     string                    `json:"verifier_prompt,omitempty"`
 	VerifierRevisionID int64                     `json:"verifier_prompt_revision_id,omitempty"`
 }
 
-func (routing workflowRouting) apply(workflow *overload.Workflow) {
-	workflow.Scopes = routing.Scopes
-	workflow.SkipPaths = routing.SkipPaths
-	workflow.MainReviews = routing.MainReviews
-	workflow.MaxFileReviews = routing.MaxFileReviews
-	workflow.PlannerPrompt = routing.PlannerPrompt
-	workflow.VerifierPrompt = routing.VerifierPrompt
-}
-
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name,kind,revision,agent_names,enabled,routing FROM workflows ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `SELECT w.name,w.kind,w.revision,w.agent_names,w.enabled,w.routing,COALESCE(p.body,''),COALESCE(v.body,'') FROM workflows w LEFT JOIN prompt_revisions p ON p.id=(w.routing->>'planner_prompt_revision_id')::bigint LEFT JOIN prompt_revisions v ON v.id=(w.routing->>'verifier_prompt_revision_id')::bigint ORDER BY w.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +162,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 	for rows.Next() {
 		var workflow overload.Workflow
 		var data, routingData []byte
-		if err := rows.Scan(&workflow.Name, &workflow.Kind, &workflow.Revision, &data, &workflow.Enabled, &routingData); err != nil {
+		if err := rows.Scan(&workflow.Name, &workflow.Kind, &workflow.Revision, &data, &workflow.Enabled, &routingData, &workflow.PlannerPrompt, &workflow.VerifierPrompt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(data, &workflow.Agents); err != nil {
@@ -170,7 +172,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 		if err := json.Unmarshal(routingData, &routing); err != nil {
 			return nil, err
 		}
-		routing.apply(&workflow)
+		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()

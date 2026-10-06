@@ -41,6 +41,24 @@ func loadPrompt(profile string) (string, string, error) {
 	return string(content), version, nil
 }
 
+// BuiltinPrompt is a review prompt shipped with overload, offered as the
+// starting text for a new agent.
+type BuiltinPrompt struct {
+	Name, Label, Body string
+}
+
+// BuiltinPrompts lists the shipped review prompts.
+func BuiltinPrompts() []BuiltinPrompt {
+	var builtins []BuiltinPrompt
+	for _, builtin := range []struct{ name, label string }{{"context", "General code review"}, {"switchboard-go", "Switchboard Go review"}} {
+		body, _, err := loadPrompt(builtin.name)
+		if err == nil {
+			builtins = append(builtins, BuiltinPrompt{Name: builtin.name, Label: builtin.label, Body: body})
+		}
+	}
+	return builtins
+}
+
 // ProfileWorkflow turns a model and a built-in prompt into a one-agent
 // workflow, so a review without a saved workflow runs through the same
 // engine. The workflow is named after the prompt version.

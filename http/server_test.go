@@ -70,16 +70,6 @@ func (store *fakeStore) RecordDelivery(context.Context, string, string, string, 
 
 type fakeConfigStore struct{ fakeStore }
 
-func (store *fakeConfigStore) ListPrompts(context.Context) ([]overload.PromptTemplate, error) {
-	return nil, nil
-}
-func (store *fakeConfigStore) GetPrompt(context.Context, string, string, int) (overload.PromptTemplate, error) {
-	return overload.PromptTemplate{}, nil
-}
-func (store *fakeConfigStore) SavePrompt(_ context.Context, prompt overload.PromptTemplate) (overload.PromptTemplate, error) {
-	return prompt, prompt.Validate()
-}
-func (store *fakeConfigStore) DeletePrompt(context.Context, string, string) error { return nil }
 func (store *fakeConfigStore) ListAgents(context.Context) ([]overload.AgentDefinition, error) {
 	return nil, nil
 }
@@ -133,8 +123,8 @@ func TestConfigureAuthAndCSRF(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Run statistics") || strings.Contains(response.Body.String(), `href="/configure"`) || !strings.Contains(response.Body.String(), `class="sidebar"`) {
 		t.Fatalf("overview navigation: %d", response.Code)
 	}
-	form := url.Values{"name": {"security"}, "kind": {"entry"}, "body": {"Check authorization."}}
-	post := httptest.NewRequest(http.MethodPost, "/configure/prompts", strings.NewReader(form.Encode()))
+	form := url.Values{"name": {"security"}, "model": {"local"}, "prompt": {"Check authorization."}, "enabled": {"true"}}
+	post := httptest.NewRequest(http.MethodPost, "/configure/agents", strings.NewReader(form.Encode()))
 	post.SetBasicAuth("admin", "password")
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response = httptest.NewRecorder()
@@ -145,7 +135,7 @@ func TestConfigureAuthAndCSRF(t *testing.T) {
 	match := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(response.Body.String())
 	if len(match) != 2 {
 		page := httptest.NewRecorder()
-		promptRequest := httptest.NewRequest(http.MethodGet, "/configure/prompts/new", nil)
+		promptRequest := httptest.NewRequest(http.MethodGet, "/configure/agents/new", nil)
 		promptRequest.SetBasicAuth("admin", "password")
 		handler.ServeHTTP(page, promptRequest)
 		match = regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(page.Body.String())
@@ -154,13 +144,13 @@ func TestConfigureAuthAndCSRF(t *testing.T) {
 		t.Fatal("configuration form token missing")
 	}
 	form.Set("csrf", match[1])
-	post = httptest.NewRequest(http.MethodPost, "/configure/prompts", strings.NewReader(form.Encode()))
+	post = httptest.NewRequest(http.MethodPost, "/configure/agents", strings.NewReader(form.Encode()))
 	post.SetBasicAuth("admin", "password")
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, post)
 	if response.Code != http.StatusSeeOther {
-		t.Fatalf("valid prompt form: %d", response.Code)
+		t.Fatalf("valid agent form: %d %s", response.Code, response.Body.String())
 	}
 }
 

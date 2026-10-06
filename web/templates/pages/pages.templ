@@ -17,7 +17,7 @@ func runSource(run overload.Run) string {
 
 templ Dashboard(runs []overload.Run, statistics ...postgres.DashboardStats) {
 	@layouts.Base(layouts.PageData{Title: "Overview", CurrentPath: "/"}) {
-		<div class="page-header"><div><p class="eyebrow">Overview</p><h1>Overview</h1><p class="muted">Manage models, prompts, agents, workflows, repositories and scheduled jobs.</p></div></div>
+		<div class="page-header"><div><p class="eyebrow">Overview</p><h1>Overview</h1><p class="muted">Manage models, agents, workflows, repositories and scheduled jobs.</p></div></div>
 		<p class="notice">Posting GitHub reviews is opt-in and requires repository configuration, the server posting gate, and a GitHub App.</p>
 		if len(statistics) > 0 {
 			@DashboardGraphs(statistics[0])

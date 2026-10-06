@@ -24,8 +24,8 @@ func TestWorkflowConfiguration(t *testing.T) {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM trigger_bindings WHERE repository_full_name='test/workflow-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM workflows WHERE name='test-workflow-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name IN ('test-agent-configuration','test-agent-configuration-security')`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration','test-plan-configuration'))`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name IN ('test-entry-configuration','test-review-configuration','test-plan-configuration')`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name IN ('agent:test-agent-configuration','agent:test-agent-configuration-security','workflow:test-workflow-configuration'))`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name IN ('agent:test-agent-configuration','agent:test-agent-configuration-security','workflow:test-workflow-configuration')`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name='test-model-configuration'`)
 		store.Pool.Close()
 	})
@@ -33,29 +33,22 @@ func TestWorkflowConfiguration(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, model); err != nil {
 		t.Fatal(err)
 	}
-	entry, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-entry-configuration", Kind: "entry", Body: "Review safely."})
-	if err != nil || entry.Revision < 1 || entry.SHA256 == "" {
-		t.Fatalf("entry prompt: %+v %v", entry, err)
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-agent-configuration", Model: "missing-model", Prompt: "Review safely.", Enabled: true}); err == nil {
+		t.Fatal("saved an agent with an unknown model")
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-review-configuration", Kind: "review", Body: "Check status handling."}); err == nil {
-		t.Fatal("saved a review focus prompt; agents have one prompt")
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-agent-configuration", Model: model.Name, Prompt: "  ", Enabled: true}); err == nil {
+		t.Fatal("saved an agent without a prompt")
 	}
-	agent := overload.AgentDefinition{Name: "test-agent-configuration", Model: model.Name, EntryPrompt: entry.Name, Enabled: true}
+	agent := overload.AgentDefinition{Name: "test-agent-configuration", Model: model.Name, Prompt: "Review safely.", Enabled: true}
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
-	storedAgents, err := store.ListAgents(ctx)
-	if err != nil {
+	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, stored := range storedAgents {
-		if stored.Name == agent.Name && stored.Kind == "pr_review" && stored.EntryPrompt == agent.EntryPrompt && stored.EntryRevision == entry.Revision {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("PR agent kind or prompt was not saved: %+v", storedAgents)
+	stored := findAgent(t, store, agent.Name)
+	if stored.Kind != "pr_review" || stored.Prompt != agent.Prompt || stored.PromptRevision != 1 {
+		t.Fatalf("agent not saved, or saving unchanged text added a revision: %+v", stored)
 	}
 	workflow := overload.Workflow{Name: "test-workflow-configuration", Kind: "pr_review", Agents: []string{agent.Name}, Enabled: true}
 	if err := store.SaveWorkflow(ctx, workflow); err != nil {
@@ -74,7 +67,7 @@ func TestWorkflowConfiguration(t *testing.T) {
 		t.Fatalf("binding not saved: %+v %v", bindings, err)
 	}
 	resolved, err := store.ResolveWorkflow(ctx, workflow.Name)
-	if err != nil || len(resolved.Agents) != 1 || resolved.Agents[0].EntryPrompt.Body != entry.Body || resolved.Agents[0].LegacyFocus.Kind != "" || resolved.Agents[0].Model.ConnectionKind != "local" {
+	if err != nil || len(resolved.Agents) != 1 || resolved.Agents[0].EntryPrompt.Body != agent.Prompt || resolved.Agents[0].EntryPrompt.Revision != 1 || resolved.Agents[0].LegacyFocus.Kind != "" || resolved.Agents[0].Model.ConnectionKind != "local" || resolved.Verify() != nil {
 		t.Fatalf("workflow: %+v %v", resolved, err)
 	}
 	if resolved.Version != overload.SnapshotVersion || resolved.Agents[0].Scope.Paths != nil || resolved.SkipPaths != nil {
@@ -92,14 +85,9 @@ func TestWorkflowConfiguration(t *testing.T) {
 	if err := store.SaveWorkflow(ctx, routed); err != nil {
 		t.Fatal(err)
 	}
-	listed, err := store.ListWorkflows(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, stored := range listed {
-		if stored.Name == routed.Name && (stored.Scopes[security.Name].MaxFindings != 3 || stored.MainReviews != overload.MainReviewsUnclaimed || stored.MaxFileReviews != 40 || len(stored.SkipPaths) != 1) {
-			t.Fatalf("routing not listed: %+v", stored)
-		}
+	stored2 := findWorkflow(t, store, routed.Name)
+	if stored2.Scopes[security.Name].MaxFindings != 3 || stored2.MainReviews != overload.MainReviewsUnclaimed || stored2.MaxFileReviews != 40 || len(stored2.SkipPaths) != 1 || stored2.PlannerPrompt != "" {
+		t.Fatalf("routing not listed: %+v", stored2)
 	}
 	resolvedRouted, err := store.ResolveWorkflow(ctx, routed.Name)
 	if err != nil || resolvedRouted.Verify() != nil || resolvedRouted.Agents[1].Scope.Paths[0] != "**/auth/**" || resolvedRouted.Agents[0].Scope.Paths != nil || resolvedRouted.SkipPaths[0] != "*.lock" || resolvedRouted.MaxFileReviews != 40 {
@@ -108,47 +96,53 @@ func TestWorkflowConfiguration(t *testing.T) {
 	if resolvedRouted.PlannerPrompt != nil || resolvedRouted.VerifierPrompt != nil {
 		t.Fatalf("unexpected planner: %+v", resolvedRouted)
 	}
+
 	planned := routed
-	planned.PlannerPrompt, planned.VerifierPrompt = "test-plan-configuration", "test-plan-configuration"
-	if err := store.SaveWorkflow(ctx, planned); err == nil {
-		t.Fatal("saved a workflow with missing planner prompts")
-	}
-	plan, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptPlan, Body: "Plan v1."})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptVerify, Body: "Verify v1."}); err != nil {
-		t.Fatal(err)
-	}
+	planned.PlannerPrompt, planned.VerifierPrompt = "Plan v1.", "Verify v1."
 	if err := store.SaveWorkflow(ctx, planned); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-plan-configuration", Kind: overload.PromptPlan, Body: "Plan v2."}); err != nil {
+	pinned, err := store.ResolveWorkflow(ctx, planned.Name)
+	if err != nil {
 		t.Fatal(err)
 	}
+	planned.PlannerPrompt = "Plan v2."
+	if err := store.SaveWorkflow(ctx, planned); err != nil {
+		t.Fatal(err)
+	}
+	if listed := findWorkflow(t, store, planned.Name); listed.PlannerPrompt != "Plan v2." || listed.VerifierPrompt != "Verify v1." {
+		t.Fatalf("planner text not listed: %+v", listed)
+	}
 	resolvedPlanned, err := store.ResolveWorkflow(ctx, planned.Name)
-	if err != nil || resolvedPlanned.Verify() != nil || resolvedPlanned.PlannerPrompt.Body != "Plan v1." || resolvedPlanned.PlannerPrompt.Revision != plan.Revision || resolvedPlanned.VerifierPrompt.Body != "Verify v1." {
-		t.Fatalf("planner not pinned: %+v %v", resolvedPlanned, err)
+	if err != nil || resolvedPlanned.Verify() != nil || resolvedPlanned.PlannerPrompt.Body != "Plan v2." || resolvedPlanned.PlannerPrompt.Revision != 2 || resolvedPlanned.VerifierPrompt.Body != "Verify v1." || resolvedPlanned.VerifierPrompt.Revision != 1 {
+		t.Fatalf("planner revisions: %+v %v", resolvedPlanned, err)
 	}
-	if err := store.DeletePrompt(ctx, overload.PromptVerify, "test-plan-configuration"); err == nil {
-		t.Fatal("deleted a verifier prompt a workflow uses")
-	}
-	listed, err = store.ListWorkflows(ctx)
-	for _, stored := range listed {
-		if stored.Name == planned.Name && (stored.PlannerPrompt != planned.PlannerPrompt || stored.VerifierPrompt != planned.VerifierPrompt) {
-			t.Fatalf("planner not listed: %+v %v", stored, err)
-		}
+	if pinned.PlannerPrompt.Body != "Plan v1." || pinned.Verify() != nil {
+		t.Fatalf("an earlier snapshot must keep its planner text: %+v", pinned.PlannerPrompt)
 	}
 	if err := store.SaveWorkflow(ctx, workflow); err != nil {
 		t.Fatal(err)
 	}
-	updated, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: entry.Name, Kind: "entry", Body: "Changed prompt."})
-	if err != nil || updated.Revision != entry.Revision+1 {
-		t.Fatalf("revised prompt: %+v %v", updated, err)
+	if listed := findWorkflow(t, store, workflow.Name); listed.PlannerPrompt != "" || listed.VerifierPrompt != "" {
+		t.Fatalf("cleared planner still listed: %+v", listed)
+	}
+
+	agent.Prompt = "Changed prompt."
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	if changed := findAgent(t, store, agent.Name); changed.Prompt != agent.Prompt || changed.PromptRevision != 2 {
+		t.Fatalf("changed prompt not saved as revision 2: %+v", changed)
+	}
+	if security := findAgent(t, store, security.Name); security.Prompt != "Review safely." {
+		t.Fatalf("agents must not share prompts: %+v", security)
+	}
+	if resolved.Agents[0].EntryPrompt.Body != "Review safely." || resolved.Verify() != nil {
+		t.Fatalf("an earlier snapshot must keep its prompt: %+v", resolved.Agents[0].EntryPrompt)
 	}
 	resolvedAgain, err := store.ResolveWorkflow(ctx, workflow.Name)
-	if err != nil || resolvedAgain.Agents[0].EntryPrompt.SHA256 != entry.SHA256 {
-		t.Fatalf("pinned prompt changed: %+v %v", resolvedAgain, err)
+	if err != nil || resolvedAgain.Agents[0].EntryPrompt.Body != agent.Prompt || resolvedAgain.Agents[0].EntryPrompt.Revision != 2 {
+		t.Fatalf("new runs must use the changed prompt: %+v %v", resolvedAgain, err)
 	}
 	model.ConnectionKind, model.APIKeyEnv = "hosted", "TEST_MODEL_KEY"
 	model.Concurrency = 4
@@ -160,4 +154,34 @@ func TestWorkflowConfiguration(t *testing.T) {
 	if err != nil || hosted.Agents[0].Model.ConnectionKind != "hosted" || hosted.Agents[0].Model.Model != "test" || hosted.Agents[0].Model.Concurrency != 4 || hosted.Agents[0].Model.ReasoningEffort != "max" || hosted.Agents[0].Model.MaxOutputTokens != 65536 {
 		t.Fatalf("hosted model not resolved: %+v %v", hosted, err)
 	}
+}
+
+func findAgent(t *testing.T, store *Store, name string) overload.AgentDefinition {
+	t.Helper()
+	agents, err := store.ListAgents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range agents {
+		if agent.Name == name {
+			return agent
+		}
+	}
+	t.Fatalf("agent %s not listed", name)
+	return overload.AgentDefinition{}
+}
+
+func findWorkflow(t *testing.T, store *Store, name string) overload.Workflow {
+	t.Helper()
+	workflows, err := store.ListWorkflows(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, workflow := range workflows {
+		if workflow.Name == name {
+			return workflow
+		}
+	}
+	t.Fatalf("workflow %s not listed", name)
+	return overload.Workflow{}
 }

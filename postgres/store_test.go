@@ -62,12 +62,7 @@ func TestIngestPRTransaction(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: "test-ingest-model", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8081/v1", Model: "test", PromptProfile: "context"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, prompt := range []overload.PromptTemplate{{Name: "test-ingest-entry", Kind: "entry", Body: "Review PR."}} {
-		if _, err := store.SavePrompt(ctx, prompt); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-ingest-agent", Model: "test-ingest-model", EntryPrompt: "test-ingest-entry", Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-ingest-agent", Model: "test-ingest-model", Prompt: "Review PR.", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: "test-ingest-workflow", Kind: "pr_review", Agents: []string{"test-ingest-agent"}, Enabled: true}); err != nil {
@@ -131,8 +126,8 @@ func TestIngestPRTransaction(t *testing.T) {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM trigger_bindings WHERE repository_full_name='test/transaction'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM workflows WHERE name='test-ingest-workflow'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name='test-ingest-agent'`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name='test-ingest-entry')`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name='test-ingest-entry'`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name='agent:test-ingest-agent')`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name='agent:test-ingest-agent'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name='test-ingest-model'`)
 		store.Pool.Close()
 	})

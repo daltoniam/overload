@@ -29,7 +29,6 @@ var listSpecs = map[string]listSpec{
 	"/settings":               {[]string{"local", "hosted"}, nil},
 	"/runs":                   {[]string{"pr_review", "scheduled_prompt"}, []string{"queued", "running", "completed", "failed", "superseded"}},
 	"/webhooks":               {nil, []string{"queued", "skipped", "applied"}},
-	"/configure/prompts":      {[]string{"entry", "plan", "verify"}, nil},
 	"/configure/agents":       {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/workflows":    {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/repositories": {nil, []string{"Enabled", "Disabled"}},
@@ -302,7 +301,7 @@ func filterRows(results *html.Node, r *http.Request, state pages.UIState) {
 		for row := tbody.FirstChild; row != nil; {
 			nextRow := row.NextSibling
 			if row.Data == "tr" {
-				if rowMatches(row, r.URL.Path, state) {
+				if rowMatches(row, state) {
 					visible++
 				} else {
 					tbody.RemoveChild(row)
@@ -322,21 +321,12 @@ func filterRows(results *html.Node, r *http.Request, state pages.UIState) {
 // rowMatches filters a configuration list row. Rows that carry data-kind
 // and data-status are matched on those exact values, so the table can show
 // friendly labels; other rows fall back to matching their text.
-func rowMatches(row *html.Node, path string, state pages.UIState) bool {
+func rowMatches(row *html.Node, state pages.UIState) bool {
 	content := strings.ToLower(text(row))
 	if rowKind, rowStatus := attr(row, "data-kind"), attr(row, "data-status"); rowKind != "" || rowStatus != "" {
 		return strings.Contains(content, strings.ToLower(state.Query)) && (state.Kind == "" || state.Kind == rowKind) && (state.Status == "" || strings.EqualFold(state.Status, rowStatus))
 	}
-	kind := state.Kind
-	if path == "/configure/agents" {
-		if kind == "pr_review" {
-			kind = "PR review"
-		}
-		if kind == "scheduled_prompt" {
-			kind = "Scheduled prompt"
-		}
-	}
-	return strings.Contains(content, strings.ToLower(state.Query)) && (kind == "" || strings.Contains(content, strings.ToLower(kind))) && (state.Status == "" || strings.Contains(content, strings.ToLower(state.Status)))
+	return strings.Contains(content, strings.ToLower(state.Query)) && (state.Kind == "" || strings.Contains(content, strings.ToLower(state.Kind))) && (state.Status == "" || strings.Contains(content, strings.ToLower(state.Status)))
 }
 
 func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handler, csrf string, failed *httptest.ResponseRecorder) bool {
@@ -346,8 +336,6 @@ func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handle
 	path := r.URL.Path + "/new"
 	if strings.HasSuffix(r.URL.Path, "/delete") {
 		path = strings.TrimSuffix(r.URL.Path, "/delete")
-	} else if r.URL.Path == "/configure/prompts" && r.PostForm.Get("existing") != "" {
-		path = r.URL.Path + "/" + r.PostForm.Get("existing")
 	} else if r.URL.Path == "/configure/repositories" && r.PostForm.Get("id") != "" {
 		path = r.URL.Path + "/" + r.PostForm.Get("id")
 	} else if existing := r.PostForm.Get("existing"); existing != "" {

@@ -138,8 +138,7 @@ func TestUIPreview(t *testing.T) {
 	}
 	store := &automationStore{}
 	store.settings = []overload.ReviewSettings{{Name: "local-bonsai", ConnectionKind: "local", Model: "bonsai-2-27b", BaseURL: "http://127.0.0.1:8080/v1", Concurrency: 1, IsDefault: true}, {Name: "hosted-review", ConnectionKind: "hosted", Model: "gpt-4o", BaseURL: "https://example.com/v1", Concurrency: 1}}
-	store.prompts = []overload.PromptTemplate{{Name: "review-entry", Kind: "entry", Revision: 3, Body: "Review the pull request.\nReport actionable findings."}}
-	store.agents = []overload.AgentDefinition{{Name: "review-agent", Kind: "pr_review", Model: "local-bonsai", EntryPrompt: "review-entry", Enabled: true}, {Name: "summary-agent", Kind: "scheduled_prompt", Model: "hosted-review", EntryPrompt: "review-entry", Enabled: true}}
+	store.agents = []overload.AgentDefinition{{Name: "review-agent", Kind: "pr_review", Model: "local-bonsai", Prompt: "Review the pull request.\nReport actionable findings.", PromptRevision: 3, Enabled: true}, {Name: "summary-agent", Kind: "scheduled_prompt", Model: "hosted-review", Prompt: "Summarize the status.", PromptRevision: 1, Enabled: true}}
 	store.workflows = []overload.Workflow{{Name: "pr-review", Kind: "pr_review", Agents: []string{"review-agent"}, Enabled: true}, {Name: "daily-summary", Kind: "scheduled_prompt", Agents: []string{"summary-agent"}, Enabled: true}}
 	store.repos = []overload.Repository{{ID: 1, FullName: "example/repository", Enabled: true, DryRun: true}}
 	store.schedules = []overload.Schedule{{Name: "demo-summary", Workflow: "daily-summary", Cron: "0 9 * * *", Timezone: "UTC"}}

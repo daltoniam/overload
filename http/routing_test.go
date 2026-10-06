@@ -107,8 +107,7 @@ func TestWorkflowTreeEditor(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
 	store := &routingStore{}
 	store.agents = []overload.AgentDefinition{{Name: "lead", Kind: "pr_review", Model: "qwen", Enabled: true}, {Name: "security", Kind: "pr_review", Model: "sol", Enabled: true}, {Name: "tests", Kind: "pr_review", Model: "qwen", Enabled: true}, {Name: "summary", Kind: "scheduled_prompt", Model: "qwen", Enabled: true}}
-	store.prompts = []overload.PromptTemplate{{Name: "route", Kind: overload.PromptPlan, Body: "Plan.", Revision: 1}, {Name: "check", Kind: overload.PromptVerify, Body: "Verify.", Revision: 1}}
-	store.workflows = []overload.Workflow{{Name: "review", Kind: "pr_review", Agents: []string{"lead", "security"}, Enabled: true, SkipPaths: []string{"*.lock"}, MaxFileReviews: 30, PlannerPrompt: "route", Scopes: map[string]overload.Scope{"security": {Paths: []string{"auth/**"}, Mode: overload.ScopeAlways, MaxFindings: 3}}}}
+	store.workflows = []overload.Workflow{{Name: "review", Kind: "pr_review", Agents: []string{"lead", "security"}, Enabled: true, SkipPaths: []string{"*.lock"}, MaxFileReviews: 30, PlannerPrompt: "Route <auth> work.", Scopes: map[string]overload.Scope{"security": {Paths: []string{"auth/**"}, Mode: overload.ScopeAlways, MaxFindings: 3}}}}
 	handler := Handler(store)
 	get := func(path string) string {
 		t.Helper()
@@ -120,7 +119,7 @@ func TestWorkflowTreeEditor(t *testing.T) {
 		return response.Body.String()
 	}
 	page := get("/configure/workflows/review")
-	for _, want := range []string{`name="main_agent"`, `<option value="lead" selected="">`, `name="sub_0_agent"`, `<option value="security" selected="">`, `name="sub_7_agent"`, `<span class="chip">auth/**</span>`, `<span class="chip">only matching paths</span>`, `<span class="chip">at most 3 findings</span>`, `<option value="route" selected="">`, `<option value="check">`, `name="skip_paths"`, "*.lock", `value="30"`, "/configure/workflows/review/preview"} {
+	for _, want := range []string{`name="main_agent"`, `<option value="lead" selected="">`, `name="sub_0_agent"`, `<option value="security" selected="">`, `name="sub_7_agent"`, `<span class="chip">auth/**</span>`, `<span class="chip">only matching paths</span>`, `<span class="chip">at most 3 findings</span>`, `<textarea name="planner_prompt"`, "Route &lt;auth&gt; work.</textarea>", `Planner (on)`, `Verifier (off)`, `name="skip_paths"`, "*.lock", `value="30"`, "/configure/workflows/review/preview"} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("editor missing %q\n%s", want, page)
 		}
@@ -159,23 +158,23 @@ func TestWorkflowTreeEditor(t *testing.T) {
 	form := url.Values{"existing": {"review"}, "name": {"review"}, "kind": {"pr_review"}, "enabled": {"true"}, "main_agent": {"lead"}, "main_reviews": {"unclaimed"},
 		"sub_0_agent": {"security"}, "sub_0_mode": {"globs"}, "sub_0_paths": {"**/auth/**\r\n\r\n**/*.sql\n"}, "sub_0_description": {"Auth and SQL"}, "sub_0_max_findings": {"5"},
 		"sub_2_agent": {"tests"}, "sub_2_mode": {"planned"}, "sub_2_paths": {""}, "sub_2_max_findings": {""},
-		"skip_paths": {"*.lock\nvendor/**"}, "max_file_reviews": {"60"}, "planner_prompt": {"route"}, "verifier_prompt": {"check"}}
+		"skip_paths": {"*.lock\nvendor/**"}, "max_file_reviews": {"60"}, "planner_prompt": {"Route auth work.\r\nOnly clear cases."}, "verifier_prompt": {"Drop nits."}}
 	if response := post(form); response.Code != http.StatusOK || response.Header().Get("HX-Redirect") == "" {
 		t.Fatalf("save: %d %s", response.Code, response.Body.String())
 	}
 	saved := store.workflows[0]
-	want := overload.Workflow{Name: "review", Kind: "pr_review", Enabled: true, Agents: []string{"lead", "security", "tests"}, MainReviews: overload.MainReviewsUnclaimed, SkipPaths: []string{"*.lock", "vendor/**"}, MaxFileReviews: 60, PlannerPrompt: "route", VerifierPrompt: "check",
+	want := overload.Workflow{Name: "review", Kind: "pr_review", Enabled: true, Agents: []string{"lead", "security", "tests"}, MainReviews: overload.MainReviewsUnclaimed, SkipPaths: []string{"*.lock", "vendor/**"}, MaxFileReviews: 60, PlannerPrompt: "Route auth work.\nOnly clear cases.", VerifierPrompt: "Drop nits.",
 		Scopes: map[string]overload.Scope{"security": {Paths: []string{"**/auth/**", "**/*.sql"}, Description: "Auth and SQL", MaxFindings: 5}, "tests": {Mode: overload.ScopePlanned}}}
 	if !reflect.DeepEqual(saved, want) {
 		t.Fatalf("saved %+v\nwant  %+v", saved, want)
 	}
 
-	form.Set("planner_prompt", "")
+	form.Set("planner_prompt", " \r\n ")
 	response := post(form)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "planned scopes need a planner prompt") {
 		t.Fatalf("validation message: %d %s", response.Code, response.Body.String())
 	}
-	form.Set("planner_prompt", "route")
+	form.Set("planner_prompt", "Route.")
 	form.Set("sub_0_max_findings", "lots")
 	if response := post(form); response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "max findings for security must be a number") {
 		t.Fatalf("number message: %d %s", response.Code, response.Body.String())

@@ -31,8 +31,8 @@ func TestScheduleEnqueueDeduplicates(t *testing.T) {
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM schedules WHERE name='test-schedule-configuration'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM workflows WHERE name='test-scheduled-workflow'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM agent_definitions WHERE name='test-scheduled-agent'`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name='test-scheduled-entry')`)
-		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name='test-scheduled-entry'`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name='agent:test-scheduled-agent')`)
+		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM prompt_templates WHERE name='agent:test-scheduled-agent'`)
 		_, _ = store.Pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE name='test-scheduled-model'`)
 		store.Pool.Close()
 	})
@@ -40,10 +40,7 @@ func TestScheduleEnqueueDeduplicates(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, model); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-scheduled-entry", Kind: "entry", Body: "Summarize input."}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-scheduled-agent", Kind: "scheduled_prompt", Model: model.Name, EntryPrompt: "test-scheduled-entry", Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "test-scheduled-agent", Kind: "scheduled_prompt", Model: model.Name, Prompt: "Summarize input.", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	agents, err := store.ListAgents(ctx)
