@@ -73,8 +73,7 @@ func TestKindSandboxReview(t *testing.T) {
 		}
 	}
 	exec("", "settings", "set", "--name", "fake", "--url", "http://fake-model.overload.svc:8080/v1", "--model", "fake", "--default")
-	exec(`{"name":"sandbox-entry","kind":"entry","body":"Review the pull request for concrete bugs."}`, "prompts", "apply", "-")
-	exec(`{"name":"sandbox-reviewer","model":"fake","entry_prompt":"sandbox-entry","enabled":true}`, "agents", "apply", "-")
+	exec(`{"name":"sandbox-reviewer","model":"fake","prompt":"Review the pull request for concrete bugs.","enabled":true}`, "agents", "apply", "-")
 	exec(`{"name":"sandbox-review","kind":"pr_review","agents":["sandbox-reviewer"],"enabled":true}`, "workflows", "apply", "-")
 	exec(`{"name":"`+repo+`","enabled":true,"dry_run":true}`, "repositories", "apply", "-")
 	exec(`{"source":"github","event":"pull_request","action":"opened","repository":"`+repo+`","workflow":"sandbox-review","enabled":true}`, "bindings", "apply", "-")
