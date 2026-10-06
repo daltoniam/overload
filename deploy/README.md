@@ -169,7 +169,14 @@ ingress:
   - service: http_status:404
 ```
 
-`cloudflared service install` runs it at login. Use
+`cloudflared service install` runs it at login. On macOS the launch agent
+it writes may start `cloudflared` with no arguments, so it exits at once;
+if `launchctl list | grep cloudflared` shows a non-zero status, set
+`ProgramArguments` in `~/Library/LaunchAgents/com.cloudflare.cloudflared.plist`
+to `cloudflared --no-autoupdate --config ~/.cloudflared/config.yml tunnel run`
+(with full paths) and reload it with `launchctl unload` and `launchctl load`.
+Check from outside: a POST to `/webhooks/github` should return overload's
+"Invalid signature", and any other path a 404 from Cloudflare. Use
 `https://overload.example.com/webhooks/github` as the webhook URL, and keep
 using `http://127.0.0.1:8082` for the UI.
 
