@@ -43,3 +43,10 @@ func TestCheckResultTreatsSandboxOutputAsUntrusted(t *testing.T) {
 		t.Fatalf("well-formed routing not decoded: %+v %v", checked.Metrics, err)
 	}
 }
+
+func TestCheckResultKeepsAnEmptyFindingsList(t *testing.T) {
+	checked, err := CheckResult(overload.ReviewResult{Findings: []overload.Finding{}}, "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n", overload.DefaultMaxFindings)
+	if err != nil || checked.Findings == nil {
+		t.Fatalf("findings must stay an empty list, not null: %#v %v", checked.Findings, err)
+	}
+}

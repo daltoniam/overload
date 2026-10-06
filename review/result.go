@@ -34,6 +34,9 @@ func CheckResult(result overload.ReviewResult, patch string, limit int) (overloa
 		}
 		dropped[index].DropReason = reason
 	}
+	if findings == nil {
+		findings = []overload.Finding{}
+	}
 	result.Findings, result.Dropped = findings, dropped
 	if raw, ok := result.Metrics["routing"]; ok {
 		data, err := json.Marshal(raw)
