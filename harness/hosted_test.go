@@ -138,8 +138,8 @@ func focusedSpec(t *testing.T, diff string, profile overload.ModelProfile, pairs
 	entry, model := spec.Workflow.Agents[0].EntryPrompt, spec.Workflow.Agents[0].Model
 	spec.Workflow.Agents = nil
 	for index := 0; index < len(pairs); index += 2 {
-		body := "Review focus for " + pairs[index] + ":\n" + pairs[index+1]
-		spec.Workflow.Agents = append(spec.Workflow.Agents, overload.ResolvedAgent{Name: pairs[index], Model: model, EntryPrompt: entry, ReviewPrompt: overload.PromptTemplate{Name: pairs[index], Kind: "review", Body: body, SHA256: overload.PromptDigest(body)}})
+		body := entry.Body + "\n\nReview focus for " + pairs[index] + ":\n" + pairs[index+1]
+		spec.Workflow.Agents = append(spec.Workflow.Agents, overload.ResolvedAgent{Name: pairs[index], Model: model, EntryPrompt: overload.PromptTemplate{Name: pairs[index], Kind: "entry", Body: body, SHA256: overload.PromptDigest(body)}})
 	}
 	return spec
 }

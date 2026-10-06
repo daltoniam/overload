@@ -15,6 +15,9 @@ import (
 	"github.com/daltoniam/overload"
 )
 
+// TestResolvedWorkflowUsesDistinctModelsAndPrompts also covers snapshots
+// pinned before agents had a single prompt: their review focus prompt is
+// still appended.
 func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
 	var mu sync.Mutex
 	calls := []string{}
@@ -44,8 +47,8 @@ func TestResolvedWorkflowUsesDistinctModelsAndPrompts(t *testing.T) {
 		return overload.PromptTemplate{Name: name, Kind: kind, Body: body, Revision: 1, SHA256: overload.PromptDigest(body)}
 	}
 	workflow := overload.ResolvedWorkflow{Name: "test-workflow", Kind: "pr_review", Revision: 1, Agents: []overload.ResolvedAgent{
-		{Name: "security", Model: overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "security-model"}, EntryPrompt: makePrompt("security", "entry", "Security entry"), ReviewPrompt: makePrompt("security", "review", "Security review")},
-		{Name: "correctness", Model: overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "correctness-model"}, EntryPrompt: makePrompt("correctness", "entry", "Correctness entry"), ReviewPrompt: makePrompt("correctness", "review", "Correctness review")},
+		{Name: "security", Model: overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "security-model"}, EntryPrompt: makePrompt("security", "entry", "Security entry"), LegacyFocus: makePrompt("security", "review", "Security review")},
+		{Name: "correctness", Model: overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "correctness-model"}, EntryPrompt: makePrompt("correctness", "entry", "Correctness entry"), LegacyFocus: makePrompt("correctness", "review", "Correctness review")},
 	}}
 	spec := overload.ReviewSpec{Diff: "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+bad()\n", Workflow: workflow}
 	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{})

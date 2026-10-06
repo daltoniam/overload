@@ -128,8 +128,17 @@ func TestWorkflowTreeEditor(t *testing.T) {
 	if strings.Contains(page, `value="summary"`) {
 		t.Fatal("offered a scheduled-prompt agent in a PR workflow")
 	}
-	if list := get("/configure/workflows"); !strings.Contains(list, "security (auth/**)") {
-		t.Fatal("workflow list does not show sub-agents and scopes")
+	list := get("/configure/workflows")
+	for _, want := range []string{`<span class="agent-name">security</span>`, `<span class="chip">auth/**</span>`, `<span class="chip">only matching paths</span>`, "PR review · planner · 1 skip paths · limit 30 reviews", `<span class="badge enabled">Enabled</span>`, `data-kind="pr_review"`} {
+		if !strings.Contains(list, want) {
+			t.Fatalf("workflow list missing %q", want)
+		}
+	}
+	if filtered := get("/configure/workflows?kind=scheduled_prompt"); strings.Contains(filtered, `<span class="agent-name">security</span>`) {
+		t.Fatal("type filter did not hide the PR workflow")
+	}
+	if filtered := get("/configure/workflows?status=Disabled"); strings.Contains(filtered, `<span class="agent-name">security</span>`) {
+		t.Fatal("status filter did not hide the enabled workflow")
 	}
 	switched := get("/configure/workflow-agents?kind=scheduled_prompt&main_agent=lead&sub_0_agent=summary")
 	if strings.Contains(switched, "skip_paths") || strings.Contains(switched, "planner_prompt") || !strings.Contains(switched, `<option value="summary" selected>`) || strings.Contains(switched, `<option value="lead" selected>`) {

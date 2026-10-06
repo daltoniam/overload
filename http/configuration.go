@@ -197,7 +197,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			}
 			_, err = store.SavePrompt(r.Context(), overload.PromptTemplate{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Body: r.PostForm.Get("body")})
 		case "agents":
-			err = store.SaveAgent(r.Context(), overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), EntryPrompt: r.PostForm.Get("entry_prompt"), ReviewPrompt: r.PostForm.Get("review_prompt"), Enabled: r.PostForm.Get("enabled") == "true"})
+			err = store.SaveAgent(r.Context(), overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), EntryPrompt: r.PostForm.Get("entry_prompt"), Enabled: r.PostForm.Get("enabled") == "true"})
 		case "workflows":
 			workflows, listErr := store.ListWorkflows(r.Context())
 			if listErr != nil {

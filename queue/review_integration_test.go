@@ -77,7 +77,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 			t.Error(err)
 		}
 		content := fmt.Sprint(request.Messages)
-		if !strings.Contains(content, "Pinned PR entry") || !strings.Contains(content, "Pinned PR review") || strings.Contains(content, "Edited PR entry") {
+		if !strings.Contains(content, "Pinned PR entry") || strings.Contains(content, "Edited PR entry") {
 			t.Errorf("unexpected prompt: %s", content)
 		}
 		result := `{"summary":"Issue","findings":[{"path":"file.go","line":1,"side":"RIGHT","severity":"high","category":"bug","title":"Bug","body":"Fix it","confidence":0.9,"evidence":"dangerous()"}]}`
@@ -88,12 +88,12 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, prompt := range []overload.PromptTemplate{{Name: name, Kind: "entry", Body: "Pinned PR entry"}, {Name: name, Kind: "review", Body: "Pinned PR review"}} {
+	for _, prompt := range []overload.PromptTemplate{{Name: name, Kind: "entry", Body: "Pinned PR entry"}} {
 		if _, err := store.SavePrompt(ctx, prompt); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, EntryPrompt: name, ReviewPrompt: name, Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, EntryPrompt: name, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true}); err != nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
+	"strings"
 )
 
 templ Prompts(prompts []overload.PromptTemplate) {
@@ -11,11 +12,11 @@ templ Prompts(prompts []overload.PromptTemplate) {
 		<div class="page-header"><div><p class="eyebrow">Automation / Prompts</p><h1>Prompts</h1><p class="muted">Edit instructions as new revisions. Agents keep their selected revision until saved again.</p></div><a class="button" href="/configure/prompts/new">New prompt</a></div>
 		<section class="panel">
 			if len(prompts) == 0 {
-				<div class="empty">No prompts yet. <a href="/configure/prompts/new">Create an entry prompt</a> to get started.</div>
+				<div class="empty">No prompts yet. <a href="/configure/prompts/new">Create an agent prompt</a> to get started.</div>
 			} else {
 				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Latest revision</th><th></th></tr></thead><tbody>
 					for _, prompt := range prompts {
-						<tr><td><strong>{ prompt.Name }</strong></td><td>{ prompt.Kind }</td><td>{ fmt.Sprint(prompt.Revision) }</td><td><a href={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name) }>View / edit</a></td></tr>
+						<tr data-kind={ prompt.Kind }><td><strong>{ prompt.Name }</strong></td><td>{ promptKindLabel(prompt.Kind) }</td><td>{ fmt.Sprint(prompt.Revision) }</td><td><a href={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -33,7 +34,7 @@ templ PromptForm(prompt overload.PromptTemplate, nonce string) {
 			if prompt.Name != "" {
 				<label class="field"><span>Type</span><input value={ promptKindLabel(prompt.Kind) } readonly/><small>Type is fixed for this prompt. Create another prompt for a different type.</small></label><input type="hidden" name="kind" value={ prompt.Kind }/>
 			} else {
-				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Entry</option><option value="review">Review focus</option><option value="plan">Planner</option><option value="verify">Verifier</option></select><small>Planner and verifier prompts belong to a PR workflow and run on its main agent's model.</small></label>
+				<label class="field"><span>Type</span><select name="kind" required><option value="entry">Agent</option><option value="plan">Planner</option><option value="verify">Verifier</option></select><small>Agent prompts are an agent's instructions. Planner and verifier prompts belong to a PR workflow and run on its main agent's model.</small></label>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ prompt.Name } readonly?={ prompt.Name != "" } placeholder="security"/></label>
 			<label class="field"><span>Instructions</span><textarea name="body" required maxlength="16000" placeholder="Describe the agent's task.">{ prompt.Body }</textarea></label>
@@ -43,7 +44,7 @@ templ PromptForm(prompt overload.PromptTemplate, nonce string) {
 			<div class="actions"><button type="submit">Save prompt revision</button><a class="button secondary" href="/configure/prompts">Cancel</a></div>
 		</form></section>
 		if prompt.Name != "" {
-			<section class="panel"><h2>Delete prompt</h2><p class="muted">Only prompts unused by agents can be deleted. Revision history is removed with the prompt.</p><form method="post" action={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete prompt</button></form></section>
+			<section class="panel"><h2>Delete prompt</h2><p class="muted">Only prompts no agent or workflow uses can be deleted. Revision history is removed with the prompt.</p><form method="post" action={ templ.URL("/configure/prompts/" + prompt.Kind + "/" + prompt.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete prompt</button></form></section>
 		}
 	}
 }
@@ -55,9 +56,23 @@ templ Workflows(workflows []overload.Workflow) {
 			if len(workflows) == 0 {
 				<div class="empty">No workflows yet. <a href="/configure/workflows/new">Create a workflow</a> after adding an agent.</div>
 			} else {
-				<div class="table-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Main agent</th><th>Sub-agents</th><th>Status</th><th></th></tr></thead><tbody>
+				<div class="table-wrap"><table class="workflows-table"><thead><tr><th>Workflow</th><th>Agents</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, workflow := range workflows {
-						<tr><td><strong>{ workflow.Name }</strong></td><td>{ workflow.Kind }</td><td>{ mainAgent(workflow) }</td><td>{ subAgentSummary(workflow) }</td><td>{ agentStatus(workflow.Enabled) }</td><td><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>View / edit</a></td></tr>
+						<tr data-kind={ workflow.Kind } data-status={ agentStatus(workflow.Enabled) }>
+							<td><strong>{ workflow.Name }</strong><span class="secondary-line">{ workflowDetails(workflow) }</span></td>
+							<td>
+								<div class="agent-line"><strong>{ mainAgent(workflow) }</strong><span class="role">main</span></div>
+								for _, sub := range subAgents(workflow) {
+									<div class="agent-line sub"><span class="agent-name">{ sub }</span>
+										for _, chip := range scopeChips(workflow.Scopes[sub]) {
+											<span class="chip">{ chip }</span>
+										}
+									</div>
+								}
+							</td>
+							<td class="nowrap"><span class={ "badge " + strings.ToLower(agentStatus(workflow.Enabled)) }>{ agentStatus(workflow.Enabled) }</span></td>
+							<td class="nowrap"><a href={ templ.URL("/configure/workflows/" + workflow.Name) }>View / edit</a></td>
+						</tr>
 					}
 				</tbody></table></div>
 			}
@@ -94,9 +109,7 @@ templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition
 func promptKindLabel(kind string) string {
 	switch kind {
 	case "entry":
-		return "Entry"
-	case "review":
-		return "Review focus"
+		return "Agent"
 	case "plan":
 		return "Planner"
 	case "verify":

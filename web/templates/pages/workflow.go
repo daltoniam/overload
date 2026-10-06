@@ -74,19 +74,33 @@ func scopeChips(scope overload.Scope) []string {
 	return chips
 }
 
-// subAgentSummary describes a workflow's sub-agents for the list page.
-func subAgentSummary(workflow overload.Workflow) string {
+func subAgents(workflow overload.Workflow) []string {
 	if len(workflow.Agents) < 2 {
-		return "None"
+		return nil
 	}
-	var parts []string
-	for _, name := range workflow.Agents[1:] {
-		if paths := workflow.Scopes[name].Paths; len(paths) > 0 {
-			name += " (" + strings.Join(paths, ", ") + ")"
-		}
-		parts = append(parts, name)
+	return workflow.Agents[1:]
+}
+
+// workflowDetails summarizes a workflow's type and review options for the
+// list page.
+func workflowDetails(workflow overload.Workflow) string {
+	parts := []string{filterLabel(workflow.Kind)}
+	if workflow.MainReviews == overload.MainReviewsUnclaimed {
+		parts = append(parts, "main reviews unclaimed files")
 	}
-	return strings.Join(parts, "; ")
+	if workflow.PlannerPrompt != "" {
+		parts = append(parts, "planner")
+	}
+	if workflow.VerifierPrompt != "" {
+		parts = append(parts, "verifier")
+	}
+	if n := len(workflow.SkipPaths); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d skip paths", n))
+	}
+	if workflow.MaxFileReviews > 0 {
+		parts = append(parts, fmt.Sprintf("limit %d reviews", workflow.MaxFileReviews))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // findingCount counts a run's findings, noting those the verifier dropped.
@@ -101,4 +115,22 @@ func findingCount(findings []overload.Finding) string {
 		return strconv.Itoa(len(findings))
 	}
 	return fmt.Sprintf("%d · %d dropped", len(findings)-dropped, dropped)
+}
+
+// filterLabel names a list filter value for people.
+func filterLabel(value string) string {
+	switch value {
+	case "pr_review":
+		return "PR review"
+	case "scheduled_prompt":
+		return "Scheduled prompt"
+	case "entry", "plan", "verify":
+		return promptKindLabel(value)
+	case "local":
+		return "Local"
+	case "hosted":
+		return "Hosted"
+	default:
+		return value
+	}
 }

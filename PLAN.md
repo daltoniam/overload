@@ -364,9 +364,9 @@ present any of those paths as operational until they actually execute jobs.
 | Binding | Which workflow runs for a source/event/repository, enabled/dry-run policy and filters | Repo or workspace |
 | Schedule | Cron expression, timezone, target workflow, bound inputs and enabled state | Workspace |
 
-A **model connection is not an agent**. An agent's *entry prompt* describes its
-role, task and allowed context; a *review prompt* can specialize each review
-pass. Keep the output JSON contract and untrusted-input boundary in a separate
+A **model connection is not an agent**. An agent is a model and one prompt
+that describes its role, task and allowed context; different focus areas are
+different agents, combined as sub-agents in a workflow (7.8). Keep the output JSON contract and untrusted-input boundary in a separate
 system-controlled envelope that editable prompts cannot remove. The *final
 prompt* shapes a cross-pass summary but never bypasses finding validation.
 For a PR workflow, an initial context/triage step is optional; independent
@@ -456,7 +456,7 @@ Workflow "go-service-review"
 **Data model.**
 - A workflow has exactly one **main agent** and zero to eight **sub-agents**.
   Depth is two: sub-agents cannot have sub-agents.
-- **Main agent**: model connection, review prompt, optional planner prompt,
+- **Main agent**: model connection, prompt, optional planner prompt,
   optional verifier prompt, and whether it reviews files no sub-agent
   claimed (default yes).
 - **Sub-agent**: model connection, prompt, scope, and a cap on findings
@@ -595,7 +595,13 @@ CLI. The CLI and JSON configuration expose the same tree.
    The preview takes a configured repository and pull request number (the
    server fetches the changed files with the repository's GitHub App
    installation or the token) or a pasted file list. "Pass" is gone from
-   the UI: the optional second agent prompt is now called a "review focus".
+   the UI.
+5. Done: agents have one prompt. The optional review focus prompt was
+   removed (migration 020): each agent that had one got a new prompt with
+   both texts joined as reviews joined them, so behaviour is unchanged, and
+   former focus prompts became ordinary agent prompts. Focus areas are now
+   separate sub-agents. Snapshots pinned earlier still carry and verify
+   their focus prompt. Prompt types are Agent, Planner and Verifier.
 
 Each stage keeps `make ci`, the macOS install test and the kind sandbox
 test passing, and extends the planted-bug eval: a multi-file fixture where
@@ -648,7 +654,6 @@ through versioned, transactional migrations:
 prompt_templates(id, name, kind, current_revision_id, created_at)
 prompt_revisions(id, template_id, revision, body, content_sha256, created_at)
 agent_definitions(id, name, model_profile_id, entry_prompt_revision_id,
-                  review_prompt_revision_id, final_prompt_revision_id,
                   output_kind, limits_json, enabled, created_at, updated_at)
 workflows(id, name, job_kind, revision, steps_json, failure_policy,
           output_kind, created_at, updated_at)

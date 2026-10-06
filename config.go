@@ -27,18 +27,17 @@ func (prompt PromptTemplate) Validate() error {
 	return nil
 }
 
-// Prompt kinds: an agent's entry prompt and optional review focus, and a
-// workflow's optional planner and verifier prompts, which run on the main
-// agent's model.
+// Prompt kinds: an agent's prompt, and a workflow's optional planner and
+// verifier prompts, which run on the main agent's model. Focus areas are
+// separate sub-agents rather than extra prompts on one agent.
 const (
 	PromptEntry  = "entry"
-	PromptReview = "review"
 	PromptPlan   = "plan"
 	PromptVerify = "verify"
 )
 
 func validPromptKind(kind string) bool {
-	return kind == PromptEntry || kind == PromptReview || kind == PromptPlan || kind == PromptVerify
+	return kind == PromptEntry || kind == PromptPlan || kind == PromptVerify
 }
 
 func PromptDigest(body string) string {
@@ -47,14 +46,12 @@ func PromptDigest(body string) string {
 }
 
 type AgentDefinition struct {
-	Name           string `json:"name"`
-	Kind           string `json:"kind,omitempty"`
-	Model          string `json:"model"`
-	EntryPrompt    string `json:"entry_prompt"`
-	ReviewPrompt   string `json:"review_prompt,omitempty"`
-	Enabled        bool   `json:"enabled"`
-	EntryRevision  int    `json:"-"`
-	ReviewRevision int    `json:"-"`
+	Name          string `json:"name"`
+	Kind          string `json:"kind,omitempty"`
+	Model         string `json:"model"`
+	EntryPrompt   string `json:"entry_prompt"`
+	Enabled       bool   `json:"enabled"`
+	EntryRevision int    `json:"-"`
 }
 
 func (agent AgentDefinition) Validate() error {
@@ -63,9 +60,6 @@ func (agent AgentDefinition) Validate() error {
 	}
 	if agent.Kind != "" && agent.Kind != "pr_review" && agent.Kind != "scheduled_prompt" {
 		return errors.New("invalid agent type")
-	}
-	if agent.ReviewPrompt != "" && !settingName.MatchString(agent.ReviewPrompt) {
-		return errors.New("invalid review prompt")
 	}
 	return nil
 }
@@ -143,11 +137,13 @@ type Schedule struct {
 }
 
 type ResolvedAgent struct {
-	Name         string         `json:"name"`
-	Model        ModelProfile   `json:"model"`
-	EntryPrompt  PromptTemplate `json:"entry_prompt"`
-	ReviewPrompt PromptTemplate `json:"review_prompt"`
-	Scope        Scope          `json:"scope"`
+	Name        string         `json:"name"`
+	Model       ModelProfile   `json:"model"`
+	EntryPrompt PromptTemplate `json:"entry_prompt"`
+	// LegacyFocus is the review focus prompt of snapshots pinned before
+	// agents had a single prompt; new snapshots never set it.
+	LegacyFocus PromptTemplate `json:"review_prompt,omitzero"`
+	Scope       Scope          `json:"scope"`
 }
 
 type ResolvedWorkflow struct {
@@ -210,7 +206,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 		if agent.EntryPrompt.Kind != "entry" || PromptDigest(agent.EntryPrompt.Body) != agent.EntryPrompt.SHA256 {
 			return fmt.Errorf("agent %q entry prompt does not match its pinned revision", agent.Name)
 		}
-		if agent.ReviewPrompt.Kind != "" && (agent.ReviewPrompt.Kind != "review" || PromptDigest(agent.ReviewPrompt.Body) != agent.ReviewPrompt.SHA256) {
+		if agent.LegacyFocus.Kind != "" && (agent.LegacyFocus.Kind != "review" || PromptDigest(agent.LegacyFocus.Body) != agent.LegacyFocus.SHA256) {
 			return fmt.Errorf("agent %q review prompt does not match its pinned revision", agent.Name)
 		}
 	}

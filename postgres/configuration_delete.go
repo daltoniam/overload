@@ -19,7 +19,7 @@ func (s *Store) DeletePrompt(ctx context.Context, kind, name string) error {
 		return err
 	}
 	var inUse bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_definitions a JOIN prompt_revisions r ON r.id IN (a.entry_prompt_revision_id,a.review_prompt_revision_id) WHERE r.template_id=$1)`, id).Scan(&inUse); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_definitions a JOIN prompt_revisions r ON r.id = a.entry_prompt_revision_id WHERE r.template_id=$1)`, id).Scan(&inUse); err != nil {
 		return err
 	}
 	if inUse {

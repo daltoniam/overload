@@ -70,17 +70,12 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if _, err := s.GetPrompt(ctx, "entry", agent.EntryPrompt, 0); err != nil {
 		return err
 	}
-	if agent.ReviewPrompt != "" {
-		if _, err := s.GetPrompt(ctx, "review", agent.ReviewPrompt, 0); err != nil {
-			return err
-		}
-	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,review_prompt_revision_id,enabled,kind) VALUES ($1,(SELECT id FROM model_profiles WHERE name=$2),(SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$3 AND t.kind='entry' ORDER BY r.revision DESC LIMIT 1),(SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$4 AND t.kind='review' ORDER BY r.revision DESC LIMIT 1),$5,$6) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,review_prompt_revision_id=EXCLUDED.review_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,updated_at=now()`, agent.Name, agent.Model, agent.EntryPrompt, agent.ReviewPrompt, agent.Enabled, agent.Kind)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,(SELECT id FROM model_profiles WHERE name=$2),(SELECT r.id FROM prompt_revisions r JOIN prompt_templates t ON t.id=r.template_id WHERE t.name=$3 AND t.kind='entry' ORDER BY r.revision DESC LIMIT 1),$4,$5) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,updated_at=now()`, agent.Name, agent.Model, agent.EntryPrompt, agent.Enabled, agent.Kind)
 	return err
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,entry.name,COALESCE(review.name,''),a.enabled,er.revision,COALESCE(rr.revision,0) FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions er ON er.id=a.entry_prompt_revision_id JOIN prompt_templates entry ON entry.id=er.template_id LEFT JOIN prompt_revisions rr ON rr.id=a.review_prompt_revision_id LEFT JOIN prompt_templates review ON review.id=rr.template_id ORDER BY a.name`)
+	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,entry.name,a.enabled,er.revision FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions er ON er.id=a.entry_prompt_revision_id JOIN prompt_templates entry ON entry.id=er.template_id ORDER BY a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +83,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 	var agents []overload.AgentDefinition
 	for rows.Next() {
 		var agent overload.AgentDefinition
-		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.EntryPrompt, &agent.ReviewPrompt, &agent.Enabled, &agent.EntryRevision, &agent.ReviewRevision); err != nil {
+		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.EntryPrompt, &agent.Enabled, &agent.EntryRevision); err != nil {
 			return nil, err
 		}
 		agents = append(agents, agent)
@@ -221,20 +216,14 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	for _, agentName := range agents {
 		var agent overload.ResolvedAgent
 		var entryID int64
-		var reviewID *int64
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id,a.review_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled`, agentName).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID, &reviewID)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled`, agentName).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID)
 		if err != nil {
 			return result, err
 		}
 		if err := loadPromptRevision(ctx, q, entryID, &agent.EntryPrompt); err != nil {
 			return result, err
-		}
-		if reviewID != nil {
-			if err := loadPromptRevision(ctx, q, *reviewID, &agent.ReviewPrompt); err != nil {
-				return result, err
-			}
 		}
 		result.Agents = append(result.Agents, agent)
 	}

@@ -29,7 +29,7 @@ var listSpecs = map[string]listSpec{
 	"/settings":               {[]string{"local", "hosted"}, nil},
 	"/runs":                   {[]string{"pr_review", "scheduled_prompt"}, []string{"queued", "running", "completed", "failed", "superseded"}},
 	"/webhooks":               {nil, []string{"queued", "skipped", "applied"}},
-	"/configure/prompts":      {[]string{"entry", "review", "plan", "verify"}, nil},
+	"/configure/prompts":      {[]string{"entry", "plan", "verify"}, nil},
 	"/configure/agents":       {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/workflows":    {[]string{"pr_review", "scheduled_prompt"}, []string{"Enabled", "Disabled"}},
 	"/configure/repositories": {nil, []string{"Enabled", "Disabled"}},
@@ -319,8 +319,14 @@ func filterRows(results *html.Node, r *http.Request, state pages.UIState) {
 	results.AppendChild(footer)
 }
 
+// rowMatches filters a configuration list row. Rows that carry data-kind
+// and data-status are matched on those exact values, so the table can show
+// friendly labels; other rows fall back to matching their text.
 func rowMatches(row *html.Node, path string, state pages.UIState) bool {
 	content := strings.ToLower(text(row))
+	if rowKind, rowStatus := attr(row, "data-kind"), attr(row, "data-status"); rowKind != "" || rowStatus != "" {
+		return strings.Contains(content, strings.ToLower(state.Query)) && (state.Kind == "" || state.Kind == rowKind) && (state.Status == "" || strings.EqualFold(state.Status, rowStatus))
+	}
 	kind := state.Kind
 	if path == "/configure/agents" {
 		if kind == "pr_review" {

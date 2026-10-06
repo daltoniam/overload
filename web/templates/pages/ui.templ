@@ -13,7 +13,7 @@ templ SearchToolbar(path string, kinds []string, statuses []string) {
 		if len(kinds) > 0 {
 			<label>Type<select name="kind"><option value="">All types</option>
 				for _, kind := range kinds {
-					<option value={ kind } selected?={ uiState(ctx).Kind == kind }>{ kind }</option>
+					<option value={ kind } selected?={ uiState(ctx).Kind == kind }>{ filterLabel(kind) }</option>
 				}
 			</select></label>
 		}

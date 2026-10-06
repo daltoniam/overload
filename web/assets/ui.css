@@ -161,3 +161,11 @@ nav a:hover .icon { transform: translateX(2px); }
 textarea.short { min-height: 72px; }
 @media (max-width: 780px) { .field-row { grid-template-columns: 1fr; } }
 .badges { display: inline-flex; gap: 6px; flex-shrink: 0; }
+td.nowrap { white-space: nowrap; overflow-wrap: normal; width: 1%; }
+.workflows-table td:first-child { width: 30%; }
+.agent-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.agent-line + .agent-line { margin-top: 6px; }
+.agent-line.sub { padding-left: 14px; position: relative; }
+.agent-line.sub::before { content: ""; position: absolute; left: 2px; top: 0; bottom: 50%; width: 8px; border-left: 1px solid var(--line); border-bottom: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.agent-line .role { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); }
+.agent-line .agent-name { font-weight: 500; }

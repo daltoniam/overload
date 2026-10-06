@@ -37,11 +37,10 @@ func TestWorkflowConfiguration(t *testing.T) {
 	if err != nil || entry.Revision < 1 || entry.SHA256 == "" {
 		t.Fatalf("entry prompt: %+v %v", entry, err)
 	}
-	review, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-review-configuration", Kind: "review", Body: "Check status handling."})
-	if err != nil || review.Revision < 1 {
-		t.Fatalf("review prompt: %+v %v", review, err)
+	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: "test-review-configuration", Kind: "review", Body: "Check status handling."}); err == nil {
+		t.Fatal("saved a review focus prompt; agents have one prompt")
 	}
-	agent := overload.AgentDefinition{Name: "test-agent-configuration", Model: model.Name, EntryPrompt: entry.Name, ReviewPrompt: review.Name, Enabled: true}
+	agent := overload.AgentDefinition{Name: "test-agent-configuration", Model: model.Name, EntryPrompt: entry.Name, Enabled: true}
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
@@ -51,12 +50,12 @@ func TestWorkflowConfiguration(t *testing.T) {
 	}
 	found := false
 	for _, stored := range storedAgents {
-		if stored.Name == agent.Name && stored.Kind == "pr_review" && stored.ReviewPrompt == agent.ReviewPrompt {
+		if stored.Name == agent.Name && stored.Kind == "pr_review" && stored.EntryPrompt == agent.EntryPrompt && stored.EntryRevision == entry.Revision {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("PR agent kind or pass was not saved: %+v", storedAgents)
+		t.Fatalf("PR agent kind or prompt was not saved: %+v", storedAgents)
 	}
 	workflow := overload.Workflow{Name: "test-workflow-configuration", Kind: "pr_review", Agents: []string{agent.Name}, Enabled: true}
 	if err := store.SaveWorkflow(ctx, workflow); err != nil {
@@ -75,7 +74,7 @@ func TestWorkflowConfiguration(t *testing.T) {
 		t.Fatalf("binding not saved: %+v %v", bindings, err)
 	}
 	resolved, err := store.ResolveWorkflow(ctx, workflow.Name)
-	if err != nil || len(resolved.Agents) != 1 || resolved.Agents[0].EntryPrompt.Body != entry.Body || resolved.Agents[0].ReviewPrompt.Body != review.Body || resolved.Agents[0].Model.ConnectionKind != "local" {
+	if err != nil || len(resolved.Agents) != 1 || resolved.Agents[0].EntryPrompt.Body != entry.Body || resolved.Agents[0].LegacyFocus.Kind != "" || resolved.Agents[0].Model.ConnectionKind != "local" {
 		t.Fatalf("workflow: %+v %v", resolved, err)
 	}
 	if resolved.Version != overload.SnapshotVersion || resolved.Agents[0].Scope.Paths != nil || resolved.SkipPaths != nil {

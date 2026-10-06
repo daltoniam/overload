@@ -125,7 +125,7 @@ func TestAutomationCRUDPages(t *testing.T) {
 	}
 	formPage := httptest.NewRecorder()
 	handler.ServeHTTP(formPage, httptest.NewRequest(http.MethodGet, "/configure/prompts/entry/base", nil))
-	if strings.Contains(formPage.Body.String(), `<select name="kind"`) || !strings.Contains(formPage.Body.String(), `value="Review focus"`) && !strings.Contains(formPage.Body.String(), `value="Entry"`) || !strings.Contains(formPage.Body.String(), `class="danger"`) {
+	if strings.Contains(formPage.Body.String(), `<select name="kind"`) || !strings.Contains(formPage.Body.String(), `value="Agent"`) || !strings.Contains(formPage.Body.String(), `class="danger"`) {
 		t.Fatal("existing prompt type or delete button rendered incorrectly")
 	}
 	match := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(formPage.Body.String())

@@ -111,8 +111,8 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	groupIndex := map[string]int{}
 	for index, resolved := range workflow.Agents {
 		systemPrompt := reviewPreamble + resolved.EntryPrompt.Body
-		if resolved.ReviewPrompt.Kind != "" {
-			systemPrompt += "\n\n" + resolved.ReviewPrompt.Body
+		if resolved.LegacyFocus.Kind != "" {
+			systemPrompt += "\n\n" + resolved.LegacyFocus.Body
 		}
 		if agents[index], plans[index], err = newAgent(ctx, resolved.Model, systemPrompt); err != nil {
 			return result, err

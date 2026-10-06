@@ -59,7 +59,7 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 			t.Errorf("scheduled prompt ignored the model's reasoning settings: %v max_tokens=%d", request.ChatTemplateKwargs, request.MaxTokens)
 		}
 		text := fmt.Sprint(request.Messages)
-		if !strings.Contains(text, "Pinned entry") || !strings.Contains(text, "Pinned review") || !strings.Contains(text, `"topic": "original"`) && !strings.Contains(text, `"topic":"original"`) || strings.Contains(text, "changed") {
+		if !strings.Contains(text, "Pinned entry") || !strings.Contains(text, `"topic": "original"`) && !strings.Contains(text, `"topic":"original"`) || strings.Contains(text, "changed") {
 			t.Errorf("unexpected model request: %s", text)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -72,10 +72,7 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: name, Kind: "entry", Body: "Pinned entry"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SavePrompt(ctx, overload.PromptTemplate{Name: name, Kind: "review", Body: "Pinned review"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Kind: "scheduled_prompt", Model: name, EntryPrompt: name, ReviewPrompt: name, Enabled: true}); err != nil {
+	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Kind: "scheduled_prompt", Model: name, EntryPrompt: name, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "scheduled_prompt", Agents: []string{name}, Enabled: true}); err != nil {
