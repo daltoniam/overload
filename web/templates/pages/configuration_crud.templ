@@ -82,6 +82,7 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 		<section class="panel"><form method="post" action="/configure/agents"><input type="hidden" name="csrf" value={ nonce }/>
 			if agent.Name != "" {
 				<input type="hidden" name="existing" value={ agent.Name }/>
+				<input type="hidden" name="prompt_revision" value={ fmt.Sprint(agent.PromptRevision) }/>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ agent.Name } readonly?={ agent.Name != "" } placeholder="security-reviewer"/></label>
 			<label class="field"><span>Job type</span><select name="kind"><option value="pr_review" selected?={ agent.Kind == "" || agent.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ agent.Kind == "scheduled_prompt" }>Scheduled prompt</option></select><small>Choose the type of workflow this agent can join. A workflow uses the agent as its main agent or a sub-agent.</small></label>

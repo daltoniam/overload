@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/daltoniam/overload"
 )
@@ -218,5 +219,49 @@ func TestVerifierNeverDropsCriticalOrSecurityFindings(t *testing.T) {
 	}
 	if len(result.Findings) != 2 || len(result.Dropped) != 1 || result.Dropped[0].Line != 3 {
 		t.Fatalf("kept %+v dropped %+v", result.Findings, result.Dropped)
+	}
+}
+
+func TestHungModelCallTimesOut(t *testing.T) {
+	previous := localCallTimeout
+	localCallTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { localCallTimeout = previous })
+	hang := "Sub-agent focus."
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		if strings.Contains(request.Messages[0].Content, hang) {
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, `{"summary":"None","findings":[]}`)
+	}))
+	t.Cleanup(server.Close)
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y()\n"
+	workflow := edgeWorkflow(server.URL, overload.ResolvedAgent{Name: "lead"}, overload.ResolvedAgent{Name: "sub"})
+	workflow.Agents[1].EntryPrompt = overload.PromptTemplate{Kind: "entry", Body: hang, SHA256: overload.PromptDigest(hang)}
+	start := time.Now()
+	result, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{})
+	if err != nil || time.Since(start) > 5*time.Second {
+		t.Fatalf("a hung sub-agent must not fail or hold the review: %v after %s", err, time.Since(start))
+	}
+	routing := result.Metrics["routing"].(overload.Routing)
+	if len(routing.Degraded) != 1 || !strings.Contains(routing.Agents[1].Failed, "model call timed out after 200ms") {
+		t.Fatalf("routing %+v", routing)
+	}
+
+	workflow.Agents[0], workflow.Agents[1] = workflow.Agents[1], workflow.Agents[0]
+	if _, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{}); err == nil || !strings.Contains(err.Error(), "model call timed out") {
+		t.Fatalf("a hung main agent must fail the review clearly: %v", err)
 	}
 }

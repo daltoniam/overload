@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/daltoniam/overload"
@@ -134,6 +135,11 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	}
 	if delivery.HeadSHA == "" || delivery.BaseSHA == "" {
 		return false, errors.New(errMissingSHAs)
+	}
+	// Deliveries for one pull request are ingested one at a time, so two
+	// that arrive together cannot both pass the "already reviewed" check.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 729150))`, fmt.Sprintf("%d/%d", repo.id, delivery.PR)); err != nil {
+		return false, err
 	}
 	var bindingID int64
 	var workflowName string

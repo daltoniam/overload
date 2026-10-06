@@ -53,7 +53,8 @@ func PromptDigest(body string) string {
 }
 
 // AgentDefinition is a model and the instructions it reviews with.
-// PromptRevision counts saved changes to Prompt and is read-only.
+// PromptRevision counts saved changes to Prompt. When saving, a non-zero
+// value is the version the edit started from.
 type AgentDefinition struct {
 	Name           string `json:"name"`
 	Kind           string `json:"kind,omitempty"`
@@ -80,6 +81,8 @@ func (agent AgentDefinition) Validate() error {
 // main agent and the rest are sub-agents.
 const MaxSubAgents = 8
 
+// Workflow is a saved workflow. Revision counts saved changes; when saving, a
+// non-zero value is the revision the edit started from.
 type Workflow struct {
 	Name           string           `json:"name"`
 	Kind           string           `json:"kind"`

@@ -50,6 +50,31 @@ func deleteOwnedPrompts(ctx context.Context, tx pgx.Tx, name string) error {
 	return err
 }
 
+// ErrConflict means the agent or workflow changed since the caller read it,
+// so saving would overwrite someone else's edit.
+var ErrConflict = errors.New("changed since it was loaded")
+
+// checkRevision locks the row query selects and compares its revision with
+// expected. An expected revision of 0 skips the check (a new resource, or a
+// configuration file that does not name one).
+func checkRevision(ctx context.Context, tx pgx.Tx, query, name string, expected int) error {
+	if expected == 0 {
+		return nil
+	}
+	var current int
+	err := tx.QueryRow(ctx, query, name).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("%w: %s was deleted", ErrConflict, name)
+	}
+	if err != nil {
+		return err
+	}
+	if current != expected {
+		return fmt.Errorf("%w: %s is at version %d, not %d", ErrConflict, name, current, expected)
+	}
+	return nil
+}
+
 // ErrAgentInUse means an agent change would break a workflow that uses it.
 var ErrAgentInUse = errors.New("agent in use")
 
@@ -59,7 +84,9 @@ var ErrWorkflowUnavailable = errors.New("workflow unavailable")
 
 // SaveAgent saves an agent with its prompt. Changed prompt text becomes a new
 // revision that the agent uses from then on. An agent's job type cannot be
-// changed while a workflow of the old type uses it.
+// changed while a workflow of the old type uses it. A non-zero
+// PromptRevision must match the stored one, so an edit made from an older
+// copy of the instructions is refused instead of overwriting newer ones.
 func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) error {
 	agent.Prompt = overload.NormalizePrompt(agent.Prompt)
 	if err := agent.Validate(); err != nil {
@@ -73,6 +100,9 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := checkRevision(ctx, tx, `SELECT r.revision FROM agent_definitions a JOIN prompt_revisions r ON r.id=a.entry_prompt_revision_id WHERE a.name=$1 FOR UPDATE OF a`, agent.Name, agent.PromptRevision); err != nil {
+		return err
+	}
 	var modelID int64
 	if err := tx.QueryRow(ctx, `SELECT id FROM model_profiles WHERE name=$1`, agent.Model).Scan(&modelID); err != nil {
 		return fmt.Errorf("model connection %q not found", agent.Model)
@@ -124,10 +154,13 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := checkRevision(ctx, tx, `SELECT revision FROM workflows WHERE name=$1 FOR UPDATE`, workflow.Name, workflow.Revision); err != nil {
+		return err
+	}
 	for _, name := range workflow.Agents {
 		var enabled bool
 		var kind string
-		if err := tx.QueryRow(ctx, `SELECT enabled,kind FROM agent_definitions WHERE name=$1`, name).Scan(&enabled, &kind); err != nil || !enabled || kind != workflow.Kind {
+		if err := tx.QueryRow(ctx, `SELECT enabled,kind FROM agent_definitions WHERE name=$1 FOR SHARE`, name).Scan(&enabled, &kind); err != nil || !enabled || kind != workflow.Kind {
 			return fmt.Errorf("workflow agent %q not available for %s", name, workflow.Kind)
 		}
 	}
@@ -151,7 +184,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now()`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now() WHERE (workflows.kind,workflows.agent_names,workflows.enabled,workflows.routing) IS DISTINCT FROM (EXCLUDED.kind,EXCLUDED.agent_names,EXCLUDED.enabled,EXCLUDED.routing)`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

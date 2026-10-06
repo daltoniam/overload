@@ -206,17 +206,21 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				http.Error(w, "Agent not saved: an agent named "+r.PostForm.Get("name")+" already exists.", http.StatusBadRequest)
 				return
 			}
-			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: overload.NormalizePrompt(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true"}
+			revision, _ := strconv.Atoi(r.PostForm.Get("prompt_revision"))
+			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: overload.NormalizePrompt(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true", PromptRevision: revision}
 			if err := agent.Validate(); err != nil {
 				http.Error(w, "Agent not saved: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := store.SaveAgent(r.Context(), agent); err != nil {
-				message := "Agent not saved: the model connection is missing."
-				if errors.Is(err, postgres.ErrAgentInUse) {
+				message, status := "Agent not saved: the model connection is missing.", http.StatusBadRequest
+				switch {
+				case errors.Is(err, postgres.ErrAgentInUse):
 					message = "Agent not saved: " + strings.TrimPrefix(err.Error(), postgres.ErrAgentInUse.Error()+": ") + "."
+				case errors.Is(err, postgres.ErrConflict):
+					message, status = conflictMessage("Agent", "these instructions"), http.StatusConflict
 				}
-				http.Error(w, message, http.StatusBadRequest)
+				http.Error(w, message, status)
 				return
 			}
 		case "workflows":
@@ -246,6 +250,10 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 			if err := store.SaveWorkflow(r.Context(), workflow); err != nil {
+				if errors.Is(err, postgres.ErrConflict) {
+					http.Error(w, conflictMessage("Workflow", "this workflow"), http.StatusConflict)
+					return
+				}
 				http.Error(w, "Workflow not saved: an agent is missing, disabled or for a different job type.", http.StatusBadRequest)
 				return
 			}
@@ -343,4 +351,9 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 		}
 		http.Redirect(w, r, destination, http.StatusSeeOther)
 	})
+}
+
+// conflictMessage explains a save refused because someone else saved first.
+func conflictMessage(resource, what string) string {
+	return resource + " not saved: someone else changed " + what + " after you opened it. Copy your changes, reload the page, and apply them again."
 }

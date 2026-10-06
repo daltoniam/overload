@@ -858,11 +858,15 @@ Before the first release:
    instead of being retried for hours. A finished review of an older commit
    is not posted once a newer commit of the PR has its own review
    (`superseded_by_newer_commit`).
-6. Concurrency: a unique active run per (repository, PR, head) so two
-   simultaneous webhooks cannot both queue a review; optimistic revision
-   checks so two people editing one workflow cannot silently overwrite
-   each other; a deadline per model call so a hung local server fails the
-   call, not the whole job.
+6. Done: webhook deliveries for one pull request are ingested one at a
+   time (a transaction lock), so simultaneous deliveries for a commit queue
+   one review, not several. Saving a workflow or an agent's instructions
+   from an older copy is refused with a "someone else changed it" message
+   instead of overwriting the newer save (configuration files that omit
+   the revision are not checked), and saving an unchanged workflow no
+   longer bumps its revision. Each model call has a time limit (local 90
+   minutes, hosted 15): a hung sub-agent leaves the review partial, and a
+   hung main agent fails it with "model call timed out".
 
 After:
 4. Evaluation: real PRs with known bugs, scored per model and per workflow

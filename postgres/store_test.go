@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -130,6 +131,21 @@ func TestIngestPRTransaction(t *testing.T) {
 	var newHeadDryRun bool
 	if err := store.Pool.QueryRow(ctx, `SELECT dry_run FROM runs WHERE head_sha = $1 AND repository_id = $2`, headSHA+"-new", repoID).Scan(&newHeadDryRun); err != nil || newHeadDryRun {
 		t.Fatalf("repository opted into posting but run is dry-run: %v %v", newHeadDryRun, err)
+	}
+	concurrentHead := headSHA + "-concurrent"
+	var wg sync.WaitGroup
+	for attempt := range 6 {
+		wg.Go(func() {
+			delivery := fmt.Sprintf("concurrent-%d-%d", id, attempt)
+			if _, err := store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: delivery, Action: "synchronize", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, delivery)), RepoName: "test/transaction", PR: 42, HeadSHA: concurrentHead, BaseSHA: "def", Eligible: true}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	var concurrentRuns int
+	if err := store.Pool.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id = $1 AND head_sha = $2`, repoID, concurrentHead).Scan(&concurrentRuns); err != nil || concurrentRuns != 1 {
+		t.Fatalf("simultaneous deliveries for one head queued %d reviews: %v", concurrentRuns, err)
 	}
 	agent := overload.AgentDefinition{Name: "test-ingest-agent", Model: "test-ingest-model", Prompt: "Review PR.", Enabled: true}
 	agent.Kind = "scheduled_prompt"

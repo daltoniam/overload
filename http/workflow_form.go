@@ -29,7 +29,7 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		}
 		return value
 	}
-	workflow := overload.Workflow{Name: values.Get("name"), Kind: values.Get("kind"), Enabled: values.Get("enabled") == "true"}
+	workflow := overload.Workflow{Name: values.Get("name"), Kind: values.Get("kind"), Enabled: values.Get("enabled") == "true", Revision: number(values.Get("revision"), "invalid workflow revision")}
 	if main := values.Get("main_agent"); main != "" {
 		workflow.Agents = append(workflow.Agents, main)
 	}

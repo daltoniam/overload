@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -127,12 +128,45 @@ func TestWorkflowConfiguration(t *testing.T) {
 		t.Fatalf("cleared planner still listed: %+v", listed)
 	}
 
+	opened := findWorkflow(t, store, workflow.Name)
+	if err := store.SaveWorkflow(ctx, opened); err != nil {
+		t.Fatal(err)
+	}
+	if again := findWorkflow(t, store, workflow.Name); again.Revision != opened.Revision {
+		t.Fatalf("saving an unchanged workflow bumped its revision: %d -> %d", opened.Revision, again.Revision)
+	}
+	first, second := opened, opened
+	first.Enabled, second.MaxFileReviews = false, 7
+	if err := store.SaveWorkflow(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveWorkflow(ctx, second); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a save from an older copy overwrote a newer one: %v", err)
+	}
+	if latest := findWorkflow(t, store, workflow.Name); latest.Enabled || latest.MaxFileReviews == 7 || latest.Revision != opened.Revision+1 {
+		t.Fatalf("workflow after conflict: %+v", latest)
+	}
+	workflow.Enabled = true
+	if err := store.SaveWorkflow(ctx, workflow); err != nil {
+		t.Fatalf("a save without a revision must not be checked: %v", err)
+	}
+
+	staleAgent := findAgent(t, store, agent.Name)
+	agent.Prompt, agent.PromptRevision = "Edited in another tab.", staleAgent.PromptRevision
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	staleAgent.Prompt = "Edited from an older copy."
+	if err := store.SaveAgent(ctx, staleAgent); !errors.Is(err, ErrConflict) {
+		t.Fatalf("an agent edit from an older copy overwrote newer instructions: %v", err)
+	}
+	agent.PromptRevision = 0
 	agent.Prompt = "Changed prompt."
 	if err := store.SaveAgent(ctx, agent); err != nil {
 		t.Fatal(err)
 	}
-	if changed := findAgent(t, store, agent.Name); changed.Prompt != agent.Prompt || changed.PromptRevision != 2 {
-		t.Fatalf("changed prompt not saved as revision 2: %+v", changed)
+	if changed := findAgent(t, store, agent.Name); changed.Prompt != agent.Prompt || changed.PromptRevision != 3 {
+		t.Fatalf("changed prompt not saved as revision 3: %+v", changed)
 	}
 	if security := findAgent(t, store, security.Name); security.Prompt != "Review safely." {
 		t.Fatalf("agents must not share prompts: %+v", security)
@@ -141,7 +175,7 @@ func TestWorkflowConfiguration(t *testing.T) {
 		t.Fatalf("an earlier snapshot must keep its prompt: %+v", resolved.Agents[0].EntryPrompt)
 	}
 	resolvedAgain, err := store.ResolveWorkflow(ctx, workflow.Name)
-	if err != nil || resolvedAgain.Agents[0].EntryPrompt.Body != agent.Prompt || resolvedAgain.Agents[0].EntryPrompt.Revision != 2 {
+	if err != nil || resolvedAgain.Agents[0].EntryPrompt.Body != agent.Prompt || resolvedAgain.Agents[0].EntryPrompt.Revision != 3 {
 		t.Fatalf("new runs must use the changed prompt: %+v %v", resolvedAgain, err)
 	}
 	model.ConnectionKind, model.APIKeyEnv = "hosted", "TEST_MODEL_KEY"

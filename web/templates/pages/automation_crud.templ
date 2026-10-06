@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"fmt"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
 	"strings"
@@ -47,6 +48,7 @@ templ WorkflowForm(workflow overload.Workflow, agents []overload.AgentDefinition
 		<section class="panel"><form method="post" action="/configure/workflows"><input type="hidden" name="csrf" value={ nonce }/>
 			if workflow.Name != "" {
 				<input type="hidden" name="existing" value={ workflow.Name }/>
+				<input type="hidden" name="revision" value={ fmt.Sprint(workflow.Revision) }/>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ workflow.Name } readonly?={ workflow.Name != "" } placeholder="go-pr-review"/></label>
 			<label class="field"><span>Type</span><select name="kind" required hx-get="/configure/workflow-agents" hx-target="#workflow-agents" hx-include="closest form" hx-trigger="change" hx-swap="innerHTML"><option value="pr_review" selected?={ workflow.Kind == "pr_review" }>Pull request review</option><option value="scheduled_prompt" selected?={ workflow.Kind == "scheduled_prompt" }>Scheduled prompt</option></select></label>

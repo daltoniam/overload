@@ -146,7 +146,7 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bu
 		if len(text) > 12000 {
 			text = text[:12000]
 		}
-		response, err = agent.Generate(ctx, fantasy.AgentCall{Prompt: repairPrompt + text})
+		response, err = plan.generate(ctx, agent, fantasy.AgentCall{Prompt: repairPrompt + text})
 		if err != nil {
 			return outcome, fmt.Errorf("review incomplete repairing %s: %w", path, err)
 		}
