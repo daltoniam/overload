@@ -853,8 +853,11 @@ Before the first release:
 4. Decide the run-wide finding limit (now 10 per review, overflow kept as
    dropped) and the planner's default prompt guidance; on switchboard #177
    the planner sent every file to one sub-agent.
-5. Make a rejected GitHub review (422, for example a force-push between
-   review and post) a final post status instead of retrying for hours.
+5. Done: a review GitHub rejects (422, for example after a force push) ends
+   with post status `post_rejected` and GitHub's reason on the timeline
+   instead of being retried for hours. A finished review of an older commit
+   is not posted once a newer commit of the PR has its own review
+   (`superseded_by_newer_commit`).
 6. Concurrency: a unique active run per (repository, PR, head) so two
    simultaneous webhooks cannot both queue a review; optimistic revision
    checks so two people editing one workflow cannot silently overwrite

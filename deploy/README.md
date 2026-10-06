@@ -147,6 +147,32 @@ a repository webhook at `/webhooks/github`.
 organization and a public `https://` webhook URL. A Mac needs a tunnel to
 port 8082, for example Cloudflare Tunnel or Tailscale Funnel; expose only
 `/webhooks/github`, since webhooks are signed but the UI uses Basic Auth.
+
+With Cloudflare Tunnel (`brew install cloudflared`, then
+`cloudflared tunnel login` once to choose the domain):
+
+```sh
+cloudflared tunnel create overload
+cloudflared tunnel route dns overload overload.example.com
+```
+
+`~/.cloudflared/config.yml` forwards only the webhook path; everything else,
+including the UI, gets a 404 at Cloudflare and never reaches the Mac:
+
+```yaml
+tunnel: overload
+credentials-file: /Users/you/.cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: overload.example.com
+    path: ^/webhooks/github$
+    service: http://127.0.0.1:8082
+  - service: http_status:404
+```
+
+`cloudflared service install` runs it at login. Use
+`https://overload.example.com/webhooks/github` as the webhook URL, and keep
+using `http://127.0.0.1:8082` for the UI.
+
 Overload sends you to GitHub with a manifest and a one-time state value, and
 GitHub returns a code that overload exchanges for the App ID, private key
 and webhook secret. These are stored in Postgres (table `github_app`), so

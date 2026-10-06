@@ -213,6 +213,11 @@ func (client *Client) FindReview(ctx context.Context, installationID int64, repo
 	}
 }
 
+// ErrReviewRejected means GitHub refused the review itself, for example
+// because the commit is no longer part of the pull request after a force
+// push. Posting the same review again would fail the same way.
+var ErrReviewRejected = errors.New("GitHub rejected the review")
+
 func (client *Client) PostReview(ctx context.Context, installationID int64, repository string, number int, sha, summary string, findings []overload.Finding) (int64, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
@@ -228,6 +233,10 @@ func (client *Client) PostReview(ctx context.Context, installationID int64, repo
 		comments = append(comments, &gh.DraftReviewComment{Path: gh.Ptr(finding.Path), Line: gh.Ptr(finding.Line), Side: gh.Ptr("RIGHT"), Body: gh.Ptr(body)})
 	}
 	review, _, err := api.PullRequests.CreateReview(ctx, owner, repo, number, &gh.PullRequestReviewRequest{CommitID: gh.Ptr(sha), Body: gh.Ptr(summary), Event: gh.Ptr("COMMENT"), Comments: comments})
+	var response *gh.ErrorResponse
+	if errors.As(err, &response) && response.Response != nil && response.Response.StatusCode == http.StatusUnprocessableEntity {
+		return 0, fmt.Errorf("%w: %s", ErrReviewRejected, overload.TruncateUTF8(response.Message, 300))
+	}
 	if err != nil {
 		return 0, err
 	}

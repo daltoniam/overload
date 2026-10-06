@@ -9,11 +9,13 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/riverqueue/river"
 )
 
 type fakePoster struct {
+	reject   bool
 	existing int64
 	posts    [][]overload.Finding
 	summary  string
@@ -27,6 +29,9 @@ func (poster *fakePoster) FindReview(_ context.Context, installationID int64, _ 
 }
 
 func (poster *fakePoster) PostReview(_ context.Context, _ int64, _ string, _ int, _ string, summary string, findings []overload.Finding) (int64, error) {
+	if poster.reject {
+		return 0, fmt.Errorf("%w: commit_id is not part of the pull request", github.ErrReviewRejected)
+	}
 	poster.posts = append(poster.posts, findings)
 	poster.summary = summary
 	poster.existing = int64(1000 + len(poster.posts))
@@ -146,6 +151,32 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT status, suppressed_reason FROM findings WHERE run_id=$1 AND title='Dropped'`, partial).Scan(&droppedStatus, &reason); err != nil || droppedStatus != postgres.FindingDropped || reason != "verifier: not real" {
 		t.Fatalf("dropped finding %q %q %v", droppedStatus, reason, err)
 	}
+
+	stale := newRun("completed", "queued", []overload.Finding{{Path: "g.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Old head", Body: "b", Confidence: 0.9, Evidence: "o()"}}, "pending")
+	newer := newRun("running", "", nil, "pending")
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET head_sha=$2 WHERE id=$1`, newer, strings.Repeat("c", 40)); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: stale}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, stale).Scan(&postStatus); err != nil || postStatus != "superseded_by_newer_commit" || len(poster.posts) != 2 {
+		t.Fatalf("posted a review of an older commit: %q %d %v", postStatus, len(poster.posts), err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='failed' WHERE id=$1`, newer); err != nil {
+		t.Fatal(err)
+	}
+
+	poster.reject, poster.existing = true, 0
+	rejected := newRun("completed", "queued", []overload.Finding{{Path: "f.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Stale", Body: "b", Confidence: 0.9, Evidence: "s()"}}, "pending")
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: rejected}}); err != nil {
+		t.Fatalf("a rejected review must not be retried: %v", err)
+	}
+	var event string
+	if err := store.Pool.QueryRow(ctx, `SELECT r.post_status, e.message FROM runs r JOIN run_events e ON e.run_id = r.id WHERE r.id=$1`, rejected).Scan(&postStatus, &event); err != nil || postStatus != "post_rejected" || !strings.Contains(event, "commit_id is not part") {
+		t.Fatalf("rejection not recorded: %q %q %v", postStatus, event, err)
+	}
+	poster.reject = false
 
 	paused := newRun("completed", "queued", []overload.Finding{{Path: "e.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Paused", Body: "b", Confidence: 0.9, Evidence: "p()"}}, "pending")
 	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run=true WHERE id=$1`, repoID); err != nil {

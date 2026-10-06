@@ -7,8 +7,10 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -161,5 +163,25 @@ func TestFindReviewIgnoresReviewsByOthers(t *testing.T) {
 	reviews += `,{"id":3,"user":{"login":"overload-test[bot]"},"body":"Overload found 1 issue(s).\n\n` + marker + `"}`
 	if id, err := client.FindReview(context.Background(), 7, "acme/api", 5, marker); err != nil || id != 3 {
 		t.Fatalf("own review not found: id=%d err=%v", id, err)
+	}
+}
+
+func TestPostReviewRejection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"message":"Unprocessable Entity","errors":["commit_id is not part of the pull request"]}`))
+	}))
+	defer server.Close()
+	client, err := NewTokenClient("token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.api.BaseURL, err = url.Parse(server.URL + "/"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.PostReview(context.Background(), 0, "acme/api", 5, strings.Repeat("a", 40), "summary", nil)
+	if !errors.Is(err, ErrReviewRejected) {
+		t.Fatalf("422 not reported as a rejection: %v", err)
 	}
 }

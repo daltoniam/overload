@@ -29,6 +29,9 @@ type PostTarget struct {
 	// RepositoryPaused is set when the repository was disabled or put in
 	// dry-run mode after the review was queued; nothing is posted.
 	RepositoryPaused bool
+	// Superseded is set when a newer commit of the pull request has its own
+	// review, so comments on this commit would be stale.
+	Superseded bool
 }
 
 var ErrNothingToPost = errors.New("run is not awaiting posting")
@@ -38,7 +41,7 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused)
+	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')) FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}
@@ -108,4 +111,21 @@ func (s *Store) FinishPost(ctx context.Context, target PostTarget, status string
 func (s *Store) SkipPost(ctx context.Context, runID int64, status string) error {
 	_, err := s.Pool.Exec(ctx, `UPDATE runs SET post_status = $2 WHERE id = $1 AND posted_at IS NULL`, runID, status)
 	return err
+}
+
+// RejectPost records that GitHub refused the review, with GitHub's reason
+// on the run's timeline. The findings stay on the run.
+func (s *Store) RejectPost(ctx context.Context, runID int64, reason string) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `UPDATE runs SET post_status = 'post_rejected' WHERE id = $1 AND posted_at IS NULL`, runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'error', 'posted', $2)`, runID, overload.TruncateUTF8("Posting rejected by GitHub: "+reason, 500)); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

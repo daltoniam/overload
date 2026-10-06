@@ -44,6 +44,9 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if target.RepositoryPaused {
 		return w.Store.SkipPost(ctx, runID, "repository_paused")
 	}
+	if target.Superseded {
+		return w.Store.SkipPost(ctx, runID, "superseded_by_newer_commit")
+	}
 	if target.InstallationID == 0 {
 		return w.Store.SkipPost(ctx, runID, "no_github_app_installation")
 	}
@@ -71,6 +74,9 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		summary = fmt.Sprintf("Overload found %d issue(s) in this pull request. This review is partial: part of it could not be completed, so some files may not have been fully reviewed.\n\n%s", len(target.Findings), marker)
 	}
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, summary, target.Findings)
+	if errors.Is(err, github.ErrReviewRejected) {
+		return w.Store.RejectPost(ctx, runID, err.Error())
+	}
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)
 	}
