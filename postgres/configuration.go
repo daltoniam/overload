@@ -168,7 +168,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -198,6 +198,7 @@ type workflowRouting struct {
 	SkipPaths          []string                  `json:"skip_paths,omitempty"`
 	MainReviews        string                    `json:"main_reviews,omitempty"`
 	MaxFileReviews     int                       `json:"max_file_reviews,omitempty"`
+	MaxFindings        int                       `json:"max_findings,omitempty"`
 	PlannerRevisionID  int64                     `json:"planner_prompt_revision_id,omitempty"`
 	VerifierRevisionID int64                     `json:"verifier_prompt_revision_id,omitempty"`
 }
@@ -222,7 +223,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 		if err := json.Unmarshal(routingData, &routing); err != nil {
 			return nil, err
 		}
-		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews
+		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.MaxFindings = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()
@@ -254,7 +255,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	if err := json.Unmarshal(routingData, &routing); err != nil {
 		return result, err
 	}
-	result.SkipPaths, result.MainReviews, result.MaxFileReviews = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews
+	result.SkipPaths, result.MainReviews, result.MaxFileReviews, result.MaxFindings = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue

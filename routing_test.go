@@ -201,7 +201,7 @@ func TestApplyPlan(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(routing.Agents[1].Files, []string{"store/query.sql", "util/helpers.go"}) || !reflect.DeepEqual(routing.Agents[1].Planned, []string{"util/helpers.go"}) ||
-		!reflect.DeepEqual(routing.Agents[3].Files, []string{"util/helpers.go", "main.go"}) || len(routing.Agents[0].Files) != 0 || !strings.Contains(routing.Planner, "added 3") {
+		!reflect.DeepEqual(routing.Agents[3].Files, []string{"util/helpers.go", "main.go"}) || !reflect.DeepEqual(routing.Agents[0].Files, []string{"util/helpers.go", "main.go"}) || !strings.Contains(routing.Planner, "added 3") {
 		t.Fatalf("plan not applied: %+v", routing)
 	}
 	for name, plan := range map[string]map[string][]string{
@@ -218,7 +218,7 @@ func TestApplyPlan(t *testing.T) {
 	}
 	workflow.MaxFileReviews = 5
 	routing, err = workflow.ApplyPlan(paths, map[string][]string{"util/helpers.go": {"sql", "tests"}, "main.go": {"sql", "tests"}})
-	if err != nil || routing.FileReviews() != 5 || !strings.Contains(routing.Planner, "1 more dropped") {
+	if err != nil || routing.FileReviews() != 5 || !strings.Contains(routing.Planner, "added 1 file review; 3 more dropped") {
 		t.Fatalf("limit: %+v %v", routing, err)
 	}
 	workflow.MaxFileReviews = 2
@@ -299,5 +299,20 @@ func TestWorkflowNormalize(t *testing.T) {
 	scheduled.Normalize()
 	if err := scheduled.Validate(); err != nil {
 		t.Fatalf("a whitespace verifier must not count as a verifier: %v", err)
+	}
+}
+
+func TestFindingLimit(t *testing.T) {
+	if (ResolvedWorkflow{}).FindingLimit() != DefaultMaxFindings || (ResolvedWorkflow{MaxFindings: 25}).FindingLimit() != 25 {
+		t.Fatal("finding limit default")
+	}
+	for value, ok := range map[int]bool{0: true, 1: true, MaxFindingsLimit: true, MaxFindingsLimit + 1: false, -1: false} {
+		workflow := Workflow{Name: "w", Kind: "pr_review", Agents: []string{"lead"}, MaxFindings: value}
+		if (workflow.Validate() == nil) != ok {
+			t.Errorf("max findings %d: want ok=%v", value, ok)
+		}
+	}
+	if (Workflow{Name: "w", Kind: "scheduled_prompt", Agents: []string{"a"}, MaxFindings: 5}).Validate() == nil {
+		t.Error("a scheduled workflow accepted a finding limit")
 	}
 }

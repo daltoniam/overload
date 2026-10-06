@@ -97,7 +97,7 @@ func TestWorkflowPreview(t *testing.T) {
 
 func TestRunDetailShowsRouting(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")
-	store := &routingStore{routing: overload.Routing{Skipped: []string{"go.lock"}, Planner: "planner added 1 file reviews", Degraded: []string{"sub-agent tests failed and did not review 1 of its 1 files"}, Agents: []overload.AgentFiles{{Agent: "lead", Files: []string{"main.go"}, Reviewed: 1}, {Agent: "security", Files: []string{"auth/a.go", "util/x.go"}, Planned: []string{"util/x.go"}, Reviewed: 2, Findings: 2, Capped: 1, Verified: 3, Dropped: 1, InputTokens: 900, OutputTokens: 40}, {Agent: "tests", Files: []string{"a_test.go"}, Failed: "bad request", Unreviewed: []string{"a_test.go"}}}}}
+	store := &routingStore{routing: overload.Routing{Skipped: []string{"go.lock"}, Planner: "planner added 1 file review", Degraded: []string{"sub-agent tests failed and did not review 1 of its 1 files"}, Agents: []overload.AgentFiles{{Agent: "lead", Files: []string{"main.go"}, Reviewed: 1}, {Agent: "security", Files: []string{"auth/a.go", "util/x.go"}, Planned: []string{"util/x.go"}, Reviewed: 2, Findings: 2, Capped: 1, Verified: 3, Dropped: 1, InputTokens: 900, OutputTokens: 40}, {Agent: "tests", Files: []string{"a_test.go"}, Failed: "bad request", Unreviewed: []string{"a_test.go"}}}}}
 	store.findings = []overload.Finding{{Title: "Kept", Agents: []string{"security"}}, {Title: "Gone", DropReason: "verifier: not real"}}
 	store.run = overload.Run{ID: 7, Kind: "pr_review", Status: overload.RunCompleted}
 	response := httptest.NewRecorder()

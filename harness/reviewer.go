@@ -197,7 +197,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			routing.Degraded = append(routing.Degraded, fmt.Sprintf("verifier could not check %d findings; they were kept", verified.failures))
 		}
 	}
-	result.Findings, result.Dropped = limitFindings(result.Findings, result.Dropped)
+	result.Findings, result.Dropped = limitFindings(result.Findings, result.Dropped, workflow.FindingLimit())
 	for index, resolved := range workflow.Agents {
 		for _, finding := range result.Findings {
 			if slices.Contains(finding.Agents, resolved.Name) {
@@ -295,18 +295,18 @@ func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overl
 	}
 }
 
-// limitFindings keeps the first MaxFindingsPerReview findings (they are
-// sorted most severe first) and moves the rest to dropped, so they stay on
-// the run without being posted.
-func limitFindings(findings, dropped []overload.Finding) ([]overload.Finding, []overload.Finding) {
-	if len(findings) <= overload.MaxFindingsPerReview {
+// limitFindings keeps the first limit findings (they are sorted most severe
+// first) and moves the rest to dropped, so they stay on the run without
+// being posted.
+func limitFindings(findings, dropped []overload.Finding, limit int) ([]overload.Finding, []overload.Finding) {
+	if len(findings) <= limit {
 		return findings, dropped
 	}
-	for _, finding := range findings[overload.MaxFindingsPerReview:] {
-		finding.DropReason = fmt.Sprintf("over the limit of %d findings per review", overload.MaxFindingsPerReview)
+	for _, finding := range findings[limit:] {
+		finding.DropReason = fmt.Sprintf("over the limit of %d findings per review", limit)
 		dropped = append(dropped, finding)
 	}
-	return findings[:overload.MaxFindingsPerReview], dropped
+	return findings[:limit], dropped
 }
 
 func summarize(findings []overload.Finding, summaries []string, reviewed int) string {

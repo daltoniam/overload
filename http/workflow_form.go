@@ -59,6 +59,7 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.MainReviews = values.Get("main_reviews")
 		workflow.PlannerPrompt, workflow.VerifierPrompt = values.Get("planner_prompt"), values.Get("verifier_prompt")
 		workflow.MaxFileReviews = number(values.Get("max_file_reviews"), "the file review limit must be a number")
+		workflow.MaxFindings = number(values.Get("max_findings"), "the finding limit must be a number")
 	}
 	workflow.Normalize()
 	return workflow, parseErr

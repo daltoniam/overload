@@ -194,7 +194,7 @@ type Assignment struct {
 
 // Route assigns changed files to agents: files matching skip paths are
 // dropped, each sub-agent gets the files its scope matches, and the main
-// agent gets every file or only the files no sub-agent claimed.
+// agent gets every file or only the files no sub-agent's paths claimed.
 func (workflow ResolvedWorkflow) Route(paths []string) (Routing, error) {
 	return workflow.route(paths, nil)
 }
@@ -228,13 +228,16 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 			routing.Skipped = append(routing.Skipped, path)
 			continue
 		}
+		// Only path globs claim a file away from the main agent. Planner
+		// assignments add reviews but never remove the main agent's, so a
+		// planner that over-assigns costs time, not coverage.
 		claimed := false
 		for position := 1; position < len(workflow.Agents); position++ {
 			byGlob := workflow.Agents[position].Scope.Mode != ScopePlanned && (len(scopes[position]) == 0 || scopes[position].match(path))
 			if byGlob || extra[position][path] {
 				routing.Agents[position].Files = append(routing.Agents[position].Files, path)
-				claimed = true
 			}
+			claimed = claimed || byGlob
 			if !byGlob && extra[position][path] {
 				routing.Agents[position].Planned = append(routing.Agents[position].Planned, path)
 			}
@@ -331,7 +334,7 @@ func (workflow ResolvedWorkflow) ApplyPlan(paths []string, plan map[string][]str
 	if err != nil {
 		return base, err
 	}
-	routing.Planner = fmt.Sprintf("planner added %d file reviews", keep)
+	routing.Planner = "planner added " + Plural(keep, "file review")
 	if dropped := len(additions) - keep; dropped > 0 {
 		routing.Planner += fmt.Sprintf("; %d more dropped to stay within the file-review limit", dropped)
 	}
@@ -462,14 +465,18 @@ type routingSettings struct {
 	skipPaths         []string
 	mainReviews       string
 	maxFileReviews    int
+	maxFindings       int
 	scopes            map[string]Scope
 	planner, verifier bool
 }
 
 func validateRouting(settings routingSettings) error {
 	kind, skipPaths, mainReviews, maxFileReviews, scopes := settings.kind, settings.skipPaths, settings.mainReviews, settings.maxFileReviews, settings.scopes
-	if kind != "pr_review" && (len(skipPaths) > 0 || (mainReviews != "" && mainReviews != MainReviewsAll) || maxFileReviews != 0 || len(scopes) > 0 || settings.planner || settings.verifier) {
-		return errors.New("only PR review workflows have scopes, skip paths, review limits, a planner or a verifier")
+	if kind != "pr_review" && (len(skipPaths) > 0 || (mainReviews != "" && mainReviews != MainReviewsAll) || maxFileReviews != 0 || settings.maxFindings != 0 || len(scopes) > 0 || settings.planner || settings.verifier) {
+		return errors.New("only PR review workflows have scopes, skip paths, review or finding limits, a planner or a verifier")
+	}
+	if settings.maxFindings < 0 || settings.maxFindings > MaxFindingsLimit {
+		return fmt.Errorf("max_findings must be between 1 and %d (0 means %d)", MaxFindingsLimit, DefaultMaxFindings)
 	}
 	for name, scope := range scopes {
 		if scope.Mode == ScopePlanned && !settings.planner {
@@ -571,4 +578,20 @@ func normalizeGlobs(globs []string) []string {
 		}
 	}
 	return normalized
+}
+
+// FindingLimit is the most findings a review of this workflow posts.
+func (workflow ResolvedWorkflow) FindingLimit() int {
+	if workflow.MaxFindings > 0 {
+		return workflow.MaxFindings
+	}
+	return DefaultMaxFindings
+}
+
+// Plural writes a count with its noun, adding "s" unless the count is 1.
+func Plural(count int, noun string) string {
+	if count == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
 }

@@ -102,6 +102,9 @@ func workflowDetails(workflow overload.Workflow) string {
 	if workflow.MaxFileReviews > 0 {
 		parts = append(parts, fmt.Sprintf("limit %d reviews", workflow.MaxFileReviews))
 	}
+	if workflow.MaxFindings > 0 {
+		parts = append(parts, fmt.Sprintf("posts up to %d findings", workflow.MaxFindings))
+	}
 	return strings.Join(parts, " · ")
 }
 

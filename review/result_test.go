@@ -21,7 +21,7 @@ func TestCheckResultTreatsSandboxOutputAsUntrusted(t *testing.T) {
 		Dropped:  []overload.Finding{sneaky, offDiff},
 		Metrics:  map[string]any{"routing": map[string]any{"agents": "not a list"}},
 	}
-	checked, err := CheckResult(result, patch)
+	checked, err := CheckResult(result, patch, overload.DefaultMaxFindings)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestCheckResultTreatsSandboxOutputAsUntrusted(t *testing.T) {
 		t.Fatal("malformed routing kept")
 	}
 	good := overload.ReviewResult{Findings: []overload.Finding{valid}, Metrics: map[string]any{"routing": map[string]any{"agents": []any{map[string]any{"agent": "lead", "files": []any{"a.go"}}}}}}
-	checked, err = CheckResult(good, patch)
+	checked, err = CheckResult(good, patch, overload.DefaultMaxFindings)
 	if routing, ok := checked.Metrics["routing"].(overload.Routing); err != nil || !ok || routing.Agents[0].Agent != "lead" {
 		t.Fatalf("well-formed routing not decoded: %+v %v", checked.Metrics, err)
 	}

@@ -97,8 +97,10 @@ planner what the sub-agent is for. `planner_prompt` holds instructions that
 let the main agent's model send files to sub-agents whatever they are called;
 `verifier_prompt` holds instructions that keep or drop each sub-agent finding
 before posting (critical and security findings are never dropped, since the
-verifier reads untrusted PR text). A review posts at most 10 findings, most
-severe first; the rest stay on the run as dropped. Changed instructions are saved as new versions; each run
+verifier reads untrusted PR text). Planner assignments only add reviews: the
+main agent still reviews every file no sub-agent's paths matched. A review
+posts at most `max_findings` findings (default 10), most severe first; the
+rest stay on the run as dropped. Changed instructions are saved as new versions; each run
 records the exact text it used. `overload workflows preview NAME <
 files.txt` shows which agent would review each file and roughly how long it
 would take, without calling a model.

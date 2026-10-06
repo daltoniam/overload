@@ -81,7 +81,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if result.Error != "" {
 		return spec, result, sha, nil
 	}
-	result, err = CheckResult(result, spec.Diff)
+	result, err = CheckResult(result, spec.Diff, spec.Workflow.FindingLimit())
 	if result.Metrics == nil {
 		result.Metrics = map[string]any{}
 	}

@@ -89,6 +89,7 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 		<fieldset class="tree-node"><legend>Routing</legend>
 			<label class="field"><span>Skip paths</span><textarea name="skip_paths" rows="3" class="short" placeholder="*.lock&#10;vendor/**&#10;**/*_templ.go">{ strings.Join(workflow.SkipPaths, "\n") }</textarea><small>One glob per line. Matching files are not reviewed by any agent. * stays in one folder, ** crosses folders, and a pattern without / matches the file name anywhere.</small></label>
 			<label class="field"><span>File review limit</span><input type="number" name="max_file_reviews" min="0" max="10000" value={ optionalNumber(workflow.MaxFileReviews) } placeholder="No limit"/><small>Most (agent, file) reviews per run. A review needing more fails before calling a model; planner additions are dropped first.</small></label>
+			<label class="field"><span>Findings posted per review</span><input type="number" name="max_findings" min="0" max={ fmt.Sprint(overload.MaxFindingsLimit) } value={ optionalNumber(workflow.MaxFindings) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxFindings) }/><small>The most severe findings are posted; the rest stay on the run as dropped. Raise it for workflows with several focused sub-agents.</small></label>
 		</fieldset>
 	}
 }

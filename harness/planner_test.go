@@ -100,7 +100,7 @@ func TestPlannerRoutesMisleadingFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 	slices.Sort(model.reviews)
-	if strings.Join(model.reviews, ",") != "lead-model:main.go,sql-model:store/query.sql,sql-model:util/helpers.go" {
+	if strings.Join(model.reviews, ",") != "lead-model:main.go,lead-model:util/helpers.go,sql-model:store/query.sql,sql-model:util/helpers.go" {
 		t.Fatalf("reviews %v", model.reviews)
 	}
 	for _, want := range []string{"- sql: SQL queries and database access (already gets files matching **/*.sql)", "### util/helpers.go (+1 -1)", "@@ -1 +1 @@ func Lookup()", "+db.Query"} {
@@ -115,7 +115,7 @@ func TestPlannerRoutesMisleadingFileName(t *testing.T) {
 	if strings.Join(model.verified, ",") != "lead-model:store/query.sql,lead-model:util/helpers.go" {
 		t.Fatalf("verifier must check sub-agent findings on the main model only: %v", model.verified)
 	}
-	if len(result.Findings) != 2 || len(result.Dropped) != 1 || result.Dropped[0].Path != "store/query.sql" || result.Dropped[0].DropReason != "verifier: Not a real problem." {
+	if len(result.Findings) != 3 || len(result.Dropped) != 1 || result.Dropped[0].Path != "store/query.sql" || result.Dropped[0].DropReason != "verifier: Not a real problem." {
 		t.Fatalf("findings %+v dropped %+v", result.Findings, result.Dropped)
 	}
 	routing := result.Metrics["routing"].(overload.Routing)

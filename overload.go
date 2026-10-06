@@ -101,11 +101,13 @@ type ReviewSettings struct {
 const MaxReviewConcurrency = 32
 
 // Finding limits. A model's reply for one file keeps its most severe
-// MaxFindingsPerFile findings, and a review posts at most
-// MaxFindingsPerReview; the rest are kept on the run as dropped.
+// MaxFindingsPerFile findings. A review posts at most the workflow's
+// finding limit (DefaultMaxFindings unless set, at most MaxFindingsLimit);
+// the rest are kept on the run as dropped.
 const (
-	MaxFindingsPerFile   = 10
-	MaxFindingsPerReview = 10
+	MaxFindingsPerFile = 10
+	DefaultMaxFindings = 10
+	MaxFindingsLimit   = 50
 )
 
 // Reasoning parameter styles a model connection can use. ReasoningAuto keeps

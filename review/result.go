@@ -15,8 +15,8 @@ const maxDroppedFindings = 200
 // sanitized; kept findings carry no drop reason and every dropped finding has
 // one, so a dropped finding can never be stored as postable. The routing in
 // the metrics must decode, or it is removed.
-func CheckResult(result overload.ReviewResult, patch string) (overload.ReviewResult, error) {
-	findings, err := Validate(result.Findings, patch, overload.MaxFindingsPerReview)
+func CheckResult(result overload.ReviewResult, patch string, limit int) (overload.ReviewResult, error) {
+	findings, err := Validate(result.Findings, patch, limit)
 	if err != nil {
 		return result, err
 	}

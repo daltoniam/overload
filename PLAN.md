@@ -489,8 +489,9 @@ Workflow "go-service-review"
    - if the plan exceeds the file-review limit, planner assignments are
      dropped first, never glob assignments;
    - the validated plan is saved on the run and shown in the UI.
-4. **Unclaimed files** go to the main agent (unless disabled). No file is
-   left unreviewed except through skip globs.
+4. **Unclaimed files** go to the main agent (unless disabled). Only path
+   globs claim a file; planner assignments never take a file from the main
+   agent. No file is left unreviewed except through skip globs.
 5. **Reviews**: each (agent, file) pair is today's per-file review call.
    Sub-agents see only their assigned files.
 6. **Verifier** (optional): one call per sub-agent finding with that file's
@@ -850,9 +851,19 @@ Before the first release:
 2. Publish the first release and Homebrew formula (needs the
    `RELEASE_TOKEN` secret for the tap); install on a clean Mac.
 3. Run the GitHub App and posting against a real repository through a tunnel.
-4. Decide the run-wide finding limit (now 10 per review, overflow kept as
-   dropped) and the planner's default prompt guidance; on switchboard #177
-   the planner sent every file to one sub-agent.
+4. Done: the findings posted per review are a workflow setting
+   (`max_findings`, default 10, up to 50; the rest stay on the run as
+   dropped), since one number cannot suit both a single local model and
+   eight focused sub-agents. The planner's instructions now ask it to be
+   conservative, but on switchboard #177 bonsai-2-27b still gave all four
+   files (including `main.go`, config and the test file) to one sub-agent,
+   so the rule is enforced in code instead: only path globs take a file
+   away from the main agent. Planner assignments add reviews and never
+   remove the main agent's, so an over-eager planner costs time, not
+   coverage. A later #177 run with both changes sent only
+   `integrations/intercom/intercom.go` to the integrations sub-agent while
+   the main agent reviewed `main.go`, the config and the client (21m32s;
+   planner output varies from run to run).
 5. Done: a review GitHub rejects (422, for example after a force push) ends
    with post status `post_rejected` and GitHub's reason on the timeline
    instead of being retried for hours. A finished review of an older commit
@@ -931,9 +942,10 @@ After:
   whether its extra context (hunk headers, first changed lines) is enough;
   measure before making it a default. On switchboard #177 bonsai-2-27b
   assigned every non-skipped file (including config and wiring) to the
-  integrations sub-agent, leaving the main agent nothing in "unclaimed"
-  mode; prompts may need to say "only files clearly in its area", or the
-  planner may need a per-sub-agent cap.
+  integrations sub-agent even when told to be conservative. Since planner
+  assignments became additive this costs extra reviews rather than
+  coverage; a stronger local model, or a per-sub-agent cap, may cut the
+  cost.
 - Whether the verifier removes more false positives than true findings on
   local models.
 - Whether a hosted model proxy (keys held outside sandboxes, per-run tokens)

@@ -93,6 +93,9 @@ type Workflow struct {
 	SkipPaths      []string         `json:"skip_paths,omitempty"`
 	MainReviews    string           `json:"main_reviews,omitempty"`
 	MaxFileReviews int              `json:"max_file_reviews,omitempty"`
+	// MaxFindings is the most findings a review posts; 0 means
+	// DefaultMaxFindings.
+	MaxFindings int `json:"max_findings,omitempty"`
 	// PlannerPrompt and VerifierPrompt are the planner's and verifier's
 	// instructions; empty means no planner or verifier.
 	PlannerPrompt  string `json:"planner_prompt,omitempty"`
@@ -121,7 +124,7 @@ func (workflow Workflow) Validate() error {
 	if err := validatePromptText("the verifier prompt", workflow.VerifierPrompt, false); err != nil {
 		return err
 	}
-	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
+	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
 }
 
 type TriggerBinding struct {
@@ -173,6 +176,7 @@ type ResolvedWorkflow struct {
 	SkipPaths      []string        `json:"skip_paths,omitempty"`
 	MainReviews    string          `json:"main_reviews,omitempty"`
 	MaxFileReviews int             `json:"max_file_reviews,omitempty"`
+	MaxFindings    int             `json:"max_findings,omitempty"`
 	PlannerPrompt  *PromptTemplate `json:"planner_prompt,omitempty"`
 	VerifierPrompt *PromptTemplate `json:"verifier_prompt,omitempty"`
 }
@@ -198,7 +202,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 		}
 		scopes[agent.Name] = agent.Scope
 	}
-	if err := validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, scopes: scopes, planner: workflow.PlannerPrompt != nil, verifier: workflow.VerifierPrompt != nil}); err != nil {
+	if err := validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: scopes, planner: workflow.PlannerPrompt != nil, verifier: workflow.VerifierPrompt != nil}); err != nil {
 		return err
 	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {

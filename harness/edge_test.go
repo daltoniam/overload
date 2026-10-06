@@ -172,7 +172,7 @@ func TestReviewLimitMovesExtraFindingsToDropped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Findings) != overload.MaxFindingsPerReview || len(result.Dropped) != 2 {
+	if len(result.Findings) != overload.DefaultMaxFindings || len(result.Dropped) != 2 {
 		t.Fatalf("kept %d dropped %d", len(result.Findings), len(result.Dropped))
 	}
 	for _, kept := range result.Findings[:3] {
@@ -184,8 +184,17 @@ func TestReviewLimitMovesExtraFindingsToDropped(t *testing.T) {
 		t.Fatalf("drop reason %q", result.Dropped[0].DropReason)
 	}
 	routing := result.Metrics["routing"].(overload.Routing)
-	if routing.Agents[0].Findings+routing.Agents[1].Findings != overload.MaxFindingsPerReview {
+	if routing.Agents[0].Findings+routing.Agents[1].Findings != overload.DefaultMaxFindings {
 		t.Fatalf("per-agent counts must match kept findings: %+v", routing.Agents)
+	}
+
+	mu.Lock()
+	calls = 0
+	mu.Unlock()
+	workflow.MaxFindings = 20
+	result, err = (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{})
+	if err != nil || len(result.Findings) != 12 || len(result.Dropped) != 0 {
+		t.Fatalf("a raised limit must keep all 12 findings: kept %d dropped %d %v", len(result.Findings), len(result.Dropped), err)
 	}
 }
 
