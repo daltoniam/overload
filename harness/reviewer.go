@@ -68,7 +68,7 @@ func ProfileWorkflow(profile overload.ModelProfile, promptProfile string) (overl
 		return overload.ResolvedWorkflow{}, err
 	}
 	entry := overload.PromptTemplate{Name: version, Kind: "entry", Body: body, SHA256: overload.PromptDigest(body)}
-	workflow := overload.ResolvedWorkflow{Name: version, Kind: "pr_review", Agents: []overload.ResolvedAgent{{Name: "reviewer", Model: profile, EntryPrompt: entry}}}
+	workflow := overload.ResolvedWorkflow{Version: overload.SnapshotVersion, Name: version, Kind: "pr_review", Agents: []overload.ResolvedAgent{{Name: "reviewer", Model: profile, EntryPrompt: entry}}}
 	return workflow, workflow.Verify()
 }
 
@@ -91,11 +91,12 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if err := workflow.Verify(); err != nil {
 		return overload.ReviewResult{}, err
 	}
-	changed, err := reviewPaths(spec.Diff)
+	parsed, err := parseReviewDiff(spec.Diff)
 	if err != nil {
 		return overload.ReviewResult{}, err
 	}
-	routing, routeErr := workflow.Route(changed)
+	changed := parsed.paths()
+	routing, reviewable, routeErr := routeFiles(workflow, parsed)
 	result = overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(changed), "skipped_files": len(routing.Skipped), "reviewed_files": 0}}
 	defer func() {
 		result.Metrics["routing"] = routing
@@ -106,27 +107,27 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if routeErr != nil {
 		return result, routeErr
 	}
-	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(routing.Skipped) < len(changed) {
+	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(reviewable) > len(routing.Skipped) {
 		var usage plannerUsage
-		if routing, usage, err = planRouting(ctx, workflow, spec.Diff, changed, routing); err != nil {
+		tooLarge := routing.TooLarge
+		if routing, usage, err = planRouting(ctx, workflow, parsed, reviewable, routing); err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
+		routing.TooLarge = tooLarge
 		result.Metrics["planner_input_tokens"], result.Metrics["planner_output_tokens"] = usage.inputTokens, usage.outputTokens
 		result.Metrics["input_tokens"], result.Metrics["output_tokens"] = usage.inputTokens, usage.outputTokens
 	}
-	batches, paths, err := makeReviewBatches(spec.Diff, repo, routing.Skipped)
-	if err != nil {
-		return result, err
+	if len(routing.TooLarge) > 0 {
+		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
+	paths := reviewablePaths(reviewable, routing.Skipped)
+	batches := makeReviewBatches(parsed, repo, paths)
 	fileIndex := make(map[string]int, len(paths))
 	for index, path := range paths {
 		fileIndex[path] = index
 	}
 	agents := make([]fantasy.Agent, len(workflow.Agents))
 	plans := make([]reasoningPlan, len(workflow.Agents))
-	agentGroup := make([]int, len(workflow.Agents))
-	var groups []connectionGroup
-	groupIndex := map[string]int{}
 	for index, resolved := range workflow.Agents {
 		systemPrompt := reviewPreamble + resolved.EntryPrompt.Body
 		if resolved.LegacyFocus.Kind != "" {
@@ -135,70 +136,32 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		if agents[index], plans[index], err = newAgent(ctx, resolved.Model, systemPrompt); err != nil {
 			return result, err
 		}
-		key := resolved.Model.ServerKey()
-		group, ok := groupIndex[key]
-		if !ok {
-			group = len(groups)
-			groupIndex[key] = group
-			groups = append(groups, connectionGroup{limit: max(resolved.Model.Concurrency, 1)})
-		}
-		groups[group].limit = min(groups[group].limit, max(resolved.Model.Concurrency, 1))
-		for _, path := range routing.Agents[index].Files {
-			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: fileIndex[path]})
-		}
-		agentGroup[index] = group
 		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
 	}
-	for index := range groups {
-		groups[index].limit = reviewConcurrency(groups[index].limit, len(groups[index].tasks))
-	}
-	outcomes := make([][]fileOutcome, len(workflow.Agents))
-	done := make([][]bool, len(workflow.Agents))
-	completed := make([]atomic.Int64, len(workflow.Agents))
-	failures := make([]atomic.Pointer[string], len(workflow.Agents))
-	for index := range outcomes {
-		outcomes[index] = make([]fileOutcome, len(batches))
-		done[index] = make([]bool, len(batches))
-	}
+	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
+	runs := newAgentRuns(len(workflow.Agents), len(batches))
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
-		if failures[task.agent].Load() != nil {
+		if runs.failures[task.agent].Load() != nil {
 			return nil
 		}
-		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], spec.Diff)
+		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], parsed.patchFor(paths[task.file]))
 		if err != nil {
 			if task.agent == 0 || ctx.Err() != nil {
 				return err
 			}
 			message := overload.TruncateUTF8(err.Error(), 300)
-			failures[task.agent].CompareAndSwap(nil, &message)
+			runs.failures[task.agent].CompareAndSwap(nil, &message)
 			return nil
 		}
 		for index := range outcome.findings {
 			outcome.findings[index].Agents = []string{workflow.Agents[task.agent].Name}
 		}
-		outcomes[task.agent][task.file] = outcome
-		done[task.agent][task.file] = true
-		completed[task.agent].Add(1)
+		runs.outcomes[task.agent][task.file] = outcome
+		runs.done[task.agent][task.file] = true
+		runs.completed[task.agent].Add(1)
 		return nil
 	})
-	for index, resolved := range workflow.Agents {
-		result.Metrics["agent_"+resolved.Name+"_concurrency"] = groups[agentGroup[index]].limit
-		result.Metrics["agent_"+resolved.Name+"_reviewed_files"] = int(completed[index].Load())
-		routing.Agents[index].Reviewed = int(completed[index].Load())
-		for _, outcome := range outcomes[index] {
-			routing.Agents[index].InputTokens += outcome.inputTokens
-			routing.Agents[index].OutputTokens += outcome.outputTokens
-		}
-		if message := failures[index].Load(); message != nil && err == nil {
-			routing.Agents[index].Failed = *message
-			for _, path := range routing.Agents[index].Files {
-				if !done[index][fileIndex[path]] {
-					routing.Agents[index].Unreviewed = append(routing.Agents[index].Unreviewed, path)
-				}
-			}
-			routing.Degraded = append(routing.Degraded, fmt.Sprintf("sub-agent %s failed and did not review %d of its %d files", resolved.Name, len(routing.Agents[index].Unreviewed), len(routing.Agents[index].Files)))
-		}
-	}
+	runs.record(workflow, &routing, result.Metrics, groups, groupOf, fileIndex, err == nil)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, fmt.Errorf("review incomplete: %w", ctxErr)
@@ -206,9 +169,9 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		return result, err
 	}
 	var summaries []string
-	for index := range outcomes {
-		routing.Agents[index].Capped = capFindings(outcomes[index], workflow.Agents[index].Scope.MaxFindings)
-		merge(&result, &summaries, outcomes[index])
+	for index := range runs.outcomes {
+		routing.Agents[index].Capped = capFindings(runs.outcomes[index], workflow.Agents[index].Scope.MaxFindings)
+		merge(&result, &summaries, runs.outcomes[index])
 	}
 	if result.Findings, err = review.Validate(result.Findings, spec.Diff, -1); err != nil {
 		return result, err
@@ -234,6 +197,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			routing.Degraded = append(routing.Degraded, fmt.Sprintf("verifier could not check %d findings; they were kept", verified.failures))
 		}
 	}
+	result.Findings, result.Dropped = limitFindings(result.Findings, result.Dropped)
 	for index, resolved := range workflow.Agents {
 		for _, finding := range result.Findings {
 			if slices.Contains(finding.Agents, resolved.Name) {
@@ -241,19 +205,119 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			}
 		}
 	}
-	if result.Findings == nil {
-		result.Findings = []overload.Finding{}
-	}
 	result.Metrics["reviewed_files"] = len(batches)
-	switch {
-	case len(result.Findings) > 0:
-		result.Summary = strings.Join(summaries, "\n")
-	case len(batches) == 0:
-		result.Summary = "Every changed file matched the workflow's skip paths; nothing was reviewed."
-	default:
-		result.Summary = "No actionable findings in reviewed files."
-	}
+	result.Summary = summarize(result.Findings, summaries, len(batches))
 	return result, nil
+}
+
+// routeFiles routes the changed files of a diff. Files too large to review
+// are left out of routing and listed on it, unless skip paths already drop
+// them. It also returns the paths that were routed.
+func routeFiles(workflow overload.ResolvedWorkflow, parsed reviewDiff) (overload.Routing, []string, error) {
+	changed := parsed.paths()
+	initial, err := workflow.Route(changed)
+	large := parsed.tooLarge()
+	if len(large) == 0 {
+		return initial, changed, err
+	}
+	var routed, tooLarge []string
+	for _, path := range changed {
+		if large[path] && !slices.Contains(initial.Skipped, path) {
+			tooLarge = append(tooLarge, path)
+			continue
+		}
+		routed = append(routed, path)
+	}
+	routing, err := workflow.Route(routed)
+	routing.TooLarge = tooLarge
+	return routing, routed, err
+}
+
+// scheduleReviews groups each agent's file reviews by model server; agents
+// sharing a server share its parallel limit.
+func scheduleReviews(workflow overload.ResolvedWorkflow, routing overload.Routing, fileIndex map[string]int) ([]int, []connectionGroup) {
+	groupOf, loads := workflow.ServerGroups()
+	groups := make([]connectionGroup, len(loads))
+	for index := range workflow.Agents {
+		group := groupOf[index]
+		for _, path := range routing.Agents[index].Files {
+			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: fileIndex[path]})
+		}
+	}
+	for index := range groups {
+		groups[index].limit = reviewConcurrency(loads[index].Parallel, len(groups[index].tasks))
+	}
+	return groupOf, groups
+}
+
+// agentRuns collects what each agent did while reviews run in parallel.
+type agentRuns struct {
+	outcomes  [][]fileOutcome
+	done      [][]bool
+	completed []atomic.Int64
+	failures  []atomic.Pointer[string]
+}
+
+func newAgentRuns(agents, files int) *agentRuns {
+	runs := &agentRuns{outcomes: make([][]fileOutcome, agents), done: make([][]bool, agents), completed: make([]atomic.Int64, agents), failures: make([]atomic.Pointer[string], agents)}
+	for index := range agents {
+		runs.outcomes[index] = make([]fileOutcome, files)
+		runs.done[index] = make([]bool, files)
+	}
+	return runs
+}
+
+// record copies per-agent results onto the routing and metrics. When the
+// run completed, a failed sub-agent's unreviewed files are listed and the
+// review is marked degraded.
+func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overload.Routing, metrics map[string]any, groups []connectionGroup, groupOf []int, fileIndex map[string]int, completed bool) {
+	for index, resolved := range workflow.Agents {
+		reviewed := int(runs.completed[index].Load())
+		metrics["agent_"+resolved.Name+"_concurrency"] = groups[groupOf[index]].limit
+		metrics["agent_"+resolved.Name+"_reviewed_files"] = reviewed
+		agent := &routing.Agents[index]
+		agent.Reviewed = reviewed
+		for _, outcome := range runs.outcomes[index] {
+			agent.InputTokens += outcome.inputTokens
+			agent.OutputTokens += outcome.outputTokens
+		}
+		message := runs.failures[index].Load()
+		if message == nil || !completed {
+			continue
+		}
+		agent.Failed = *message
+		for _, path := range agent.Files {
+			if !runs.done[index][fileIndex[path]] {
+				agent.Unreviewed = append(agent.Unreviewed, path)
+			}
+		}
+		routing.Degraded = append(routing.Degraded, fmt.Sprintf("sub-agent %s failed and did not review %d of its %d files", resolved.Name, len(agent.Unreviewed), len(agent.Files)))
+	}
+}
+
+// limitFindings keeps the first MaxFindingsPerReview findings (they are
+// sorted most severe first) and moves the rest to dropped, so they stay on
+// the run without being posted.
+func limitFindings(findings, dropped []overload.Finding) ([]overload.Finding, []overload.Finding) {
+	if len(findings) <= overload.MaxFindingsPerReview {
+		return findings, dropped
+	}
+	for _, finding := range findings[overload.MaxFindingsPerReview:] {
+		finding.DropReason = fmt.Sprintf("over the limit of %d findings per review", overload.MaxFindingsPerReview)
+		dropped = append(dropped, finding)
+	}
+	return findings[:overload.MaxFindingsPerReview], dropped
+}
+
+func summarize(findings []overload.Finding, summaries []string, reviewed int) string {
+	switch {
+	case len(findings) > 0:
+		return strings.Join(summaries, "\n")
+	case reviewed == 0:
+		return "No changed file could be reviewed: every file matched the workflow's skip paths or was too large."
+	default:
+		return "No actionable findings in reviewed files."
+	}
 }
 
 // capFindings keeps an agent's limit most severe, most confident findings

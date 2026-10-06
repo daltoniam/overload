@@ -50,3 +50,15 @@ func TestValidateMergesAgentsOfDuplicateFindings(t *testing.T) {
 		t.Fatalf("agents %q, want lead,security", got)
 	}
 }
+
+func TestSanitizeStripsReferenceLinksRelativeURLsAndEntities(t *testing.T) {
+	text := sanitize("Read [the guide][g] or (//evil.example/x).\n[g]: //evil.example/guide\nPing &#64;octocat and &commat;admin. Use a // comment in code.", 2000)
+	for _, bad := range []string{"evil.example", "&#64;", "@octocat", "&commat;", "[g]"} {
+		if strings.Contains(text, bad) {
+			t.Fatalf("%q survived: %q", bad, text)
+		}
+	}
+	if !strings.Contains(text, "Read the guide") || !strings.Contains(text, "Use a // comment in code.") {
+		t.Fatalf("plain text damaged: %q", text)
+	}
+}

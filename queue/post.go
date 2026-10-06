@@ -41,6 +41,9 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err != nil {
 		return err
 	}
+	if target.RepositoryPaused {
+		return w.Store.SkipPost(ctx, runID, "repository_paused")
+	}
 	if target.InstallationID == 0 {
 		return w.Store.SkipPost(ctx, runID, "no_github_app_installation")
 	}

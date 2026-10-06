@@ -813,6 +813,36 @@ Done and tested:
   live planner eval with a verifier routed the misleading file, found the
   SQL injection and the verifier kept all 5 real findings (21m22s).
 
+- Pre-release review (YAGNI, parse-don't-validate, data-model coherence,
+  SOLID/DRY, security and tenancy, chaos edge cases, functional core):
+  fixed every bug and security finding that affects daily use.
+  - Diffs: git's quoted non-ASCII paths, the tab after paths with spaces,
+    CRLF, and binary, empty, renamed or mode-only files no longer fail the
+    review; an added line starting with `++` is no longer read as a file
+    header. A file whose diff exceeds the context budget is listed as too
+    large and the review completes as partial instead of failing.
+  - Findings: each file's reply is validated against that file's diff only
+    (findings for other files used to push out real ones under the cap of
+    10); the review-wide limit of 10 now runs in the harness, so per-agent
+    counts match what is posted, and the overflow is stored as dropped.
+  - Security: posting trusts only reviews written by overload's own GitHub
+    account (a PR author could forge the run marker and stop posting); a
+    signed webhook body is ingested once (a replay under a new delivery ID
+    could cancel the latest head's review); sandbox results have their
+    dropped findings and routing re-validated (a dropped finding with no
+    reason could be posted unsanitized); the verifier never drops critical
+    or security findings (PR text reaches its prompt); the PR preview only
+    reads enabled repositories and refuses cross-site requests; repository
+    names are validated; model API key variables may not name cloud,
+    database, password or private-key variables; the sanitizer removes
+    reference-style links, `//host` URLs and HTML-entity mentions; a run is
+    not posted if its repository was disabled or set to dry run meanwhile.
+  - Configuration: an agent's job type cannot change while a workflow of
+    the old type uses it; a workflow with a disabled agent records a skip
+    reason instead of failing the webhook; workflows are normalized on
+    save from the UI and the CLI alike; the CLI rejects input over 1 MiB or
+    with more than one object instead of truncating it.
+
 Before the first release:
 1. Measure `ds4-server --batched-session` with the per-connection limiter on
    the target Mac Studio (not the M1 Max used so far), with Qwen3.8 and
@@ -820,6 +850,16 @@ Before the first release:
 2. Publish the first release and Homebrew formula (needs the
    `RELEASE_TOKEN` secret for the tap); install on a clean Mac.
 3. Run the GitHub App and posting against a real repository through a tunnel.
+4. Decide the run-wide finding limit (now 10 per review, overflow kept as
+   dropped) and the planner's default prompt guidance; on switchboard #177
+   the planner sent every file to one sub-agent.
+5. Make a rejected GitHub review (422, for example a force-push between
+   review and post) a final post status instead of retrying for hours.
+6. Concurrency: a unique active run per (repository, PR, head) so two
+   simultaneous webhooks cannot both queue a review; optimistic revision
+   checks so two people editing one workflow cannot silently overwrite
+   each other; a deadline per model call so a hung local server fails the
+   call, not the whole job.
 
 After:
 4. Evaluation: real PRs with known bugs, scored per model and per workflow
@@ -829,6 +869,18 @@ After:
 6. Sentry and other signed webhook sources for generic jobs.
 
 ## 13. Follow-ups (post v1, keep interfaces ready)
+
+- **Code structure** (from the pre-release review; no behaviour change):
+  typed review metrics instead of `map[string]any`; one store method for
+  finishing a run shared by the worker and local reviews; GitHub source and
+  posting settings built once in `cmd/overload` instead of read from the
+  environment inside workers; explicit `httpapi` dependencies instead of
+  optional-interface assertions; per-resource POST handlers; a compiled
+  routing value built once per review; separate drop and suppression
+  reasons for findings; typed enums for kinds and modes.
+- **Model connections**: bind a key variable to its host so editing a
+  connection's URL cannot send an existing key elsewhere; refuse metadata
+  and link-local addresses for hosted connections.
 
 - **Cloud model providers**: Fantasy already supports Anthropic, OpenAI,
   Bedrock, Google and OpenRouter; add them to model profiles. Prefer an

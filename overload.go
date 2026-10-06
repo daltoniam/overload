@@ -100,6 +100,14 @@ type ReviewSettings struct {
 
 const MaxReviewConcurrency = 32
 
+// Finding limits. A model's reply for one file keeps its most severe
+// MaxFindingsPerFile findings, and a review posts at most
+// MaxFindingsPerReview; the rest are kept on the run as dropped.
+const (
+	MaxFindingsPerFile   = 10
+	MaxFindingsPerReview = 10
+)
+
 // Reasoning parameter styles a model connection can use. ReasoningAuto keeps
 // the defaults: local models get the chat-template switch at xhigh, hosted
 // models get nothing.
@@ -146,7 +154,29 @@ func validateAPIKeyEnv(name string) error {
 	if upper == "DATABASE_URL" || strings.HasPrefix(upper, "PG") || strings.HasPrefix(upper, "GITHUB_") || strings.HasPrefix(upper, "GH_") || (strings.HasPrefix(upper, "OVERLOAD_") && !allowedOverload) {
 		return fmt.Errorf("%s holds an overload or GitHub secret and cannot be used as a model API key", name)
 	}
+	for _, prefix := range infrastructureSecretPrefixes {
+		if strings.HasPrefix(upper, prefix) {
+			return fmt.Errorf("%s looks like an infrastructure credential and cannot be used as a model API key", name)
+		}
+	}
+	for _, part := range []string{"PASSWORD", "PASSWD", "PRIVATE_KEY"} {
+		if strings.Contains(upper, part) {
+			return fmt.Errorf("%s looks like a password or private key and cannot be used as a model API key", name)
+		}
+	}
 	return nil
+}
+
+// infrastructureSecretPrefixes name environment variables that commonly hold
+// cloud, cluster or database credentials rather than model API keys.
+var infrastructureSecretPrefixes = []string{"AWS_", "AZURE_", "GOOGLE_", "GCP_", "GCLOUD_", "KUBE", "SSH_", "DOCKER_", "POSTGRES", "MYSQL", "REDIS", "VAULT_", "NPM_", "RIVER_"}
+
+var repositoryName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$`)
+
+// ValidRepositoryName reports whether name is a GitHub owner/name.
+func ValidRepositoryName(name string) bool {
+	_, repo, _ := strings.Cut(name, "/")
+	return repositoryName.MatchString(name) && repo != "." && repo != ".."
 }
 
 var settingName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)

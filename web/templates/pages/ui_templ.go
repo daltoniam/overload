@@ -654,7 +654,7 @@ func agentOptions(workflow overload.Workflow, agents []overload.AgentDefinition,
 		}
 		ctx = templ.ClearChildren(ctx)
 		for _, agent := range agents {
-			if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || selected == agent.Name {
+			if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || inWorkflow(workflow, agent.Name) {
 				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 60, "<option value=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err

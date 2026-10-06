@@ -2,9 +2,13 @@ package postgres
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 
+	"github.com/daltoniam/overload"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
@@ -43,6 +47,7 @@ const (
 	skipNotLinked          = "repository not linked to this GitHub App installation"
 	skipNoBinding          = "no matching workflow binding"
 	skipAlreadyReviewed    = "head already reviewed"
+	skipWorkflowBroken     = "workflow cannot run"
 	errMissingSHAs         = "reviewable PR requires head and base SHAs"
 	deliveryOutcomeQueued  = "queued"
 	deliveryOutcomeSkipped = "skipped"
@@ -94,7 +99,8 @@ func lookupRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDelivery) (r
 
 // IngestPR records a pull_request delivery once and, when a repository and
 // binding match, pins the workflow and queues a review in the same
-// transaction. It reports false for a delivery ID it has already seen.
+// transaction. It reports false for a delivery ID or payload it has already
+// seen.
 func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], delivery PullRequestDelivery) (bool, error) {
 	if delivery.DeliveryID == "" || !json.Valid(delivery.Payload) {
 		return false, errors.New("invalid delivery")
@@ -105,7 +111,8 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var deliveryRow int64
-	err = tx.QueryRow(ctx, `INSERT INTO webhook_deliveries (delivery_id, event, action, repository_full_name, payload, outcome) VALUES ($1, 'pull_request', $2, $3, $4, 'skipped') ON CONFLICT (source, delivery_id) DO NOTHING RETURNING id`, delivery.DeliveryID, delivery.Action, delivery.RepoName, delivery.Payload).Scan(&deliveryRow)
+	digest := sha256.Sum256(delivery.Payload)
+	err = tx.QueryRow(ctx, `INSERT INTO webhook_deliveries (delivery_id, event, action, repository_full_name, payload, outcome, payload_sha256) VALUES ($1, 'pull_request', $2, $3, $4, 'skipped', $5) ON CONFLICT DO NOTHING RETURNING id`, delivery.DeliveryID, delivery.Action, delivery.RepoName, delivery.Payload, hex.EncodeToString(digest[:])).Scan(&deliveryRow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -146,6 +153,9 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 		return false, err
 	}
 	resolved, err := resolveWorkflow(ctx, tx, workflowName)
+	if errors.Is(err, ErrWorkflowUnavailable) {
+		return skip(overload.TruncateUTF8(skipWorkflowBroken+": "+strings.TrimPrefix(err.Error(), ErrWorkflowUnavailable.Error()+": "), 300), nil)
+	}
 	if err != nil {
 		return false, err
 	}

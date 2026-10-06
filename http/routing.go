@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/pages"
@@ -47,21 +46,21 @@ func registerWorkflowPreview(mux *http.ServeMux, store ConfigurationStore) {
 		switch {
 		case workflow.Kind != "pr_review":
 			message = "Only pull request review workflows route changed files."
+		case form.PullRequest != "" && !sameSite(r):
+			message = "Open the preview from overload to load a pull request."
 		case form.PullRequest != "":
 			number, err := strconv.Atoi(form.PullRequest)
 			if err != nil || number < 1 || !canFetch || form.Repository == "" {
 				message = "Choose a repository and a pull request number."
 				break
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-			paths, err := source.ChangedFiles(ctx, form.Repository, number)
-			cancel()
+			paths, err := source.ChangedFiles(r.Context(), form.Repository, number)
 			if err != nil {
 				message = "Could not load the pull request: " + err.Error()
 				break
 			}
-			if len(paths) > 3000 {
-				paths = paths[:3000]
+			if len(paths) > overload.MaxPreviewFiles {
+				paths = paths[:overload.MaxPreviewFiles]
 			}
 			form.Files = strings.Join(paths, "\n")
 			result, _ := workflow.Preview(paths)
@@ -77,4 +76,13 @@ func registerWorkflowPreview(mux *http.ServeMux, store ConfigurationStore) {
 		}
 		_ = pages.WorkflowPreview(workflow, form, preview, message).Render(r.Context(), w)
 	})
+}
+
+// sameSite reports whether a browser request came from overload's own pages.
+// Loading a pull request uses GitHub credentials, so other sites must not be
+// able to trigger it through a link or image. Requests without the header
+// (older browsers, scripts) are allowed; basic auth still applies.
+func sameSite(r *http.Request) bool {
+	site := r.Header.Get("Sec-Fetch-Site")
+	return site == "" || site == "same-origin" || site == "none"
 }

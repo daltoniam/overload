@@ -172,7 +172,7 @@ func TestParseChangedFiles(t *testing.T) {
 		}
 	}
 	var many strings.Builder
-	for index := range maxPreviewFiles + 1 {
+	for index := range MaxPreviewFiles + 1 {
 		fmt.Fprintf(&many, "f%d.go\n", index)
 	}
 	if _, err := ParseChangedFiles(many.String()); err == nil {
@@ -279,5 +279,25 @@ func TestVerifyPlannerPrompts(t *testing.T) {
 	old.Version = 2
 	if old.Verify() == nil {
 		t.Error("version 2 snapshot with a planner accepted")
+	}
+}
+
+func TestWorkflowNormalize(t *testing.T) {
+	workflow := Workflow{Name: " w ", Kind: "pr_review", Agents: []string{"lead", "tests", "auth"}, MainReviews: MainReviewsAll,
+		PlannerPrompt: " \r\n ", VerifierPrompt: "Keep bugs.\r\nDrop nits.", SkipPaths: []string{"", " *.lock ", "./vendor/", "\r"},
+		Scopes: map[string]Scope{"tests": {Mode: ScopeGlobs, Paths: []string{" ", ""}}, "auth": {Mode: ScopeAlways, Paths: []string{"./internal/auth/"}, Description: "  Auth  "}}}
+	workflow.Normalize()
+	want := Workflow{Name: "w", Kind: "pr_review", Agents: []string{"lead", "tests", "auth"}, VerifierPrompt: "Keep bugs.\nDrop nits.", SkipPaths: []string{"*.lock", "vendor/**"},
+		Scopes: map[string]Scope{"auth": {Mode: ScopeAlways, Paths: []string{"internal/auth/**"}, Description: "Auth"}}}
+	if !reflect.DeepEqual(workflow, want) {
+		t.Fatalf("got  %+v\nwant %+v", workflow, want)
+	}
+	if err := workflow.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	scheduled := Workflow{Name: "s", Kind: "scheduled_prompt", Agents: []string{"a"}, VerifierPrompt: "  "}
+	scheduled.Normalize()
+	if err := scheduled.Validate(); err != nil {
+		t.Fatalf("a whitespace verifier must not count as a verifier: %v", err)
 	}
 }

@@ -216,9 +216,9 @@ func TestReviewerRepairsInvalidJSON(t *testing.T) {
 }
 
 func firstBatch(patch string, repo fs.FS) (string, error) {
-	batches, _, err := makeReviewBatches(patch, repo, nil)
+	parsed, err := parseReviewDiff(patch)
 	if err != nil {
 		return "", err
 	}
-	return batches[0], nil
+	return makeReviewBatches(parsed, repo, parsed.paths()[:1])[0], nil
 }

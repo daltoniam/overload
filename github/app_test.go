@@ -126,3 +126,40 @@ func TestInstallationSourceUsesInstallationToken(t *testing.T) {
 		t.Fatal("accepted missing installation")
 	}
 }
+
+func TestFindReviewIgnoresReviewsByOthers(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	marker := ReviewMarker(41)
+	reviews := `[{"id":1,"user":{"login":"mallory"},"body":"looks fine ` + marker + `"},{"id":2,"user":{"login":"overload-test[bot]"},"body":"` + marker + ` then more text"}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app":
+			_, _ = w.Write([]byte(`{"slug":"overload-test"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token":"installation-token","expires_at":"2099-01-01T00:00:00Z"}`))
+		case r.URL.Path == "/repos/acme/api/pulls/5/reviews":
+			_, _ = w.Write([]byte(reviews + "]"))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(9, pemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.baseURL = server.URL
+	if id, err := client.FindReview(context.Background(), 7, "acme/api", 5, marker); err != nil || id != 0 {
+		t.Fatalf("trusted a forged or misplaced marker: id=%d err=%v", id, err)
+	}
+	reviews += `,{"id":3,"user":{"login":"overload-test[bot]"},"body":"Overload found 1 issue(s).\n\n` + marker + `"}`
+	if id, err := client.FindReview(context.Background(), 7, "acme/api", 5, marker); err != nil || id != 3 {
+		t.Fatalf("own review not found: id=%d err=%v", id, err)
+	}
+}

@@ -77,6 +77,13 @@ func TestWorkflowPreview(t *testing.T) {
 			t.Fatalf("PR preview missing %q: %d %s", want, code, body)
 		}
 	}
+	crossSite := httptest.NewRequest(http.MethodGet, "/configure/workflows/review/preview?repository=acme%2Fapi&pr=7", nil)
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	crossResponse := httptest.NewRecorder()
+	handler.ServeHTTP(crossResponse, crossSite)
+	if body := crossResponse.Body.String(); !strings.Contains(body, "Open the preview from overload") || strings.Contains(body, "security: 1 file") {
+		t.Fatal("another site loaded a pull request through the preview")
+	}
 	if _, body := get("/configure/workflows/review/preview?repository=acme%2Fapi&pr=8"); !strings.Contains(body, "Could not load the pull request") {
 		t.Fatalf("missing PR: %s", body)
 	}
@@ -138,6 +145,9 @@ func TestWorkflowTreeEditor(t *testing.T) {
 	}
 	if filtered := get("/configure/workflows?status=Disabled"); strings.Contains(filtered, `<span class="agent-name">security</span>`) {
 		t.Fatal("status filter did not hide the enabled workflow")
+	}
+	if kept := get("/configure/workflow-agents?kind=pr_review&main_agent=lead&sub_0_agent=security&sub_0_max_findings=abc&sub_1_agent=tests"); !strings.Contains(kept, `<option value="tests" selected>`) {
+		t.Fatal("a bad number in one slot dropped the later sub-agents")
 	}
 	switched := get("/configure/workflow-agents?kind=scheduled_prompt&main_agent=lead&sub_0_agent=summary")
 	if strings.Contains(switched, "skip_paths") || strings.Contains(switched, "planner_prompt") || !strings.Contains(switched, `<option value="summary" selected>`) || strings.Contains(switched, `<option value="lead" selected>`) {

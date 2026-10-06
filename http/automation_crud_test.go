@@ -108,10 +108,10 @@ func TestAutomationCRUDPages(t *testing.T) {
 		}
 	}
 	csrf := match[1]
-	post("/configure/workflows", url.Values{"name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusForbidden)
-	post("/configure/workflows", url.Values{"csrf": {csrf}, "name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusBadRequest)
-	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"other"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusBadRequest)
-	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"review"}, "kind": {"pr_review"}, "agents": {"agent"}}, http.StatusSeeOther)
+	post("/configure/workflows", url.Values{"name": {"review"}, "kind": {"pr_review"}, "main_agent": {"agent"}}, http.StatusForbidden)
+	post("/configure/workflows", url.Values{"csrf": {csrf}, "name": {"review"}, "kind": {"pr_review"}, "main_agent": {"agent"}}, http.StatusBadRequest)
+	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"other"}, "kind": {"pr_review"}, "main_agent": {"agent"}}, http.StatusBadRequest)
+	post("/configure/workflows", url.Values{"csrf": {csrf}, "existing": {"review"}, "name": {"review"}, "kind": {"pr_review"}, "main_agent": {"agent"}}, http.StatusSeeOther)
 	if store.workflows[0].Enabled {
 		t.Fatal("workflow not disabled")
 	}

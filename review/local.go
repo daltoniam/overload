@@ -88,6 +88,6 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if err != nil {
 		return spec, result, sha, err
 	}
-	result.Findings, err = Validate(result.Findings, spec.Diff, 10)
+	result, err = CheckResult(result, spec.Diff)
 	return spec, result, sha, err
 }

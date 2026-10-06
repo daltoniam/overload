@@ -47,7 +47,8 @@ type verification struct {
 
 // verifyFindings asks the main agent's model to keep or drop each finding
 // no main agent reported, one call per finding with that file's review
-// bundle. It never rewrites findings, so fingerprints and duplicate
+// bundle. Critical and security findings are never sent: the bundle is
+// untrusted PR text that could talk the verifier into dropping them. It never rewrites findings, so fingerprints and duplicate
 // suppression still work. A failed or invalid verdict keeps the finding and
 // counts as a failure. Only cancellation of ctx is returned as an error.
 func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, findings []overload.Finding, bundles map[string]string) (verification, error) {
@@ -55,7 +56,7 @@ func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, fin
 	main := workflow.Agents[0]
 	var targets []int
 	for index, finding := range findings {
-		if !slices.Contains(finding.Agents, main.Name) && bundles[finding.Path] != "" {
+		if !slices.Contains(finding.Agents, main.Name) && bundles[finding.Path] != "" && verifiable(finding) {
 			targets = append(targets, index)
 		}
 	}
@@ -126,4 +127,9 @@ func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, fin
 		result.kept = append(result.kept, finding)
 	}
 	return result, nil
+}
+
+// verifiable reports whether the verifier may drop a finding.
+func verifiable(finding overload.Finding) bool {
+	return finding.Severity != "critical" && finding.Category != "security"
 }

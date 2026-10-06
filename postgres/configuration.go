@@ -16,29 +16,28 @@ func agentPromptName(agent string) string       { return "agent:" + agent }
 func workflowPromptName(workflow string) string { return "workflow:" + workflow }
 
 // savePromptText stores text as the latest revision of an owned prompt,
-// adding a revision only when the text changed, and returns that revision's
-// ID and number.
-func savePromptText(ctx context.Context, tx pgx.Tx, name, kind, text string) (int64, int, error) {
+// adding a revision only when the text changed, and returns that
+// revision's ID.
+func savePromptText(ctx context.Context, tx pgx.Tx, name, kind, text string) (int64, error) {
 	var templateID int64
 	if err := tx.QueryRow(ctx, `INSERT INTO prompt_templates(name, kind) VALUES ($1,$2) ON CONFLICT(name,kind) DO UPDATE SET name=EXCLUDED.name RETURNING id`, name, kind).Scan(&templateID); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, templateID+801000); err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	var id int64
 	var revision int
 	var body string
 	err := tx.QueryRow(ctx, `SELECT id,revision,body FROM prompt_revisions WHERE template_id=$1 ORDER BY revision DESC LIMIT 1`, templateID).Scan(&id, &revision, &body)
 	if err == nil && body == text {
-		return id, revision, nil
+		return id, nil
 	}
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return 0, 0, err
+		return 0, err
 	}
-	revision++
-	err = tx.QueryRow(ctx, `INSERT INTO prompt_revisions(template_id,revision,body,content_sha256) VALUES ($1,$2,$3,$4) RETURNING id`, templateID, revision, text, overload.PromptDigest(text)).Scan(&id)
-	return id, revision, err
+	err = tx.QueryRow(ctx, `INSERT INTO prompt_revisions(template_id,revision,body,content_sha256) VALUES ($1,$2,$3,$4) RETURNING id`, templateID, revision+1, text, overload.PromptDigest(text)).Scan(&id)
+	return id, err
 }
 
 // deleteOwnedPrompts removes an agent's or workflow's prompts once nothing
@@ -51,9 +50,18 @@ func deleteOwnedPrompts(ctx context.Context, tx pgx.Tx, name string) error {
 	return err
 }
 
+// ErrAgentInUse means an agent change would break a workflow that uses it.
+var ErrAgentInUse = errors.New("agent in use")
+
+// ErrWorkflowUnavailable means a workflow cannot run as configured, for
+// example because one of its agents is disabled.
+var ErrWorkflowUnavailable = errors.New("workflow unavailable")
+
 // SaveAgent saves an agent with its prompt. Changed prompt text becomes a new
-// revision that the agent uses from then on.
+// revision that the agent uses from then on. An agent's job type cannot be
+// changed while a workflow of the old type uses it.
 func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) error {
+	agent.Prompt = overload.NormalizePrompt(agent.Prompt)
 	if err := agent.Validate(); err != nil {
 		return err
 	}
@@ -69,7 +77,15 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if err := tx.QueryRow(ctx, `SELECT id FROM model_profiles WHERE name=$1`, agent.Model).Scan(&modelID); err != nil {
 		return fmt.Errorf("model connection %q not found", agent.Model)
 	}
-	revisionID, _, err := savePromptText(ctx, tx, agentPromptName(agent.Name), overload.PromptEntry, agent.Prompt)
+	var conflicting string
+	err = tx.QueryRow(ctx, `SELECT w.name FROM workflows w WHERE w.agent_names ? $1 AND w.kind <> $2 ORDER BY w.name LIMIT 1`, agent.Name, agent.Kind).Scan(&conflicting)
+	if err == nil {
+		return fmt.Errorf("%w: workflow %s uses agent %s, so its job type cannot change", ErrAgentInUse, conflicting, agent.Name)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	revisionID, err := savePromptText(ctx, tx, agentPromptName(agent.Name), overload.PromptEntry, agent.Prompt)
 	if err != nil {
 		return err
 	}
@@ -99,6 +115,7 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 // SaveWorkflow saves a workflow with its planner and verifier prompts.
 // Changed prompt text becomes a new revision.
 func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) error {
+	workflow.Normalize()
 	if err := workflow.Validate(); err != nil {
 		return err
 	}
@@ -126,7 +143,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 		if prompt.text == "" {
 			continue
 		}
-		if *prompt.id, _, err = savePromptText(ctx, tx, workflowPromptName(workflow.Name), prompt.kind, prompt.text); err != nil {
+		if *prompt.id, err = savePromptText(ctx, tx, workflowPromptName(workflow.Name), prompt.kind, prompt.text); err != nil {
 			return err
 		}
 	}
@@ -220,7 +237,10 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		var entryID int64
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled`, agentName).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return result, fmt.Errorf("%w: agent %s is disabled, missing or for a different job type", ErrWorkflowUnavailable, agentName)
+		}
 		if err != nil {
 			return result, err
 		}
@@ -272,8 +292,8 @@ func (s *Store) ListBindings(ctx context.Context) ([]overload.TriggerBinding, er
 }
 
 func (s *Store) SaveRepository(ctx context.Context, name string, enabled, dryRun bool) error {
-	if name == "" || len(name) > 200 {
-		return errors.New("invalid repository name")
+	if !overload.ValidRepositoryName(name) {
+		return errors.New("invalid repository name: use owner/name")
 	}
 	_, err := s.Pool.Exec(ctx, `INSERT INTO repositories(full_name,enabled,dry_run) VALUES ($1,$2,$3) ON CONFLICT(full_name) DO UPDATE SET enabled=EXCLUDED.enabled,dry_run=EXCLUDED.dry_run,updated_at=now()`, name, enabled, dryRun)
 	return err

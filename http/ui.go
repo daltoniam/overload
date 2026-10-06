@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -43,23 +44,14 @@ func parseUI(r *http.Request) pages.UIState {
 		state.Query = state.Query[:200]
 	}
 	if spec, ok := listSpecs[r.URL.Path]; ok {
-		if !contains(spec.kinds, state.Kind) {
+		if !slices.Contains(spec.kinds, state.Kind) {
 			state.Kind = ""
 		}
-		if !contains(spec.statuses, state.Status) {
+		if !slices.Contains(spec.statuses, state.Status) {
 			state.Status = ""
 		}
 	}
 	return state
-}
-
-func contains(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
 
 func uiMiddleware(next http.Handler, csrf string) http.Handler {
@@ -385,7 +377,7 @@ func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handle
 			walk(node, func(option *html.Node) {
 				if option.Data == "option" {
 					removeAttr(option, "selected")
-					if contains(r.PostForm[name], attr(option, "value")) {
+					if slices.Contains(r.PostForm[name], attr(option, "value")) {
 						setAttr(option, "selected", "")
 					}
 				}

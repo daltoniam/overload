@@ -147,6 +147,20 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 		t.Fatalf("dropped finding %q %q %v", droppedStatus, reason, err)
 	}
 
+	paused := newRun("completed", "queued", []overload.Finding{{Path: "e.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Paused", Body: "b", Confidence: 0.9, Evidence: "p()"}}, "pending")
+	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run=true WHERE id=$1`, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: paused}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, paused).Scan(&postStatus); err != nil || postStatus != "repository_paused" || len(poster.posts) != 2 {
+		t.Fatalf("posted to a repository switched to dry run: %q %d %v", postStatus, len(poster.posts), err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run=false WHERE id=$1`, repoID); err != nil {
+		t.Fatal(err)
+	}
+
 	t.Setenv("OVERLOAD_ENABLE_POSTING", "")
 	disabled := newRun("completed", "queued", []overload.Finding{fresh}, "pending")
 	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: disabled}}); err != nil {

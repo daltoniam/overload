@@ -17,6 +17,10 @@ var (
 	markdownImg  = regexp.MustCompile(`!\[[^\]]*\]\([^)]*\)`)
 	markdownLink = regexp.MustCompile(`\[([^\]]*)\]\([^)]*\)`)
 	bareURL      = regexp.MustCompile(`(?i)\b(?:https?|ftp)://\S+|\bwww\.\S+`)
+	relativeURL  = regexp.MustCompile(`(?i)(^|[\s(<\[])//[a-z0-9-]+(?:\.[a-z0-9-]+)+\S*`)
+	referenceDef = regexp.MustCompile(`(?m)^[ \t]*\[[^\]\n]+\]:[^\n]*$`)
+	referenceUse = regexp.MustCompile(`\[([^\]\n]*)\]\[[^\]\n]*\]`)
+	htmlEntity   = regexp.MustCompile(`(?i)&(?:#[0-9]+|#x[0-9a-f]+|[a-z][a-z0-9]*);`)
 )
 
 func Validate(findings []overload.Finding, patch string, limit int) ([]overload.Finding, error) {
@@ -120,10 +124,14 @@ func rank(severity string) int {
 // model reads untrusted PR content, so links, images, HTML and mentions are
 // removed rather than trusted.
 func sanitize(value string, limit int) string {
+	value = htmlEntity.ReplaceAllString(value, "")
 	value = htmlTag.ReplaceAllString(value, "")
 	value = markdownImg.ReplaceAllString(value, "")
 	value = markdownLink.ReplaceAllString(value, "$1")
+	value = referenceDef.ReplaceAllString(value, "")
+	value = referenceUse.ReplaceAllString(value, "$1")
 	value = bareURL.ReplaceAllString(value, "[link removed]")
+	value = relativeURL.ReplaceAllString(value, "$1[link removed]")
 	value = mention.ReplaceAllStringFunc(value, func(text string) string { return "@ " + text[1:] })
 	return overload.TruncateUTF8(strings.TrimSpace(value), limit)
 }

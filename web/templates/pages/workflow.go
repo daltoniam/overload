@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -157,4 +158,10 @@ func onOff(text string) string {
 		return "(off)"
 	}
 	return "(on)"
+}
+
+// inWorkflow reports whether the workflow already uses agent, so it stays
+// selectable in every slot (for reordering) even when disabled.
+func inWorkflow(workflow overload.Workflow, agent string) bool {
+	return slices.Contains(workflow.Agents, agent)
 }

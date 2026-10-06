@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/fantasy"
@@ -57,15 +58,11 @@ func truncateLine(line string) string {
 }
 
 // plannerInput lists the sub-agents the planner may assign files to and the
-// reviewable changed files.
-func plannerInput(workflow overload.ResolvedWorkflow, patch string, routing overload.Routing) (string, error) {
-	sections, err := splitReviewSections(patch)
-	if err != nil {
-		return "", err
-	}
-	skipped := map[string]bool{}
-	for _, path := range routing.Skipped {
-		skipped[path] = true
+// files that can be reviewed (paths).
+func plannerInput(workflow overload.ResolvedWorkflow, parsed reviewDiff, paths []string) (string, error) {
+	reviewable := map[string]bool{}
+	for _, path := range paths {
+		reviewable[path] = true
 	}
 	var input strings.Builder
 	input.WriteString("Sub-agents you may assign files to:\n")
@@ -85,8 +82,8 @@ func plannerInput(workflow overload.ResolvedWorkflow, patch string, routing over
 	}
 	input.WriteString("\nChanged files:\n")
 	listing := 0
-	for _, section := range sections {
-		if section.path == "" || skipped[section.path] {
+	for _, section := range parsed.sections {
+		if !reviewable[section.path] {
 			continue
 		}
 		header, details := planSummary(section)
@@ -127,13 +124,13 @@ type plannerUsage struct {
 // applies the validated plan. The planner can only add work: a failed call
 // or an invalid plan keeps the glob routing and says so. Only cancellation
 // of ctx is returned as an error.
-func planRouting(ctx context.Context, workflow overload.ResolvedWorkflow, patch string, paths []string, routing overload.Routing) (overload.Routing, plannerUsage, error) {
+func planRouting(ctx context.Context, workflow overload.ResolvedWorkflow, parsed reviewDiff, paths []string, routing overload.Routing) (overload.Routing, plannerUsage, error) {
 	var usage plannerUsage
 	globsOnly := func(reason string) overload.Routing {
 		routing.Planner = overload.TruncateUTF8(reason, 300) + "; routed by globs only"
 		return routing
 	}
-	input, err := plannerInput(workflow, patch, routing)
+	input, err := plannerInput(workflow, parsed, reviewablePaths(paths, routing.Skipped))
 	if err != nil {
 		return globsOnly("planner skipped: " + err.Error()), usage, nil
 	}
@@ -159,4 +156,15 @@ func planRouting(ctx context.Context, workflow overload.ResolvedWorkflow, patch 
 		return globsOnly("plan ignored: " + err.Error()), usage, nil
 	}
 	return planned, usage, nil
+}
+
+// reviewablePaths is paths without the skipped files.
+func reviewablePaths(paths, skipped []string) []string {
+	var reviewable []string
+	for _, path := range paths {
+		if !slices.Contains(skipped, path) {
+			reviewable = append(reviewable, path)
+		}
+	}
+	return reviewable
 }

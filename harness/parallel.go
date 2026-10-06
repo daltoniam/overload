@@ -129,8 +129,10 @@ func (outcome *fileOutcome) addUsage(usage fantasy.Usage) {
 }
 
 // reviewFile reviews one changed file, repairing malformed JSON once, and
-// returns the validated findings that belong to that file.
-func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bundle, path, diff string) (fileOutcome, error) {
+// returns the validated findings that belong to that file. filePatch is the
+// file's own section of the diff, so findings the model reports for other
+// files are discarded before the per-file cap is applied.
+func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bundle, path, filePatch string) (fileOutcome, error) {
 	var outcome fileOutcome
 	response, fallback, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: bundle})
 	if err != nil {
@@ -153,18 +155,20 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bu
 			return outcome, fmt.Errorf("review incomplete at %s: model_output_invalid: %w", path, err)
 		}
 	}
-	validated, err := review.Validate(fileResult.Findings, diff, 10)
+	var forFile []overload.Finding
+	for _, finding := range fileResult.Findings {
+		if finding.Path == path {
+			forFile = append(forFile, finding)
+		}
+	}
+	validated, err := review.Validate(forFile, filePatch, overload.MaxFindingsPerFile)
 	if err != nil {
 		return outcome, err
 	}
 	outcome.raw = len(fileResult.Findings)
 	outcome.validated = len(validated)
 	outcome.summary = fileResult.Summary
-	for _, finding := range validated {
-		if finding.Path == path {
-			outcome.findings = append(outcome.findings, finding)
-		}
-	}
+	outcome.findings = validated
 	return outcome, nil
 }
 

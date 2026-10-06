@@ -9,8 +9,8 @@ import (
 	"github.com/daltoniam/overload/postgres"
 )
 
-// ChangedFiles lists the files a pull request changes in a repository
-// overload is configured for, using the repository's GitHub App
+// ChangedFiles lists the files a pull request changes in an enabled
+// repository overload is configured for, using the repository's GitHub App
 // installation or, without one, the configured GitHub token. It is used to
 // preview a workflow against a real pull request.
 func ChangedFiles(ctx context.Context, store *postgres.Store, repository string, number int) ([]string, error) {
@@ -20,12 +20,12 @@ func ChangedFiles(ctx context.Context, store *postgres.Store, repository string,
 	}
 	var installationID int64 = -1
 	for _, repo := range repos {
-		if repo.FullName == repository {
+		if repo.FullName == repository && repo.Enabled {
 			installationID = repo.InstallationID
 		}
 	}
 	if installationID < 0 {
-		return nil, errors.New("repository is not configured in overload")
+		return nil, errors.New("repository is not configured and enabled in overload")
 	}
 	var patch string
 	if installationID > 0 {

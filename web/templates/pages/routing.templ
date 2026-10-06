@@ -85,6 +85,9 @@ templ RunRouting(routing overload.Routing, executed bool) {
 		if len(routing.Skipped) > 0 {
 			<details><summary>Skipped by skip paths: { countLabel(len(routing.Skipped), "file") }</summary><pre>{ fileList(routing.Skipped) }</pre></details>
 		}
+		if len(routing.TooLarge) > 0 {
+			<details><summary>Too large to review: { countLabel(len(routing.TooLarge), "file") }</summary><pre>{ fileList(routing.TooLarge) }</pre></details>
+		}
 	</section>
 }
 

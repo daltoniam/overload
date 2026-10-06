@@ -26,6 +26,9 @@ type PostTarget struct {
 	// Partial is set when the review completed degraded, for example
 	// because a sub-agent failed.
 	Partial bool
+	// RepositoryPaused is set when the repository was disabled or put in
+	// dry-run mode after the review was queued; nothing is posted.
+	RepositoryPaused bool
 }
 
 var ErrNothingToPost = errors.New("run is not awaiting posting")
@@ -35,7 +38,7 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0 FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial)
+	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}

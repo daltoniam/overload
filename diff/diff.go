@@ -23,15 +23,16 @@ func Parse(patch string) ([]File, error) {
 	scanner := bufio.NewScanner(strings.NewReader(patch))
 	scanner.Buffer(make([]byte, 4096), 8<<20)
 	for scanner.Scan() {
-		line := scanner.Text()
+		line := strings.TrimSuffix(scanner.Text(), "\r")
 		switch {
-		case strings.HasPrefix(line, "+++ b/"):
-			files = append(files, File{Path: strings.TrimPrefix(line, "+++ b/"), Lines: make(map[int]string)})
+		case !inHunk && strings.HasPrefix(line, "+++ "):
+			path, ok := newPath(strings.TrimPrefix(line, "+++ "))
+			if !ok {
+				current = nil
+				break
+			}
+			files = append(files, File{Path: path, Lines: make(map[int]string)})
 			current = &files[len(files)-1]
-			inHunk = false
-		case strings.HasPrefix(line, "+++ /dev/null"):
-			current = nil
-			inHunk = false
 		case strings.HasPrefix(line, "@@ "):
 			matches := hunkPattern.FindStringSubmatch(line)
 			if matches == nil {
@@ -54,6 +55,22 @@ func Parse(patch string) ([]File, error) {
 		}
 	}
 	return files, scanner.Err()
+}
+
+// newPath reads the path from a "+++" header. Git quotes paths with unusual
+// characters C-style ("b/caf\303\251.md") and appends a tab to paths that
+// contain spaces. A deleted file ("/dev/null") has no new path.
+func newPath(header string) (string, bool) {
+	header = strings.TrimSuffix(header, "\t")
+	if strings.HasPrefix(header, `"`) {
+		unquoted, err := strconv.Unquote(header)
+		if err != nil {
+			return "", false
+		}
+		header = unquoted
+	}
+	path, ok := strings.CutPrefix(header, "b/")
+	return path, ok && path != ""
 }
 
 func Commentable(files []File, path string, line int) bool {

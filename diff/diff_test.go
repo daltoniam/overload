@@ -17,3 +17,28 @@ func TestParseCommentableLines(t *testing.T) {
 		}
 	}
 }
+
+func TestParseGitHeaderForms(t *testing.T) {
+	patch := "diff --git \"a/caf\\303\\251.md\" \"b/caf\\303\\251.md\"\nnew file mode 100644\n--- /dev/null\n+++ \"b/caf\\303\\251.md\"\n@@ -0,0 +1 @@\n+c\n" +
+		"diff --git a/img.png b/img.png\nnew file mode 100644\nBinary files /dev/null and b/img.png differ\n" +
+		"diff --git a/my file.go b/my file.go\nnew file mode 100644\n--- /dev/null\n+++ b/my file.go\t\n@@ -0,0 +1,2 @@\n+b\n+++ b/not-a-header.go\n" +
+		"diff --git a/crlf.go b/crlf.go\r\n--- a/crlf.go\r\n+++ b/crlf.go\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n" +
+		"diff --git a/gone.go b/gone.go\ndeleted file mode 100644\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n"
+	files, err := Parse(patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, file := range files {
+		paths = append(paths, file.Path)
+	}
+	if len(paths) != 3 || paths[0] != "café.md" || paths[1] != "my file.go" || paths[2] != "crlf.go" {
+		t.Fatalf("paths %q", paths)
+	}
+	if !Commentable(files, "my file.go", 2) || files[1].Lines[2] != "++ b/not-a-header.go" {
+		t.Fatalf("an added line starting with ++ was read as a header: %+v", files[1].Lines)
+	}
+	if files[2].Lines[1] != "b" {
+		t.Fatalf("CRLF line kept its carriage return: %q", files[2].Lines[1])
+	}
+}

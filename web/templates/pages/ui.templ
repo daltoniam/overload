@@ -95,7 +95,7 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 
 templ agentOptions(workflow overload.Workflow, agents []overload.AgentDefinition, selected string) {
 	for _, agent := range agents {
-		if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || selected == agent.Name {
+		if agent.Enabled && (agent.Kind == workflow.Kind || workflow.Kind == "" && agent.Kind == "pr_review") || inWorkflow(workflow, agent.Name) {
 			<option value={ agent.Name } selected?={ selected == agent.Name }>{ agent.Name } · { agent.Model }</option>
 		}
 	}

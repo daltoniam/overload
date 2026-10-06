@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +57,7 @@ func TestIngestPRTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := countRuns(t, store)
-	unmatched, err := store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("unbound-%d", id), Action: "opened", Payload: []byte(`{}`), RepoName: "test/unbound-transaction", PR: 42, HeadSHA: "unbound-head", BaseSHA: "def", Eligible: true})
+	unmatched, err := store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("unbound-%d", id), Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("unbound-%d", id))), RepoName: "test/unbound-transaction", PR: 42, HeadSHA: "unbound-head", BaseSHA: "def", Eligible: true})
 	if err != nil || !unmatched || countRuns(t, store) != before {
 		t.Fatalf("unbound event dispatched: %v %v", unmatched, err)
 	}
@@ -74,7 +76,7 @@ func TestIngestPRTransaction(t *testing.T) {
 		}
 	}
 	headSHA := fmt.Sprintf("head-%d", id)
-	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("pr-delivery-%d", id), Action: "opened", Payload: []byte(`{}`), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
+	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("pr-delivery-%d", id), Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("pr-delivery-%d", id))), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
 	if err != nil || !inserted {
 		t.Fatalf("ingest: %v, %v", inserted, err)
 	}
@@ -89,14 +91,14 @@ func TestIngestPRTransaction(t *testing.T) {
 	if err := json.Unmarshal(snapshot, &resolved); err != nil || resolved.Name != "test-ingest-workflow" || len(resolved.Agents) != 1 {
 		t.Fatalf("pinned workflow: %+v %v", resolved, err)
 	}
-	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("pr-delivery-%d", id), Action: "opened", Payload: []byte(`{}`), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
+	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("pr-delivery-%d", id), Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("pr-delivery-%d", id))), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
 	if err != nil || inserted {
 		t.Fatalf("duplicate ingest: %v, %v", inserted, err)
 	}
 	if got := countRuns(t, store); got != before+1 {
 		t.Fatalf("duplicate created run: %d to %d", before, got)
 	}
-	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("other-delivery-%d", id), Action: "synchronize", Payload: []byte(`{}`), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
+	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("other-delivery-%d", id), Action: "synchronize", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("other-delivery-%d", id))), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
 	if err != nil || !inserted {
 		t.Fatalf("new delivery for same head: %v, %v", inserted, err)
 	}
@@ -106,7 +108,7 @@ func TestIngestPRTransaction(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run = false WHERE full_name = 'test/transaction'`); err != nil {
 		t.Fatal(err)
 	}
-	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("new-head-%d", id), Action: "synchronize", Payload: []byte(`{}`), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA + "-new", BaseSHA: "def", Eligible: true})
+	inserted, err = store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("new-head-%d", id), Action: "synchronize", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("new-head-%d", id))), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA + "-new", BaseSHA: "def", Eligible: true})
 	if err != nil || !inserted {
 		t.Fatalf("new head ingest: %v, %v", inserted, err)
 	}
@@ -117,9 +119,38 @@ func TestIngestPRTransaction(t *testing.T) {
 	if status != "superseded" || jobState != "cancelled" {
 		t.Fatalf("old head: status=%s job=%s", status, jobState)
 	}
+	replayed, err := store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("replayed-%d", id), Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, fmt.Sprintf("pr-delivery-%d", id))), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA, BaseSHA: "def", Eligible: true})
+	if err != nil || replayed {
+		t.Fatalf("an old signed payload replayed under a new delivery ID was accepted: %v %v", replayed, err)
+	}
+	var newHeadStatus string
+	if err := store.Pool.QueryRow(ctx, `SELECT status FROM runs WHERE head_sha = $1 AND repository_id = $2`, headSHA+"-new", repoID).Scan(&newHeadStatus); err != nil || newHeadStatus != "queued" {
+		t.Fatalf("the replay cancelled the newer head's review: %s %v", newHeadStatus, err)
+	}
 	var newHeadDryRun bool
 	if err := store.Pool.QueryRow(ctx, `SELECT dry_run FROM runs WHERE head_sha = $1 AND repository_id = $2`, headSHA+"-new", repoID).Scan(&newHeadDryRun); err != nil || newHeadDryRun {
 		t.Fatalf("repository opted into posting but run is dry-run: %v %v", newHeadDryRun, err)
+	}
+	agent := overload.AgentDefinition{Name: "test-ingest-agent", Model: "test-ingest-model", Prompt: "Review PR.", Enabled: true}
+	agent.Kind = "scheduled_prompt"
+	if err := store.SaveAgent(ctx, agent); !errors.Is(err, ErrAgentInUse) || !strings.Contains(err.Error(), "test-ingest-workflow") {
+		t.Fatalf("changed the job type of an agent a PR workflow uses: %v", err)
+	}
+	agent.Kind, agent.Enabled = "pr_review", false
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+	accepted, err := store.IngestPR(ctx, client, PullRequestDelivery{DeliveryID: fmt.Sprintf("disabled-agent-%d", id), Action: "synchronize", Payload: []byte(fmt.Sprintf(`{"delivery":"disabled-agent-%d"}`, id)), RepoName: "test/transaction", PR: 42, HeadSHA: headSHA + "-third", BaseSHA: "def", Eligible: true})
+	if err != nil || !accepted {
+		t.Fatalf("a workflow with a disabled agent must record a skip, not fail the webhook: %v %v", accepted, err)
+	}
+	var skipped string
+	if err := store.Pool.QueryRow(ctx, `SELECT skip_reason FROM webhook_deliveries WHERE delivery_id=$1`, fmt.Sprintf("disabled-agent-%d", id)).Scan(&skipped); err != nil || !strings.Contains(skipped, "agent test-ingest-agent is disabled") {
+		t.Fatalf("skip reason %q %v", skipped, err)
+	}
+	agent.Enabled = true
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatal(err)
 	}
 	t.Cleanup(func() {
 		_, _ = store.Pool.Exec(context.Background(), `UPDATE runs SET binding_id=NULL WHERE binding_id IN (SELECT id FROM trigger_bindings WHERE repository_full_name='test/transaction')`)

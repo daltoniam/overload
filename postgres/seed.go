@@ -44,7 +44,7 @@ func (s *Store) SeedLocalDemo(ctx context.Context) (bool, error) {
 		{"demo-pr-reviewer", "Review this pull request for concrete bugs. Return only actionable findings.\n\nFocus on authorization checks and unsafe data handling.", "pr_review"},
 		{"demo-summary-agent", "Summarize the supplied status data concisely.", "scheduled_prompt"},
 	} {
-		revisionID, _, err := savePromptText(ctx, tx, agentPromptName(agent.name), overload.PromptEntry, agent.prompt)
+		revisionID, err := savePromptText(ctx, tx, agentPromptName(agent.name), overload.PromptEntry, agent.prompt)
 		if err != nil {
 			return false, err
 		}

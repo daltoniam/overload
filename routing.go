@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 )
@@ -25,7 +26,7 @@ const (
 	maxGlobLength     = 200
 	maxFindingsCap    = 50
 	maxFileReviewsCap = 10000
-	maxPreviewFiles   = 3000
+	MaxPreviewFiles   = 3000
 )
 
 // Scope modes. ScopeGlobs (the default) reviews files matching the paths
@@ -167,7 +168,10 @@ type AgentFiles struct {
 // workflow order, main agent first. Planner describes what the planner did,
 // and Degraded lists why a completed review is partial.
 type Routing struct {
-	Skipped  []string     `json:"skipped,omitempty"`
+	Skipped []string `json:"skipped,omitempty"`
+	// TooLarge lists changed files whose diff alone exceeds the review
+	// context budget; no agent reviews them.
+	TooLarge []string     `json:"too_large,omitempty"`
 	Agents   []AgentFiles `json:"agents"`
 	Planner  string       `json:"planner,omitempty"`
 	Degraded []string     `json:"degraded,omitempty"`
@@ -309,22 +313,29 @@ func (workflow ResolvedWorkflow) ApplyPlan(paths []string, plan map[string][]str
 			}
 		}
 	}
-	for keep := len(additions); keep > 0; keep-- {
-		routing, err := workflow.route(paths, additions[:keep])
-		if err != nil {
-			continue
+	// Each addition adds at most one file review, so the number of reviews
+	// never falls as more additions are kept: the largest prefix within the
+	// limit is found by binary search over the prefix length.
+	keep := sort.Search(len(additions)+1, func(count int) bool {
+		_, err := workflow.route(paths, additions[:count])
+		return err != nil
+	}) - 1
+	if keep <= 0 {
+		base.Planner = "planner added no file reviews"
+		if len(additions) > 0 {
+			base.Planner = fmt.Sprintf("planner assignments dropped to stay within the file-review limit (%d)", len(additions))
 		}
-		routing.Planner = fmt.Sprintf("planner added %d file reviews", keep)
-		if dropped := len(additions) - keep; dropped > 0 {
-			routing.Planner += fmt.Sprintf("; %d more dropped to stay within the file-review limit", dropped)
-		}
-		return routing, nil
+		return base, nil
 	}
-	base.Planner = "planner added no file reviews"
-	if len(additions) > 0 {
-		base.Planner = fmt.Sprintf("planner assignments dropped to stay within the file-review limit (%d)", len(additions))
+	routing, err := workflow.route(paths, additions[:keep])
+	if err != nil {
+		return base, err
 	}
-	return base, nil
+	routing.Planner = fmt.Sprintf("planner added %d file reviews", keep)
+	if dropped := len(additions) - keep; dropped > 0 {
+		routing.Planner += fmt.Sprintf("; %d more dropped to stay within the file-review limit", dropped)
+	}
+	return routing, nil
 }
 
 // ServerLoad is the review work one model server receives.
@@ -415,22 +426,33 @@ func (model ModelProfile) ServerKey() string {
 
 // ServerLoads groups a routing's reviews by model server in first-use order.
 func (workflow ResolvedWorkflow) ServerLoads(routing Routing) []ServerLoad {
-	var loads []ServerLoad
-	index := map[string]int{}
-	for position, agent := range workflow.Agents {
-		key := agent.Model.ServerKey()
-		load, ok := index[key]
-		if !ok {
-			load = len(loads)
-			index[key] = load
-			loads = append(loads, ServerLoad{BaseURL: agent.Model.BaseURL, Model: agent.Model.Model, Local: agent.Model.ConnectionKind != "hosted", Parallel: max(agent.Model.Concurrency, 1)})
-		}
-		loads[load].Parallel = min(loads[load].Parallel, max(agent.Model.Concurrency, 1))
+	groupOf, loads := workflow.ServerGroups()
+	for position := range workflow.Agents {
 		if position < len(routing.Agents) {
-			loads[load].Reviews += len(routing.Agents[position].Files)
+			loads[groupOf[position]].Reviews += len(routing.Agents[position].Files)
 		}
 	}
 	return loads
+}
+
+// ServerGroups groups agents by model server in first-use order. groupOf[i]
+// is agent i's server; each server's Parallel is the smallest Concurrency
+// (at least 1) among its agents. Reviews are not counted.
+func (workflow ResolvedWorkflow) ServerGroups() (groupOf []int, loads []ServerLoad) {
+	groupOf = make([]int, len(workflow.Agents))
+	index := map[string]int{}
+	for position, agent := range workflow.Agents {
+		key := agent.Model.ServerKey()
+		group, ok := index[key]
+		if !ok {
+			group = len(loads)
+			index[key] = group
+			loads = append(loads, ServerLoad{BaseURL: agent.Model.BaseURL, Model: agent.Model.Model, Local: agent.Model.ConnectionKind != "hosted", Parallel: max(agent.Model.Concurrency, 1)})
+		}
+		loads[group].Parallel = min(loads[group].Parallel, max(agent.Model.Concurrency, 1))
+		groupOf[position] = group
+	}
+	return groupOf, loads
 }
 
 // validateRouting checks the routing settings shared by stored and resolved
@@ -484,11 +506,69 @@ func ParseChangedFiles(text string) ([]string, error) {
 		if !fs.ValidPath(path) || strings.ContainsRune(path, 0) {
 			return nil, fmt.Errorf("invalid changed file path %q", path)
 		}
-		if len(paths) == maxPreviewFiles {
-			return nil, fmt.Errorf("at most %d changed files", maxPreviewFiles)
+		if len(paths) == MaxPreviewFiles {
+			return nil, fmt.Errorf("at most %d changed files", MaxPreviewFiles)
 		}
 		seen[path] = true
 		paths = append(paths, path)
 	}
 	return paths, nil
+}
+
+// Normalize puts a workflow in its canonical stored form, so the UI, the CLI
+// and JSON files that mean the same thing save the same thing: line endings
+// are LF, whitespace-only prompts mean no prompt, default modes are empty,
+// globs are trimmed ("./src/**" becomes "src/**" and "vendor/" becomes
+// "vendor/**"), and scopes left empty are removed.
+func (workflow *Workflow) Normalize() {
+	workflow.Name = strings.TrimSpace(workflow.Name)
+	workflow.PlannerPrompt = normalizePrompt(workflow.PlannerPrompt)
+	workflow.VerifierPrompt = normalizePrompt(workflow.VerifierPrompt)
+	if workflow.MainReviews == MainReviewsAll {
+		workflow.MainReviews = ""
+	}
+	workflow.SkipPaths = normalizeGlobs(workflow.SkipPaths)
+	for name, scope := range workflow.Scopes {
+		if scope.Mode == ScopeGlobs {
+			scope.Mode = ""
+		}
+		scope.Paths = normalizeGlobs(scope.Paths)
+		scope.Description = strings.TrimSpace(scope.Description)
+		if scope.empty() {
+			delete(workflow.Scopes, name)
+			continue
+		}
+		workflow.Scopes[name] = scope
+	}
+	if len(workflow.Scopes) == 0 {
+		workflow.Scopes = nil
+	}
+}
+
+// NormalizePrompt converts CRLF line endings to LF; whitespace-only text
+// becomes empty.
+func NormalizePrompt(text string) string {
+	return normalizePrompt(text)
+}
+
+func normalizePrompt(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	return text
+}
+
+func normalizeGlobs(globs []string) []string {
+	var normalized []string
+	for _, glob := range globs {
+		glob = strings.TrimPrefix(strings.TrimSpace(glob), "./")
+		if strings.HasSuffix(glob, "/") {
+			glob += "**"
+		}
+		if glob != "" {
+			normalized = append(normalized, glob)
+		}
+	}
+	return normalized
 }

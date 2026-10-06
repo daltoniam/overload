@@ -70,3 +70,18 @@ func TestPreviewWorkflowCLI(t *testing.T) {
 		t.Fatal("previewed a scheduled workflow")
 	}
 }
+
+func TestConfigurationCLIRejectsOversizedOrExtraInput(t *testing.T) {
+	store := &fakeConfigurationStore{}
+	huge := `{"name":"a","model":"m","prompt":"` + strings.Repeat("x", maxConfigurationInput) + `"}`
+	if err := applyConfiguration(context.Background(), store, "agents", strings.NewReader(huge)); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("oversized input: %v", err)
+	}
+	two := `{"name":"a","model":"m","prompt":"p"} {"name":"b","model":"m","prompt":"p"}`
+	if err := applyConfiguration(context.Background(), store, "agents", strings.NewReader(two)); err == nil || !strings.Contains(err.Error(), "exactly one object") {
+		t.Fatalf("two objects: %v", err)
+	}
+	if err := applyConfiguration(context.Background(), store, "workflows", strings.NewReader(`{"name":"w","passes":[]}`)); err == nil || !strings.Contains(err.Error(), `unknown field "passes"`) {
+		t.Fatalf("unknown workflow field should be named: %v", err)
+	}
+}

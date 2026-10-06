@@ -119,7 +119,7 @@ func appClient(ctx context.Context, store *postgres.Store) (*github.Client, erro
 
 func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message string) error {
 	message = overload.TruncateUTF8(message, 500)
-	_, err := w.Store.Pool.Exec(ctx, `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1 AND status='running'`, runID, code, message)
+	_, err := w.Store.Pool.Exec(context.WithoutCancel(ctx), `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1 AND status='running'`, runID, code, message)
 	return err
 }
 

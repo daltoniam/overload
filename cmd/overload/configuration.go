@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -66,14 +67,14 @@ func manageConfiguration(resource string, args []string) error {
 		return errors.New("usage: overload RESOURCE list|show|apply [path]")
 	}
 	if args[1] == "-" {
-		return applyConfiguration(ctx, store, resource, io.LimitReader(os.Stdin, 64<<10))
+		return applyConfiguration(ctx, store, resource, os.Stdin)
 	}
 	file, err := os.Open(args[1])
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
-	return applyConfiguration(ctx, store, resource, io.LimitReader(file, 64<<10))
+	return applyConfiguration(ctx, store, resource, file)
 }
 
 func showConfiguration(ctx context.Context, store interface {
@@ -97,18 +98,48 @@ type configurationStore interface {
 	SaveSchedule(context.Context, overload.Schedule) error
 }
 
+// maxConfigurationInput bounds a configuration file. A workflow with a
+// planner, a verifier and eight scoped sub-agents fits easily.
+const maxConfigurationInput = 1 << 20
+
+// readConfiguration reads one configuration document, reporting input over
+// maxConfigurationInput as an error instead of silently cutting it.
+func readConfiguration(reader io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(reader, maxConfigurationInput+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxConfigurationInput {
+		return nil, fmt.Errorf("configuration input is larger than %d bytes", maxConfigurationInput)
+	}
+	return data, nil
+}
+
 func applyConfiguration(ctx context.Context, store configurationStore, resource string, reader io.Reader) error {
-	decoder := json.NewDecoder(reader)
+	data, err := readConfiguration(reader)
+	if err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	decode := func(label string, target any) error {
+		if err := decoder.Decode(target); err != nil {
+			return fmt.Errorf("invalid %s JSON: %w", label, err)
+		}
+		if decoder.More() {
+			return fmt.Errorf("invalid %s JSON: the input must hold exactly one object", label)
+		}
+		return nil
+	}
 	var result any
 	switch resource {
 	case "agents":
 		var agent overload.AgentDefinition
-		if err := decoder.Decode(&agent); err != nil {
+		if err := decode("agent", &agent); err != nil {
 			if strings.Contains(err.Error(), `"entry_prompt"`) || strings.Contains(err.Error(), `"review_prompt"`) {
 				return errors.New(`invalid agent JSON: agents now hold their prompt text in "prompt" instead of naming a prompt`)
 			}
-			return fmt.Errorf("invalid agent JSON: %w", err)
+			return err
 		}
 		if err := store.SaveAgent(ctx, agent); err != nil {
 			return err
@@ -116,8 +147,8 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 		result = agent
 	case "workflows":
 		var workflow overload.Workflow
-		if err := decoder.Decode(&workflow); err != nil {
-			return errors.New("invalid workflow JSON")
+		if err := decode("workflow", &workflow); err != nil {
+			return err
 		}
 		if err := store.SaveWorkflow(ctx, workflow); err != nil {
 			return err
@@ -125,8 +156,8 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 		result = workflow
 	case "bindings":
 		var binding overload.TriggerBinding
-		if err := decoder.Decode(&binding); err != nil {
-			return errors.New("invalid binding JSON")
+		if err := decode("binding", &binding); err != nil {
+			return err
 		}
 		if err := store.SaveBinding(ctx, binding); err != nil {
 			return err
@@ -134,8 +165,8 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 		result = binding
 	case "schedules":
 		var schedule overload.Schedule
-		if err := decoder.Decode(&schedule); err != nil {
-			return errors.New("invalid schedule JSON")
+		if err := decode("schedule", &schedule); err != nil {
+			return err
 		}
 		if err := store.SaveSchedule(ctx, schedule); err != nil {
 			return err
@@ -147,8 +178,8 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 			Enabled bool   `json:"enabled"`
 			DryRun  bool   `json:"dry_run"`
 		}
-		if err := decoder.Decode(&repo); err != nil {
-			return errors.New("invalid repository JSON")
+		if err := decode("repository", &repo); err != nil {
+			return err
 		}
 		if err := store.SaveRepository(ctx, repo.Name, repo.Enabled, repo.DryRun); err != nil {
 			return err

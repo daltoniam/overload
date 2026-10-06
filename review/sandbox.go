@@ -81,7 +81,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if result.Error != "" {
 		return spec, result, sha, nil
 	}
-	result.Findings, err = Validate(result.Findings, spec.Diff, 10)
+	result, err = CheckResult(result, spec.Diff)
 	if result.Metrics == nil {
 		result.Metrics = map[string]any{}
 	}

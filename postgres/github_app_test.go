@@ -203,7 +203,7 @@ func TestIngestPRMatchesRepositoryIdentity(t *testing.T) {
 		t.Helper()
 		n++
 		delivery.DeliveryID = fmt.Sprintf("identity-%d-%d", id, n)
-		delivery.Action, delivery.Payload, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, delivery.Eligible = "opened", []byte(`{}`), 1, "head", "base", true
+		delivery.Action, delivery.Payload, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, delivery.Eligible = "opened", []byte(fmt.Sprintf(`{"delivery":%q}`, delivery.DeliveryID)), 1, "head", "base", true
 		if _, err := store.IngestPR(ctx, client, delivery); err != nil {
 			t.Fatal(err)
 		}

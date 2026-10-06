@@ -10,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
@@ -24,6 +25,9 @@ type Client struct {
 	api        *gh.Client
 	token      string
 	baseURL    string
+
+	mu    sync.Mutex
+	login string
 }
 
 func NewTokenClient(token string) (*Client, error) {
@@ -136,14 +140,58 @@ func ReviewMarker(runID int64) string {
 	return fmt.Sprintf("<!-- overload-run:%d -->", runID)
 }
 
-// FindReview returns the ID of an existing review on the PR whose body has
-// marker, or 0.
+// author returns the login overload posts reviews as: the GitHub App's bot
+// user, or the user a token belongs to.
+func (client *Client) author(ctx context.Context) (string, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.login != "" {
+		return client.login, nil
+	}
+	login, err := client.lookupAuthor(ctx)
+	if err != nil {
+		return "", err
+	}
+	if login == "" || login == "[bot]" {
+		return "", errors.New("could not determine the GitHub account overload posts as")
+	}
+	client.login = login
+	return login, nil
+}
+
+func (client *Client) lookupAuthor(ctx context.Context) (string, error) {
+	if client.api != nil {
+		user, _, err := client.api.Users.Get(ctx, "")
+		return user.GetLogin(), err
+	}
+	transport, err := ghinstallation.NewAppsTransport(client.transport, client.appID, client.privateKey)
+	if err != nil {
+		return "", err
+	}
+	api := gh.NewClient(&http.Client{Transport: transport, Timeout: 30 * time.Second})
+	if client.baseURL != "" {
+		transport.BaseURL = strings.TrimRight(client.baseURL, "/")
+		if api.BaseURL, err = url.Parse(transport.BaseURL + "/"); err != nil {
+			return "", err
+		}
+	}
+	app, _, err := api.Apps.Get(ctx, "")
+	return app.GetSlug() + "[bot]", err
+}
+
+// FindReview returns the ID of a review overload already posted on the PR
+// whose body ends with marker, or 0. Reviews by anyone else are ignored, so
+// a PR author cannot fake a marker to stop overload from posting.
 func (client *Client) FindReview(ctx context.Context, installationID int64, repository string, number int, marker string) (int64, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
 		return 0, err
 	}
 	api, err := client.installation(installationID)
+	if err != nil {
+		return 0, err
+	}
+	login, err := client.author(ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -154,7 +202,7 @@ func (client *Client) FindReview(ctx context.Context, installationID int64, repo
 			return 0, err
 		}
 		for _, review := range reviews {
-			if strings.Contains(review.GetBody(), marker) {
+			if strings.EqualFold(review.GetUser().GetLogin(), login) && strings.HasSuffix(strings.TrimSpace(review.GetBody()), marker) {
 				return review.GetID(), nil
 			}
 		}
@@ -202,11 +250,11 @@ func validateArchiveURL(archive *url.URL, startHost string) error {
 }
 
 func splitRepository(repository string) (string, string, error) {
-	parts := strings.Split(repository, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if !overload.ValidRepositoryName(repository) {
 		return "", "", errors.New("repository must be owner/name")
 	}
-	return parts[0], parts[1], nil
+	owner, repo, _ := strings.Cut(repository, "/")
+	return owner, repo, nil
 }
 
 func FromEnvironment() (*Client, error) {

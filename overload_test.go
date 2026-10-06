@@ -91,3 +91,26 @@ func TestLegacyFocusSnapshots(t *testing.T) {
 		t.Fatal("an agent needs a prompt")
 	}
 }
+
+func TestAPIKeyEnvRefusesInfrastructureSecrets(t *testing.T) {
+	for name, ok := range map[string]bool{
+		"OPENAI_API_KEY": true, "CF_AIG_TOKEN": true, "OVERLOAD_MODEL_KEY": true, "ANTHROPIC_API_KEY": true,
+		"AWS_SECRET_ACCESS_KEY": false, "POSTGRES_PASSWORD": false, "KUBECONFIG": false, "GOOGLE_APPLICATION_CREDENTIALS": false,
+		"SMTP_PASSWORD": false, "DEPLOY_PRIVATE_KEY": false, "GITHUB_TOKEN": false, "OVERLOAD_UI_PASSWORD": false, "DATABASE_URL": false,
+	} {
+		if err := validateAPIKeyEnv(name); (err == nil) != ok {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}
+
+func TestValidRepositoryName(t *testing.T) {
+	for name, ok := range map[string]bool{
+		"daltoniam/overload": true, "a-b/c.d_e": true, "owner/..": false, "owner/.": false, "/repo": false, "owner/": false,
+		"owner/repo/extra": false, "-owner/repo": false, "owner/re po": false, "owner/repo\n": false, "": false,
+	} {
+		if ValidRepositoryName(name) != ok {
+			t.Errorf("%q: want %v", name, ok)
+		}
+	}
+}

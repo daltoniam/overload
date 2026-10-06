@@ -105,7 +105,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	sha := strings.Repeat("b", 40)
-	if accepted, err := store.IngestPR(ctx, client, postgres.PullRequestDelivery{DeliveryID: name, Action: "opened", Payload: []byte(`{}`), RepoName: repo, PR: 42, HeadSHA: sha, BaseSHA: strings.Repeat("a", 40), Eligible: true}); err != nil || !accepted {
+	if accepted, err := store.IngestPR(ctx, client, postgres.PullRequestDelivery{DeliveryID: name, Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, name)), RepoName: repo, PR: 42, HeadSHA: sha, BaseSHA: strings.Repeat("a", 40), Eligible: true}); err != nil || !accepted {
 		t.Fatalf("ingest: %v %v", accepted, err)
 	}
 	var runID int64
@@ -153,7 +153,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 	if err := worker.Work(ctx, job); err != nil || calls != 1 {
 		t.Fatalf("duplicate worker: %d %v", calls, err)
 	}
-	if accepted, err := store.IngestPR(ctx, client, postgres.PullRequestDelivery{DeliveryID: name, Action: "opened", Payload: []byte(`{}`), RepoName: repo, PR: 42, HeadSHA: sha, BaseSHA: strings.Repeat("a", 40), Eligible: true}); err != nil || accepted {
+	if accepted, err := store.IngestPR(ctx, client, postgres.PullRequestDelivery{DeliveryID: name, Action: "opened", Payload: []byte(fmt.Sprintf(`{"delivery":%q}`, name)), RepoName: repo, PR: 42, HeadSHA: sha, BaseSHA: strings.Repeat("a", 40), Eligible: true}); err != nil || accepted {
 		t.Fatalf("duplicate delivery: %v %v", accepted, err)
 	}
 }

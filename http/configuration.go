@@ -3,12 +3,15 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/harness"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -203,13 +206,17 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				http.Error(w, "Agent not saved: an agent named "+r.PostForm.Get("name")+" already exists.", http.StatusBadRequest)
 				return
 			}
-			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: promptText(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true"}
+			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: overload.NormalizePrompt(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true"}
 			if err := agent.Validate(); err != nil {
 				http.Error(w, "Agent not saved: "+err.Error(), http.StatusBadRequest)
 				return
 			}
 			if err := store.SaveAgent(r.Context(), agent); err != nil {
-				http.Error(w, "Agent not saved: the model connection is missing.", http.StatusBadRequest)
+				message := "Agent not saved: the model connection is missing."
+				if errors.Is(err, postgres.ErrAgentInUse) {
+					message = "Agent not saved: " + strings.TrimPrefix(err.Error(), postgres.ErrAgentInUse.Error()+": ") + "."
+				}
+				http.Error(w, message, http.StatusBadRequest)
 				return
 			}
 		case "workflows":

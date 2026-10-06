@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -12,18 +13,25 @@ import (
 // workflowFromForm reads the workflow editor: a main agent, up to
 // MaxSubAgents sub-agent slots (sub_N_agent, sub_N_mode, sub_N_paths,
 // sub_N_description, sub_N_max_findings) and, for PR reviews, the routing
-// settings. Empty slots are ignored. Values that cannot be parsed are
-// reported; everything else is left to Workflow.Validate.
+// settings. Empty slots are ignored. Every field is read even when a number
+// does not parse, so the form can be shown again intact; the first parse
+// error is returned. Everything else is left to Workflow.Validate.
 func workflowFromForm(values url.Values) (overload.Workflow, error) {
-	workflow := overload.Workflow{Name: strings.TrimSpace(values.Get("name")), Kind: values.Get("kind"), Enabled: values.Get("enabled") == "true"}
+	var parseErr error
+	number := func(text, message string) int {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return 0
+		}
+		value, err := strconv.Atoi(text)
+		if err != nil && parseErr == nil {
+			parseErr = errors.New(message)
+		}
+		return value
+	}
+	workflow := overload.Workflow{Name: values.Get("name"), Kind: values.Get("kind"), Enabled: values.Get("enabled") == "true"}
 	if main := values.Get("main_agent"); main != "" {
 		workflow.Agents = append(workflow.Agents, main)
-	} else {
-		for _, name := range values["agents"] {
-			if name != "" {
-				workflow.Agents = append(workflow.Agents, name)
-			}
-		}
 	}
 	pr := workflow.Kind == "pr_review"
 	for slot := range overload.MaxSubAgents {
@@ -36,61 +44,22 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		if !pr {
 			continue
 		}
-		scope := overload.Scope{Paths: lines(values.Get(prefix + "paths")), Description: strings.TrimSpace(values.Get(prefix + "description"))}
-		if mode := values.Get(prefix + "mode"); mode != overload.ScopeGlobs {
-			scope.Mode = mode
+		if workflow.Scopes == nil {
+			workflow.Scopes = map[string]overload.Scope{}
 		}
-		if text := strings.TrimSpace(values.Get(prefix + "max_findings")); text != "" {
-			limit, err := strconv.Atoi(text)
-			if err != nil {
-				return workflow, fmt.Errorf("max findings for %s must be a number", name)
-			}
-			scope.MaxFindings = limit
-		}
-		if len(scope.Paths) > 0 || scope.Mode != "" || scope.Description != "" || scope.MaxFindings != 0 {
-			if workflow.Scopes == nil {
-				workflow.Scopes = map[string]overload.Scope{}
-			}
-			if _, duplicate := workflow.Scopes[name]; duplicate {
-				return workflow, fmt.Errorf("agent %s is listed more than once", name)
-			}
-			workflow.Scopes[name] = scope
+		workflow.Scopes[name] = overload.Scope{
+			Paths:       strings.Split(values.Get(prefix+"paths"), "\n"),
+			Mode:        values.Get(prefix + "mode"),
+			Description: values.Get(prefix + "description"),
+			MaxFindings: number(values.Get(prefix+"max_findings"), "max findings for "+name+" must be a number"),
 		}
 	}
-	if !pr {
-		return workflow, nil
+	if pr {
+		workflow.SkipPaths = strings.Split(values.Get("skip_paths"), "\n")
+		workflow.MainReviews = values.Get("main_reviews")
+		workflow.PlannerPrompt, workflow.VerifierPrompt = values.Get("planner_prompt"), values.Get("verifier_prompt")
+		workflow.MaxFileReviews = number(values.Get("max_file_reviews"), "the file review limit must be a number")
 	}
-	workflow.SkipPaths = lines(values.Get("skip_paths"))
-	if mode := values.Get("main_reviews"); mode != overload.MainReviewsAll {
-		workflow.MainReviews = mode
-	}
-	workflow.PlannerPrompt, workflow.VerifierPrompt = promptText(values.Get("planner_prompt")), promptText(values.Get("verifier_prompt"))
-	if text := strings.TrimSpace(values.Get("max_file_reviews")); text != "" {
-		limit, err := strconv.Atoi(text)
-		if err != nil {
-			return workflow, fmt.Errorf("the file review limit must be a number")
-		}
-		workflow.MaxFileReviews = limit
-	}
-	return workflow, nil
-}
-
-func lines(text string) []string {
-	var out []string
-	for _, line := range strings.Split(text, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			out = append(out, line)
-		}
-	}
-	return out
-}
-
-// promptText normalizes instructions typed into a form: browsers send CRLF
-// line endings, and whitespace-only text means no prompt.
-func promptText(text string) string {
-	text = strings.ReplaceAll(text, "\r\n", "\n")
-	if strings.TrimSpace(text) == "" {
-		return ""
-	}
-	return text
+	workflow.Normalize()
+	return workflow, parseErr
 }
