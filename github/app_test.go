@@ -191,3 +191,30 @@ func TestPostReviewRejection(t *testing.T) {
 		t.Fatalf("422 not reported as a rejection: %v", err)
 	}
 }
+
+func TestSetWebhookURL(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/app/hook/config" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+			t.Errorf("unexpected %s %s %q", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+	client, err := NewClient(9, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.baseURL = server.URL
+	if err := client.SetWebhookURL(context.Background(), "https://overload.example.com/webhooks/github"); err != nil {
+		t.Fatal(err)
+	}
+	if got["url"] != "https://overload.example.com/webhooks/github" || got["content_type"] != "json" {
+		t.Fatalf("hook config %v", got)
+	}
+}

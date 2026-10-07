@@ -8,12 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 
 	"github.com/daltoniam/overload/github"
 	httpapi "github.com/daltoniam/overload/http"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/queue"
+	"github.com/daltoniam/overload/tunnel"
 )
 
 var version = "dev"
@@ -150,7 +152,7 @@ func serve() error {
 	if err := validateServeAddress(addr, os.Getenv("OVERLOAD_UI_INSECURE") == "1"); err != nil {
 		return err
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{store}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
+	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{Store: store, tunnel: newTunnel(store, addr)}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
 		return store.IngestPR(ctx, client, postgres.PullRequestDelivery{
 			DeliveryID:     deliveryID,
 			Action:         action,
@@ -179,8 +181,55 @@ func serve() error {
 	return nil
 }
 
-// serverStore adds GitHub lookups the web UI needs to the database store.
-type serverStore struct{ *postgres.Store }
+// serverStore adds GitHub lookups and the Cloudflare Tunnel the web UI needs
+// to the database store.
+type serverStore struct {
+	*postgres.Store
+	tunnel *tunnel.Manager
+}
+
+func (store serverStore) Tunnel() httpapi.TunnelControl {
+	if store.tunnel == nil {
+		return nil
+	}
+	return store.tunnel
+}
+
+// newTunnel manages the tunnel for this install: files next to the config
+// file, a launchd label derived from the install's, and the GitHub App's
+// webhook URL updated once the tunnel works.
+func newTunnel(store *postgres.Store, addr string) *tunnel.Manager {
+	config := configPath()
+	if config == "" {
+		return nil
+	}
+	label := os.Getenv("OVERLOAD_INSTALL_LABEL")
+	if label == "" {
+		label = defaultLabel
+	}
+	manager := tunnel.NewManager(filepath.Dir(config), label, "http://"+addr)
+	manager.OnReady = func(ctx context.Context, webhookURL string) (string, error) {
+		if os.Getenv("GITHUB_APP_ID") != "" {
+			return "Set the GitHub App's webhook URL to " + webhookURL + " (the App is configured in the environment).", nil
+		}
+		app, err := store.LoadGitHubApp(ctx)
+		if errors.Is(err, postgres.ErrNoGitHubApp) {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		client, err := github.NewClient(app.AppID, []byte(app.PrivateKey))
+		if err != nil {
+			return "", err
+		}
+		if err := client.SetWebhookURL(ctx, webhookURL); err != nil {
+			return "", err
+		}
+		return "Pointed the GitHub App " + app.Slug + " at " + webhookURL + ".", nil
+	}
+	return manager
+}
 
 func (store serverStore) ChangedFiles(ctx context.Context, repository string, number int) ([]string, error) {
 	return queue.ChangedFiles(ctx, store.Store, repository, number)

@@ -16,6 +16,8 @@ type GitHubSetupData struct {
 	Installations    []postgres.GitHubInstallation
 	DefaultName      string
 	DefaultWebhook   string
+	TunnelAvailable  bool
+	TunnelWebhook    string
 	Error            string
 	CSRF             string
 }
@@ -25,6 +27,15 @@ templ GitHubSetup(data GitHubSetupData) {
 		<div class="page-header"><div><p class="eyebrow">Setup</p><h1>GitHub App</h1><p class="muted">Overload reads pull requests through a GitHub App installed on the repositories you choose.</p></div></div>
 		if data.Error != "" {
 			<p class="notice error" role="alert">{ data.Error }</p>
+		}
+		if data.TunnelAvailable {
+			<section class="panel"><div class="panel-head"><div><h2>Public webhook</h2>
+				if data.TunnelWebhook != "" {
+					<p class="muted">GitHub sends webhooks to <code>{ data.TunnelWebhook }</code> through a Cloudflare Tunnel.</p>
+				} else {
+					<p class="muted">GitHub needs a public https URL for webhooks. Set up a Cloudflare Tunnel in a few clicks; only the webhook path is exposed.</p>
+				}
+			</div><a class="button secondary" href="/setup/tunnel">{ tunnelButton(data.TunnelWebhook) }</a></div></section>
 		}
 		if data.Configured {
 			<section class="panel"><dl>
@@ -95,4 +106,11 @@ func installationStatus(suspended bool) string {
 		return "suspended"
 	}
 	return "active"
+}
+
+func tunnelButton(webhook string) string {
+	if webhook != "" {
+		return "Manage tunnel"
+	}
+	return "Set up Cloudflare Tunnel"
 }

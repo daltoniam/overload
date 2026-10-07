@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/xml"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,26 +40,6 @@ func TestReadEnvFile(t *testing.T) {
 	_ = os.WriteFile(path, []byte("not a pair\n"), 0o600)
 	if _, err := readEnvFile(path); err == nil {
 		t.Fatal("accepted malformed line")
-	}
-}
-
-func TestLaunchAgentPlistIsValidXML(t *testing.T) {
-	agent := launchAgent{Label: "dev.overload", Args: []string{"/opt/homebrew/bin/overload", "serve"}, Dir: "/Users/me/Library/Application Support/overload", Log: "/tmp/a&b.log", Env: map[string]string{"OVERLOAD_CONFIG": "/x/overload.env", "PATH": "/usr/bin"}}
-	data := agent.plist()
-	decoder := xml.NewDecoder(strings.NewReader(string(data)))
-	decoder.Strict = false
-	for {
-		if _, err := decoder.Token(); err != nil {
-			if err.Error() == "EOF" {
-				break
-			}
-			t.Fatalf("invalid XML: %v\n%s", err, data)
-		}
-	}
-	for _, want := range []string{"<string>dev.overload</string>", "<string>serve</string>", "a&amp;b.log", "<key>OVERLOAD_CONFIG</key>", "<key>KeepAlive</key>"} {
-		if !strings.Contains(string(data), want) {
-			t.Errorf("plist missing %q", want)
-		}
 	}
 }
 

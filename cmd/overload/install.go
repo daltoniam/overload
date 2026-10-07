@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daltoniam/overload/launchd"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/jackc/pgx/v5"
 )
@@ -338,33 +339,28 @@ func (inst *installation) agents() map[string]string {
 	return agents
 }
 
-func launchAgentPath(label string) string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, "Library", "LaunchAgents", label+".plist")
-}
-
 func (inst *installation) startServices(exe string) error {
 	logs := filepath.Join(inst.home, "logs")
 	if inst.values["OVERLOAD_POSTGRES"] == "native" {
 		label := inst.label + ".postgres"
-		if err := writePlist(launchAgentPath(label), launchAgent{Label: label, Args: inst.postgresArgs(), Dir: inst.home, Log: filepath.Join(logs, "postgres.log"), Env: map[string]string{"LC_ALL": "C", "LANG": "C"}}); err != nil {
+		if err := launchd.Write(launchd.Agent{Label: label, Args: inst.postgresArgs(), Dir: inst.home, Log: filepath.Join(logs, "postgres.log"), Env: map[string]string{"LC_ALL": "C", "LANG": "C"}}); err != nil {
 			return err
 		}
-		if err := launchctl("bootstrap", guiDomain(), launchAgentPath(label)); err != nil {
+		if err := launchd.Start(label); err != nil {
 			return err
 		}
 	}
 	path := "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-	agent := launchAgent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": path}}
-	if err := writePlist(launchAgentPath(inst.label), agent); err != nil {
+	agent := launchd.Agent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": path}}
+	if err := launchd.Write(agent); err != nil {
 		return err
 	}
-	return launchctl("bootstrap", guiDomain(), launchAgentPath(inst.label))
+	return launchd.Start(inst.label)
 }
 
 func (inst *installation) stopServices() {
 	for _, label := range []string{inst.label, inst.label + ".postgres"} {
-		_ = launchctl("bootout", guiDomain()+"/"+label)
+		launchd.Stop(label)
 	}
 }
 
@@ -380,8 +376,8 @@ func uninstall(args []string) error {
 	}
 	if runtime.GOOS == "darwin" {
 		inst.stopServices()
-		for _, label := range []string{inst.label, inst.label + ".postgres"} {
-			if err := os.Remove(launchAgentPath(label)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		for _, label := range []string{inst.label, inst.label + ".postgres", inst.label + ".tunnel"} {
+			if err := launchd.Remove(label); err != nil {
 				return err
 			}
 		}
@@ -418,7 +414,7 @@ func status(args []string) error {
 	if runtime.GOOS == "darwin" {
 		for _, label := range []string{inst.label + ".postgres", inst.label} {
 			if _, ok := inst.agents()[label]; ok {
-				fmt.Printf("service:  %s %s\n", label, serviceState(label))
+				fmt.Printf("service:  %s %s\n", label, launchd.State(label))
 			}
 		}
 	}
@@ -428,37 +424,6 @@ func status(args []string) error {
 		return nil
 	}
 	fmt.Printf("ui:       %s (healthy)\n", base)
-	return nil
-}
-
-func serviceState(label string) string {
-	out, err := exec.Command("launchctl", "print", guiDomain()+"/"+label).CombinedOutput()
-	if err != nil {
-		return "not loaded"
-	}
-	state, pid := "loaded", ""
-	for _, line := range strings.Split(string(out), "\n") {
-		line = strings.TrimSpace(line)
-		if value, ok := strings.CutPrefix(line, "state = "); ok && state == "loaded" {
-			state = value
-		}
-		if value, ok := strings.CutPrefix(line, "pid = "); ok && pid == "" {
-			pid = value
-		}
-	}
-	if pid != "" {
-		return state + " (pid " + pid + ")"
-	}
-	return state
-}
-
-func guiDomain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
-
-func launchctl(args ...string) error {
-	out, err := exec.Command("launchctl", args...).CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("launchctl %s: %v: %s", args[0], err, strings.TrimSpace(string(out)))
-	}
 	return nil
 }
 

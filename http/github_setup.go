@@ -46,6 +46,13 @@ func registerGitHubSetup(mux *http.ServeMux, store GitHubAppStore, csrf string) 
 		if base := os.Getenv("OVERLOAD_BASE_URL"); strings.HasPrefix(base, "https://") {
 			data.DefaultWebhook = strings.TrimRight(base, "/") + "/webhooks/github"
 		}
+		if provider, ok := store.(TunnelProvider); ok && provider.Tunnel() != nil {
+			status := provider.Tunnel().Status()
+			data.TunnelAvailable = status.Supported
+			if url := status.Config.WebhookURL(); url != "" {
+				data.DefaultWebhook, data.TunnelWebhook = url, url
+			}
+		}
 		if os.Getenv("GITHUB_APP_ID") != "" {
 			data.Configured, data.FromEnvironment = true, true
 		}

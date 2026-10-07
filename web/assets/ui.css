@@ -172,3 +172,10 @@ td.nowrap { white-space: nowrap; overflow-wrap: normal; width: 1%; }
 .agents-table td.nowrap { width: auto; }
 .agents-table .prompt-cell { min-width: 280px; }
 .logo-row { display: flex; gap: 16px; align-items: flex-start; } .logo-row img { border-radius: 14px; flex-shrink: 0; }
+.steps { list-style: none; padding: 0; margin: 0 0 16px; counter-reset: step; }
+.steps .step { position: relative; padding: 0 0 20px 40px; counter-increment: step; }
+.steps .step::before { content: counter(step); position: absolute; left: 0; top: 0; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 650; background: var(--badge); color: var(--badge-ink); }
+.steps .step.done::before { content: "✓"; background: var(--soft); color: var(--accent); }
+.steps .step > strong { display: block; margin-bottom: 4px; }
+.steps .step form { margin-top: 12px; }
+#tunnel-status .notice { margin-bottom: 16px; }

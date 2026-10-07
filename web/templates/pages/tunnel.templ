@@ -1,0 +1,120 @@
+package pages
+
+import (
+	"github.com/daltoniam/overload/tunnel"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ TunnelSetup(status tunnel.Status, csrf string, defaultHostname string) {
+	@layouts.Base(layouts.PageData{Title: "Cloudflare Tunnel", CurrentPath: "/setup/github"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/setup/github">GitHub</a> / Webhook</p><h1>Cloudflare Tunnel</h1><p class="muted">GitHub needs a public https address to send pull request webhooks to this Mac. A Cloudflare Tunnel provides one without opening a port; only the webhook path is forwarded, so the UI stays private.</p></div><a href="/setup/github">GitHub App</a></div>
+		if !status.Supported {
+			<section class="panel"><h2>Set up the tunnel by hand</h2><p>One-click setup runs on macOS installs. On a server, follow the Cloudflare Tunnel section of the <a href="https://github.com/daltoniam/overload/blob/main/docs/cloudflare-tunnel.md">tunnel guide</a>, or put overload behind your own HTTPS proxy and expose only <code>/webhooks/github</code>.</p></section>
+		} else {
+			@TunnelStatus(status, csrf, defaultHostname)
+		}
+	}
+}
+
+// TunnelStatus is the tunnel panel; while a step runs it refreshes itself.
+templ TunnelStatus(status tunnel.Status, csrf string, defaultHostname string) {
+	if status.Job.Running {
+		<section class="panel" id="tunnel-status" hx-get="/setup/tunnel/status" hx-trigger="load delay:2s" hx-swap="outerHTML">
+			@tunnelBody(status, csrf, defaultHostname)
+		</section>
+	} else {
+		<section class="panel" id="tunnel-status">
+			@tunnelBody(status, csrf, defaultHostname)
+		</section>
+	}
+}
+
+templ tunnelBody(status tunnel.Status, csrf string, defaultHostname string) {
+	<ol class="steps">
+		<li class={ stepClass(status.Cloudflared != "") }><strong>Install cloudflared</strong>
+			if status.Cloudflared != "" {
+				<span class="muted">Found at <code>{ status.Cloudflared }</code>.</span>
+			} else {
+				<span class="muted">In Terminal run <code>brew install cloudflared</code>, then reload this page.</span>
+			}
+		</li>
+		<li class={ stepClass(status.LoggedIn) }><strong>Connect your Cloudflare account</strong>
+			if status.LoggedIn {
+				<span class="muted">Logged in.</span>
+			} else {
+				<span class="muted">Opens Cloudflare in your browser; choose the domain the webhook will use. The domain's DNS must be on Cloudflare.</span>
+				if status.Cloudflared != "" && !status.Job.Running {
+					<form method="post" action="/setup/tunnel/login"><input type="hidden" name="csrf" value={ csrf }/><button type="submit">Log in to Cloudflare</button></form>
+				}
+			}
+		</li>
+		<li class={ stepClass(status.Config.ID != "" && status.Job.Err == "") }><strong>Create the tunnel</strong>
+			if status.Config.ID != "" {
+				<span class="muted">Webhook URL: <code>{ status.Config.WebhookURL() }</code> · service { status.Service }</span>
+			}
+			if status.LoggedIn && !status.Job.Running {
+				<form method="post" action="/setup/tunnel">
+					<input type="hidden" name="csrf" value={ csrf }/>
+					<label class="field"><span>Hostname</span><input name="hostname" required value={ tunnelHostname(status, defaultHostname) } placeholder="overload.example.com"/><small>A name on a domain in your Cloudflare account. Overload creates the DNS record.</small></label>
+					<label class="field"><span>Tunnel name</span><input name="name" required value={ tunnelName(status) } pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*"/></label>
+					<div class="actions"><button type="submit">{ setupLabel(status) }</button></div>
+				</form>
+			}
+		</li>
+	</ol>
+	if status.Job.Kind != "" {
+		<div class={ jobClass(status.Job) } role="status">
+			if status.Job.Running {
+				<p><strong>Working…</strong></p>
+			}
+			for _, step := range status.Job.Steps {
+				<p>{ step }</p>
+			}
+			if status.Job.LoginURL != "" && status.Job.Running {
+				<p>If the browser did not open, <a href={ templ.URL(status.Job.LoginURL) } target="_blank" rel="noopener">open the Cloudflare login</a>.</p>
+			}
+			if status.Job.Err != "" {
+				<p><strong>Failed:</strong> { status.Job.Err }</p>
+			}
+		</div>
+	}
+	if status.Config.ID != "" && !status.Job.Running {
+		<p class="muted">The tunnel runs as a login service next to overload. Stopping it leaves the tunnel and DNS record in Cloudflare so it can be started again.</p>
+		<form method="post" action="/setup/tunnel/stop"><input type="hidden" name="csrf" value={ csrf }/><button type="submit" class="secondary">Stop the tunnel service</button></form>
+	}
+}
+
+func stepClass(done bool) string {
+	if done {
+		return "step done"
+	}
+	return "step"
+}
+
+func jobClass(job tunnel.Job) string {
+	if job.Err != "" {
+		return "notice error"
+	}
+	return "notice"
+}
+
+func tunnelHostname(status tunnel.Status, fallback string) string {
+	if status.Config.Hostname != "" {
+		return status.Config.Hostname
+	}
+	return fallback
+}
+
+func tunnelName(status tunnel.Status) string {
+	if status.Config.Name != "" {
+		return status.Config.Name
+	}
+	return "overload"
+}
+
+func setupLabel(status tunnel.Status) string {
+	if status.Config.ID != "" {
+		return "Set up again and check"
+	}
+	return "Create tunnel"
+}

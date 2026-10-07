@@ -164,19 +164,41 @@ func (client *Client) lookupAuthor(ctx context.Context) (string, error) {
 		user, _, err := client.api.Users.Get(ctx, "")
 		return user.GetLogin(), err
 	}
-	transport, err := ghinstallation.NewAppsTransport(client.transport, client.appID, client.privateKey)
+	api, err := client.appAPI()
 	if err != nil {
 		return "", err
+	}
+	app, _, err := api.Apps.Get(ctx, "")
+	return app.GetSlug() + "[bot]", err
+}
+
+// appAPI is a client authenticated as the App itself (not an installation).
+func (client *Client) appAPI() (*gh.Client, error) {
+	if client.appID < 1 {
+		return nil, errors.New("a GitHub App is required")
+	}
+	transport, err := ghinstallation.NewAppsTransport(client.transport, client.appID, client.privateKey)
+	if err != nil {
+		return nil, err
 	}
 	api := gh.NewClient(&http.Client{Transport: transport, Timeout: 30 * time.Second})
 	if client.baseURL != "" {
 		transport.BaseURL = strings.TrimRight(client.baseURL, "/")
 		if api.BaseURL, err = url.Parse(transport.BaseURL + "/"); err != nil {
-			return "", err
+			return nil, err
 		}
 	}
-	app, _, err := api.Apps.Get(ctx, "")
-	return app.GetSlug() + "[bot]", err
+	return api, nil
+}
+
+// SetWebhookURL points the App's webhook at url.
+func (client *Client) SetWebhookURL(ctx context.Context, webhookURL string) error {
+	api, err := client.appAPI()
+	if err != nil {
+		return err
+	}
+	_, _, err = api.Apps.UpdateHookConfig(ctx, &gh.HookConfig{URL: gh.Ptr(webhookURL), ContentType: gh.Ptr("json")})
+	return err
 }
 
 // FindReview returns the ID of a review overload already posted on the PR
