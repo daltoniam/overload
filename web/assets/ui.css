@@ -171,3 +171,4 @@ td.nowrap { white-space: nowrap; overflow-wrap: normal; width: 1%; }
 .agent-line .agent-name { font-weight: 500; }
 .agents-table td.nowrap { width: auto; }
 .agents-table .prompt-cell { min-width: 280px; }
+.logo-row { display: flex; gap: 16px; align-items: flex-start; } .logo-row img { border-radius: 14px; flex-shrink: 0; }

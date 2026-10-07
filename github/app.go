@@ -22,10 +22,27 @@ type AppCredentials struct {
 	HTMLURL       string
 	PrivateKey    string
 	WebhookSecret string
+	// OwnerLogin and OwnerType ("User" or "Organization") name the account
+	// that owns the App.
+	OwnerLogin string
+	OwnerType  string
+}
+
+// SettingsURL is the App's settings page on GitHub, where its logo and
+// webhook are edited.
+func (app AppCredentials) SettingsURL() string {
+	if app.Slug == "" {
+		return ""
+	}
+	if app.OwnerType == "Organization" && app.OwnerLogin != "" {
+		return "https://github.com/organizations/" + url.PathEscape(app.OwnerLogin) + "/settings/apps/" + url.PathEscape(app.Slug)
+	}
+	return "https://github.com/settings/apps/" + url.PathEscape(app.Slug)
 }
 
 type manifest struct {
 	Name               string            `json:"name"`
+	Description        string            `json:"description"`
 	URL                string            `json:"url"`
 	HookAttributes     map[string]any    `json:"hook_attributes"`
 	RedirectURL        string            `json:"redirect_url"`
@@ -54,6 +71,7 @@ func Manifest(name, baseURL, webhookURL string) (string, error) {
 	root := strings.TrimRight(base.String(), "/")
 	data, err := json.Marshal(manifest{
 		Name:           name,
+		Description:    "Self-hosted AI pull request reviews with local or hosted models.",
 		URL:            "https://github.com/daltoniam/overload",
 		HookAttributes: map[string]any{"url": hook.String(), "active": true},
 		RedirectURL:    root + "/setup/github/callback",
@@ -101,7 +119,7 @@ func CompleteManifest(ctx context.Context, code string, apiBase string) (AppCred
 	if err != nil {
 		return AppCredentials{}, fmt.Errorf("complete app manifest: %w", err)
 	}
-	credentials := AppCredentials{AppID: config.GetID(), Slug: config.GetSlug(), HTMLURL: config.GetHTMLURL(), PrivateKey: config.GetPEM(), WebhookSecret: config.GetWebhookSecret()}
+	credentials := AppCredentials{AppID: config.GetID(), Slug: config.GetSlug(), HTMLURL: config.GetHTMLURL(), PrivateKey: config.GetPEM(), WebhookSecret: config.GetWebhookSecret(), OwnerLogin: config.GetOwner().GetLogin(), OwnerType: config.GetOwner().GetType()}
 	if credentials.AppID < 1 || credentials.PrivateKey == "" || credentials.WebhookSecret == "" {
 		return AppCredentials{}, errors.New("GitHub returned incomplete app credentials")
 	}

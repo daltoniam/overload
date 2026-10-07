@@ -52,7 +52,7 @@ func registerGitHubSetup(mux *http.ServeMux, store GitHubAppStore, csrf string) 
 		app, err := store.LoadGitHubApp(r.Context())
 		switch {
 		case err == nil && !data.FromEnvironment:
-			data.Configured, data.AppID, data.Slug, data.HTMLURL = true, app.AppID, app.Slug, app.HTMLURL
+			data.Configured, data.AppID, data.Slug, data.HTMLURL, data.SettingsURL = true, app.AppID, app.Slug, app.HTMLURL, app.SettingsURL()
 		case err != nil && !errors.Is(err, postgres.ErrNoGitHubApp):
 			http.Error(w, "Unable to load GitHub App", http.StatusInternalServerError)
 			return

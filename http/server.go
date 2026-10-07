@@ -247,7 +247,7 @@ func secure(next http.Handler) http.Handler {
 	insecure := os.Getenv("OVERLOAD_UI_INSECURE") == "1"
 	hosts := newHostPolicy(os.Getenv("OVERLOAD_BASE_URL"))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.URL.Path == "/healthz" || r.URL.Path == "/webhooks/github" {
 			next.ServeHTTP(w, r)

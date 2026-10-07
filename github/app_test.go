@@ -60,12 +60,18 @@ func TestCompleteManifest(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/app-manifests/abc123/conversions" {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 		}
-		_, _ = w.Write([]byte(`{"id":42,"slug":"overload-local","html_url":"https://github.com/apps/overload-local","pem":"-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n","webhook_secret":"s3cret"}`))
+		_, _ = w.Write([]byte(`{"id":42,"slug":"overload-local","html_url":"https://github.com/apps/overload-local","pem":"-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----\n","webhook_secret":"s3cret","owner":{"login":"acme","type":"Organization"}}`))
 	}))
 	defer server.Close()
 	credentials, err := CompleteManifest(context.Background(), "abc123", server.URL)
 	if err != nil || credentials.AppID != 42 || credentials.WebhookSecret != "s3cret" || credentials.Slug != "overload-local" {
 		t.Fatalf("%+v %v", credentials, err)
+	}
+	if credentials.SettingsURL() != "https://github.com/organizations/acme/settings/apps/overload-local" {
+		t.Fatalf("organization settings URL %q", credentials.SettingsURL())
+	}
+	if personal := (AppCredentials{Slug: "overload-local", OwnerType: "User", OwnerLogin: "dalton"}); personal.SettingsURL() != "https://github.com/settings/apps/overload-local" {
+		t.Fatalf("personal settings URL %q", personal.SettingsURL())
 	}
 	if _, err := CompleteManifest(context.Background(), "../x", server.URL); err == nil {
 		t.Fatal("accepted path in code")

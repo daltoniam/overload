@@ -12,6 +12,7 @@ type GitHubSetupData struct {
 	AppID            int64
 	Slug             string
 	HTMLURL          string
+	SettingsURL      string
 	Installations    []postgres.GitHubInstallation
 	DefaultName      string
 	DefaultWebhook   string
@@ -39,6 +40,14 @@ templ GitHubSetup(data GitHubSetupData) {
 				<p><a class="button" href={ templ.URL("https://github.com/apps/" + data.Slug + "/installations/new") }>Install on repositories</a></p>
 			}
 			</section>
+			if data.SettingsURL != "" {
+				<section class="panel"><h2>App logo</h2>
+					<div class="logo-row"><img src="/assets/overload-logo.png" alt="" width="64" height="64"/>
+						<p class="muted">Until you upload a logo, GitHub shows the owner's profile picture next to the App's reviews. GitHub has no API for App logos, so upload one yourself: download the overload logo (or use your own square image, at least 200×200 pixels and under 1 MB), then open the App's settings and choose <strong>Upload a logo</strong> under Display information.</p>
+					</div>
+					<p><a class="button secondary" href="/assets/overload-logo.png" download="overload-logo.png">Download logo</a> <a class="button secondary" href={ templ.URL(data.SettingsURL) } target="_blank" rel="noopener">Open App settings</a></p>
+				</section>
+			}
 			<section class="panel"><h2>Installations</h2>
 				if len(data.Installations) == 0 {
 					<div class="empty">No installations recorded yet. Install the App; GitHub then sends an installation webhook.</div>

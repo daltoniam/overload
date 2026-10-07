@@ -16,14 +16,14 @@ func (s *Store) SaveGitHubApp(ctx context.Context, app github.AppCredentials) er
 	if app.AppID < 1 || app.PrivateKey == "" || app.WebhookSecret == "" {
 		return errors.New("incomplete GitHub App credentials")
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO github_app (id, app_id, slug, html_url, private_key, webhook_secret) VALUES (1, $1, $2, $3, $4, $5)
-ON CONFLICT (id) DO UPDATE SET app_id=EXCLUDED.app_id, slug=EXCLUDED.slug, html_url=EXCLUDED.html_url, private_key=EXCLUDED.private_key, webhook_secret=EXCLUDED.webhook_secret, updated_at=now()`, app.AppID, app.Slug, app.HTMLURL, app.PrivateKey, app.WebhookSecret)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO github_app (id, app_id, slug, html_url, private_key, webhook_secret, owner_login, owner_type) VALUES (1, $1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE SET app_id=EXCLUDED.app_id, slug=EXCLUDED.slug, html_url=EXCLUDED.html_url, private_key=EXCLUDED.private_key, webhook_secret=EXCLUDED.webhook_secret, owner_login=EXCLUDED.owner_login, owner_type=EXCLUDED.owner_type, updated_at=now()`, app.AppID, app.Slug, app.HTMLURL, app.PrivateKey, app.WebhookSecret, app.OwnerLogin, app.OwnerType)
 	return err
 }
 
 func (s *Store) LoadGitHubApp(ctx context.Context) (github.AppCredentials, error) {
 	var app github.AppCredentials
-	err := s.Pool.QueryRow(ctx, `SELECT app_id, slug, html_url, private_key, webhook_secret FROM github_app WHERE id = 1`).Scan(&app.AppID, &app.Slug, &app.HTMLURL, &app.PrivateKey, &app.WebhookSecret)
+	err := s.Pool.QueryRow(ctx, `SELECT app_id, slug, html_url, private_key, webhook_secret, owner_login, owner_type FROM github_app WHERE id = 1`).Scan(&app.AppID, &app.Slug, &app.HTMLURL, &app.PrivateKey, &app.WebhookSecret, &app.OwnerLogin, &app.OwnerType)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app, ErrNoGitHubApp
 	}
