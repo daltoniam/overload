@@ -243,8 +243,8 @@ installs; a downloadable `.pkg` would need Developer ID signing.
 
 - [x] Mac install, restart and reinstall test in CI.
 - [x] Kubernetes install and sandboxed review on a disposable kind cluster.
-- [ ] GitHub App and repository sync against a real App and repository.
-- [ ] Posting to a real pull request.
+- [x] GitHub App and repository sync against a real App and repository.
+- [x] Posting to a real pull request.
 - [ ] A published release and Homebrew formula, installed on a clean Mac.
 - [ ] A reaper for sandbox claims left by a crashed worker.
 - [ ] Backup, restore and upgrade tests.
