@@ -1,0 +1,14 @@
+# A managed Kubernetes cluster (DigitalOcean, EKS, GKE, ...) with a managed
+# Postgres and hosted models. See docs/install-kubernetes.md.
+#
+# Before applying, create the "overload" Secret (DATABASE_URL, UI login,
+# model API keys) and set the hostname and issuer in ingress.yaml.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - ingress.yaml
+  - networkpolicy.yaml
+images:
+  - name: ghcr.io/daltoniam/overload
+    newTag: "0.1.0"

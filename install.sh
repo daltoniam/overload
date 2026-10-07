@@ -13,6 +13,8 @@
 #   OVERLOAD_INSTALL_DIR   binary directory without Homebrew (default ~/.local/bin)
 #   OVERLOAD_DOWNLOAD_URL  archive URL (for testing or mirrors)
 #   OVERLOAD_INSTALL_ARGS  extra arguments for `overload install`
+#   OVERLOAD_BINARY_ONLY=1 install the binary and stop (servers set up with
+#                          systemd, see docs/install-linux.md)
 set -eu
 
 repo="daltoniam/overload"
@@ -86,5 +88,8 @@ else
 fi
 
 say "Installed $("$bin" version) at $bin"
+if [ -n "${OVERLOAD_BINARY_ONLY:-}" ]; then
+	exit 0
+fi
 # shellcheck disable=SC2086
 exec "$bin" install ${OVERLOAD_INSTALL_ARGS:-}

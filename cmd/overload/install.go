@@ -54,9 +54,13 @@ func openInstallation(home, label string) (*installation, error) {
 		return nil, errors.New("--label must be reverse-DNS, for example dev.overload")
 	}
 	if home == "" {
-		var err error
-		if home, err = defaultHome(); err != nil {
-			return nil, err
+		if config := os.Getenv("OVERLOAD_CONFIG"); config != "" {
+			home = filepath.Dir(config)
+		} else {
+			var err error
+			if home, err = defaultHome(); err != nil {
+				return nil, err
+			}
 		}
 	}
 	home, err := filepath.Abs(home)

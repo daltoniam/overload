@@ -1,0 +1,24 @@
+# Only the GitHub webhook is public. The UI stays inside the cluster; reach
+# it with `kubectl -n overload port-forward svc/overload 8082`.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: overload-webhook
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [overload.example.com]
+      secretName: overload-webhook-tls
+  rules:
+    - host: overload.example.com
+      http:
+        paths:
+          - path: /webhooks/github
+            pathType: Exact
+            backend:
+              service:
+                name: overload
+                port:
+                  name: http

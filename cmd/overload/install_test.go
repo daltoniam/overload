@@ -73,3 +73,12 @@ func TestInstallRejectsUnsafeInput(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInstallationHomeFollowsOverloadConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("OVERLOAD_CONFIG", filepath.Join(home, "overload.env"))
+	inst, err := openInstallation("", defaultLabel)
+	if err != nil || inst.home != home || inst.config != filepath.Join(home, "overload.env") {
+		t.Fatalf("install home %+v %v", inst, err)
+	}
+}

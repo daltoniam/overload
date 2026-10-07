@@ -1,0 +1,45 @@
+# overload as a systemd service on a Linux server.
+#
+#   sudo cp overload.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now overload
+#
+# It runs as the "overload" system user with its configuration in
+# /var/lib/overload/overload.env (written by `overload install --home
+# /var/lib/overload --database-url ... --no-start`). Model API keys and
+# OVERLOAD_ENABLE_POSTING go in the same file.
+[Unit]
+Description=overload: AI pull request reviews
+Documentation=https://github.com/daltoniam/overload/blob/main/docs/install-linux.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=overload
+Group=overload
+Environment=OVERLOAD_CONFIG=/var/lib/overload/overload.env
+ExecStart=/usr/local/bin/overload serve
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+# Reviews read pull request archives under /tmp and need nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/overload
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictNamespaces=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
