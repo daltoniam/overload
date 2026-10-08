@@ -11,4 +11,4 @@ resources:
   - networkpolicy.yaml
 images:
   - name: ghcr.io/daltoniam/overload
-    newTag: "0.1.0"
+    newTag: "0.1.1"
