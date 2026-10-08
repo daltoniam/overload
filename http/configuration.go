@@ -79,7 +79,14 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				}
 			}
 		}
-		_ = pages.AgentForm(selected, models, starters, csrf).Render(r.Context(), w)
+		var tools []overload.ToolServer
+		if toolStore, ok := store.(ToolServerStore); ok {
+			if tools, err = toolStore.ListToolServers(r.Context()); err != nil {
+				http.Error(w, "Unable to load tool servers", http.StatusInternalServerError)
+				return
+			}
+		}
+		_ = pages.AgentForm(selected, models, starters, tools, csrf).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /configure/repositories", func(w http.ResponseWriter, r *http.Request) {
 		repos, err := store.ListRepositories(r.Context())
@@ -207,7 +214,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 			revision, _ := strconv.Atoi(r.PostForm.Get("prompt_revision"))
-			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: overload.NormalizePrompt(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true", PromptRevision: revision}
+			agent := overload.AgentDefinition{Name: r.PostForm.Get("name"), Kind: r.PostForm.Get("kind"), Model: r.PostForm.Get("model"), Prompt: overload.NormalizePrompt(r.PostForm.Get("prompt")), Enabled: r.PostForm.Get("enabled") == "true", PromptRevision: revision, Tools: r.PostForm["tools"]}
 			if err := agent.Validate(); err != nil {
 				http.Error(w, "Agent not saved: "+err.Error(), http.StatusBadRequest)
 				return
@@ -215,6 +222,8 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			if err := store.SaveAgent(r.Context(), agent); err != nil {
 				message, status := "Agent not saved: the model connection is missing.", http.StatusBadRequest
 				switch {
+				case strings.HasPrefix(err.Error(), "tool server "):
+					message = "Agent not saved: " + err.Error() + "."
 				case errors.Is(err, postgres.ErrAgentInUse):
 					message = "Agent not saved: " + strings.TrimPrefix(err.Error(), postgres.ErrAgentInUse.Error()+": ") + "."
 				case errors.Is(err, postgres.ErrConflict):

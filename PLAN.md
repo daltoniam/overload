@@ -115,6 +115,7 @@ Configuration via environment variables (flags override), loaded into one
 | `OVERLOAD_ADDR` | Listen address, default `:8080` |
 | `OVERLOAD_BASE_URL` | External URL, used for links in review comments |
 | `OVERLOAD_UI_USER`, `OVERLOAD_UI_PASSWORD` | Basic auth for the UI (required unless Cloudflare Access or `OVERLOAD_UI_INSECURE=1`) |
+| `OVERLOAD_TOOL_*` | Bearer tokens for tool servers (Switchboard API keys), named by each tool server |
 | `OVERLOAD_ACCESS_TEAM_DOMAIN`, `OVERLOAD_ACCESS_AUD` | Cloudflare Access instead of basic auth: every UI request needs a valid `Cf-Access-Jwt-Assertion` for that application (RS256, team keys fetched hourly and on rotation) |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_WEBHOOK_SECRET` | GitHub App |
 | `OVERLOAD_SANDBOX_NAMESPACE`, `OVERLOAD_SANDBOX_WARMPOOL` | Agent Sandbox target |
@@ -625,6 +626,43 @@ the planner.
 tool-capable hosted models, using the same allowed sub-agents and limits.
 Not part of v1.
 
+### 7.9 Tools for scheduled agents
+
+**Decision (2026-10-08): scheduled agents call MCP servers; PR reviews
+never do.** A tool server is a name, a streamable-HTTP MCP URL, the name of
+an environment variable holding its bearer token (prefix `OVERLOAD_TOOL_`,
+so it cannot name overload's own secrets) and a description. Agents of the
+scheduled-prompt kind list the tool servers they use; validation refuses
+tools on PR review agents and snapshots, because reviews read untrusted
+pull request text.
+
+- The run snapshot pins each agent's tool servers (never the token). A
+  disabled or deleted server makes the workflow unavailable instead of
+  running the agent without it.
+- At run time overload opens one MCP session per server
+  (`modelcontextprotocol/go-sdk`, stateless-friendly, no standalone SSE),
+  lists its tools and offers them to the model as `<server>_<tool>`. Each
+  run sends `X-Switchboard-Session-Id: overload-run-<id>-<agent>` so
+  Switchboard's pins and context stay within the run.
+- The agent loop is Fantasy's: a step is one model call. Limits come from
+  the workflow: `max_steps` (default 40, max 200) and `timeout_minutes`
+  (default 30, max 240), plus at most five tool calls per step. On the
+  last step tools are removed and the agent is told to report. Tool
+  results are cut to 32 KB; tool failures go back to the model as errors.
+- Every tool call is a run event with its input and result (cut to 4 KB
+  and 8 KB); the agent's output records steps, tool calls and tokens.
+- Schedules can be run by hand (`overload schedules run NAME`, **Run
+  now**), which queues a run with trigger `manual`.
+- Model connections gained `api: responses`: newer OpenAI reasoning models
+  (GPT-6.1 Sol) reject tools with `reasoning_effort` on Chat Completions.
+  Fantasy (upgraded to v0.45) only sends reasoning settings for model names
+  it recognizes, so overload sets `reasoning.effort` on each request.
+
+Verified against a self-hosted Switchboard (GitHub) and hosted Switchboard
+with GPT-6.1 Sol through Cloudflare AI Gateway. The Switchboard
+integration research job runs as an overload schedule
+(`switchboard-integration-research`, prompt in `docs/examples/switchboard-integration-research.md`).
+
 ## 8. Data model (initial)
 
 ```
@@ -902,15 +940,13 @@ After:
    and automations can manage a remote overload. Behind Cloudflare Access,
    clients authenticate with an Access service token; overload accepts the
    service token's Access JWT like a user's.
-8. Tool-using agent jobs, to move the Orca switchboard automations (daily
-   integration research at 7:00 and implementation at 8:00 Central) onto
-   overload schedules. Scheduled prompts today are one model call without
-   tools, which cannot edit issues or open pull requests. Needed: a job
-   kind that runs a CLI harness (Crush) in a sandbox with a repository
-   checkout, scoped GitHub credentials (an App installation token limited
-   to the target repository), MCP access, time and token budgets, and the
-   transcript and outputs stored on the run. Research first (issues only,
-   no code), then implementation (branches and draft PRs, never merges).
+8. Tool-using agent jobs (step 1 done 2026-10-08, see 7.9): scheduled
+   agents call MCP tools (Switchboard), which covers the Orca integration
+   research job (issues only). The Orca implementation job still needs a
+   workspace: a repository checkout, a shell to run `make ci` (which
+   starts Docker Compose), git push with scoped credentials, and a browser
+   for UI tests. Next: a job kind that runs a coding agent (Crush) in a
+   sandbox with those, with the transcript and outputs on the run.
 
 ## 13. Follow-ups (post v1, keep interfaces ready)
 

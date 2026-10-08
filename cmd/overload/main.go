@@ -16,6 +16,8 @@ import (
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/queue"
 	"github.com/daltoniam/overload/tunnel"
+	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 )
 
 var version = "dev"
@@ -71,7 +73,7 @@ func run(args []string) error {
 		return inlineReview(args[1:])
 	case "settings":
 		return manageSettings(args[1:])
-	case "agents", "workflows", "bindings", "repositories", "schedules":
+	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
@@ -152,7 +154,7 @@ func serve() error {
 	if err := validateServeAddress(addr, os.Getenv("OVERLOAD_UI_INSECURE") == "1"); err != nil {
 		return err
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{Store: store, tunnel: newTunnel(store, addr)}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
+	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{Store: store, tunnel: newTunnel(store, addr), jobs: client}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
 		return store.IngestPR(ctx, client, postgres.PullRequestDelivery{
 			DeliveryID:     deliveryID,
 			Action:         action,
@@ -186,6 +188,12 @@ func serve() error {
 type serverStore struct {
 	*postgres.Store
 	tunnel *tunnel.Manager
+	jobs   *river.Client[pgx.Tx]
+}
+
+// RunScheduleNow queues a schedule's workflow on this server's job queue.
+func (store serverStore) RunScheduleNow(ctx context.Context, name string) (int64, error) {
+	return store.Store.RunScheduleNow(ctx, store.jobs, name)
 }
 
 func (store serverStore) Tunnel() httpapi.TunnelControl {

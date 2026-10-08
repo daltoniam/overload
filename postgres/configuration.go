@@ -107,6 +107,17 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if err := tx.QueryRow(ctx, `SELECT id FROM model_profiles WHERE name=$1`, agent.Model).Scan(&modelID); err != nil {
 		return fmt.Errorf("model connection %q not found", agent.Model)
 	}
+	if err := checkToolServers(ctx, tx, agent.Tools); err != nil {
+		return err
+	}
+	tools := agent.Tools
+	if tools == nil {
+		tools = []string{}
+	}
+	toolData, err := json.Marshal(tools)
+	if err != nil {
+		return err
+	}
 	var conflicting string
 	err = tx.QueryRow(ctx, `SELECT w.name FROM workflows w WHERE w.agent_names ? $1 AND w.kind <> $2 ORDER BY w.name LIMIT 1`, agent.Name, agent.Kind).Scan(&conflicting)
 	if err == nil {
@@ -119,14 +130,14 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,updated_at=now()`, agent.Name, modelID, revisionID, agent.Enabled, agent.Kind); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind,tool_servers) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,tool_servers=EXCLUDED.tool_servers,updated_at=now()`, agent.Name, modelID, revisionID, agent.Enabled, agent.Kind, toolData); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,r.body,r.revision,a.enabled FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions r ON r.id=a.entry_prompt_revision_id ORDER BY a.name`)
+	rows, err := s.Pool.Query(ctx, `SELECT a.name,a.kind,m.name,r.body,r.revision,a.enabled,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id JOIN prompt_revisions r ON r.id=a.entry_prompt_revision_id ORDER BY a.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -134,8 +145,15 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 	var agents []overload.AgentDefinition
 	for rows.Next() {
 		var agent overload.AgentDefinition
-		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.Prompt, &agent.PromptRevision, &agent.Enabled); err != nil {
+		var tools []byte
+		if err := rows.Scan(&agent.Name, &agent.Kind, &agent.Model, &agent.Prompt, &agent.PromptRevision, &agent.Enabled, &tools); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal(tools, &agent.Tools); err != nil {
+			return nil, err
+		}
+		if len(agent.Tools) == 0 {
+			agent.Tools = nil
 		}
 		agents = append(agents, agent)
 	}
@@ -168,7 +186,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -201,6 +219,8 @@ type workflowRouting struct {
 	MaxFindings        int                       `json:"max_findings,omitempty"`
 	PlannerRevisionID  int64                     `json:"planner_prompt_revision_id,omitempty"`
 	VerifierRevisionID int64                     `json:"verifier_prompt_revision_id,omitempty"`
+	MaxSteps           int                       `json:"max_steps,omitempty"`
+	TimeoutMinutes     int                       `json:"timeout_minutes,omitempty"`
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -224,6 +244,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 			return nil, err
 		}
 		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.MaxFindings = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
+		workflow.MaxSteps, workflow.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()
@@ -256,6 +277,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		return result, err
 	}
 	result.SkipPaths, result.MainReviews, result.MaxFileReviews, result.MaxFindings = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
+	result.MaxSteps, result.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue
@@ -269,9 +291,10 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	for _, agentName := range agents {
 		var agent overload.ResolvedAgent
 		var entryID int64
+		var tools []byte
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,a.entry_prompt_revision_id FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &entryID)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &entryID, &tools)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return result, fmt.Errorf("%w: agent %s is disabled, missing or for a different job type", ErrWorkflowUnavailable, agentName)
 		}
@@ -279,6 +302,9 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 			return result, err
 		}
 		if err := loadPromptRevision(ctx, q, entryID, &agent.EntryPrompt); err != nil {
+			return result, err
+		}
+		if agent.Tools, err = resolveToolServers(ctx, q, tools); err != nil {
 			return result, err
 		}
 		result.Agents = append(result.Agents, agent)

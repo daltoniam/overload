@@ -76,7 +76,11 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 					<p class="muted">No output available yet.</p>
 				}
 				for _, agent := range output.Agents {
-					<article class="profile"><h3>{ agent.Name }</h3><p class="multiline">{ agent.Text }</p></article>
+					<article class="profile"><h3>{ agent.Name }</h3>
+						if agent.Steps > 0 {
+							<p class="muted">{ agentRunSummary(agent) }</p>
+						}
+						<p class="multiline">{ agent.Text }</p></article>
 				}
 			</section>
 		} else {
@@ -140,4 +144,12 @@ templ Webhooks(deliveries []postgres.Delivery) {
 			}
 		</section>
 	}
+}
+
+func agentRunSummary(agent postgres.AgentOutput) string {
+	summary := fmt.Sprintf("%d steps · %d tool calls · %d input / %d output tokens", agent.Steps, agent.ToolCalls, agent.InputTokens, agent.OutputTokens)
+	if agent.HitStepLimit {
+		summary += " · reached the step limit"
+	}
+	return summary
 }

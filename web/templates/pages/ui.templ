@@ -46,7 +46,18 @@ templ RunEvents(run overload.Run, events []postgres.RunEvent) {
 		<div class="table-wrap"><table class="log-table wrap"><thead><tr><th>Timestamp</th><th>Level</th><th>Step</th><th>Message</th></tr></thead><tbody>
 			for _, event := range events {
 				if matches(ctx, "", "", event.Step, event.Message, event.Level) {
-					<tr><td class="mono">{ event.At.Format("Jan 2 · 15:04:05") }</td><td>{ event.Level }</td><td>{ event.Step }</td><td class="message">{ event.Message }</td></tr>
+					<tr><td class="mono">{ event.At.Format("Jan 2 · 15:04:05") }</td><td>{ event.Level }</td><td>{ event.Step }</td><td class="message">{ event.Message }
+						if event.Input != "" || event.Output != "" {
+							<details class="tool-call"><summary>Input and result</summary>
+								if event.Input != "" {
+									<pre class="mono">{ event.Input }</pre>
+								}
+								if event.Output != "" {
+									<pre class="mono">{ event.Output }</pre>
+								}
+							</details>
+						}
+					</td></tr>
 				}
 			}
 		</tbody></table></div>
@@ -90,6 +101,11 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 			<label class="field"><span>Skip paths</span><textarea name="skip_paths" rows="3" class="short" placeholder="*.lock&#10;vendor/**&#10;**/*_templ.go">{ strings.Join(workflow.SkipPaths, "\n") }</textarea><small>One glob per line. Matching files are not reviewed by any agent. * stays in one folder, ** crosses folders, and a pattern without / matches the file name anywhere.</small></label>
 			<label class="field"><span>File review limit</span><input type="number" name="max_file_reviews" min="0" max="10000" value={ optionalNumber(workflow.MaxFileReviews) } placeholder="No limit"/><small>Most (agent, file) reviews per run. A review needing more fails before calling a model; planner additions are dropped first.</small></label>
 			<label class="field"><span>Findings posted per review</span><input type="number" name="max_findings" min="0" max={ fmt.Sprint(overload.MaxFindingsLimit) } value={ optionalNumber(workflow.MaxFindings) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxFindings) }/><small>The most severe findings are posted; the rest stay on the run as dropped. Raise it for workflows with several focused sub-agents.</small></label>
+		</fieldset>
+	} else {
+		<fieldset class="tree-node"><legend>Limits for agents with tools</legend>
+			<label class="field"><span>Steps per agent</span><input type="number" name="max_steps" min="0" max={ fmt.Sprint(overload.MaxStepsLimit) } value={ optionalNumber(workflow.MaxSteps) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxSteps) }/><small>A step is one model call. On its last step an agent loses its tools and must write its report.</small></label>
+			<label class="field"><span>Minutes per agent</span><input type="number" name="timeout_minutes" min="0" max={ fmt.Sprint(overload.MaxTimeoutMinutes) } value={ optionalNumber(workflow.TimeoutMinutes) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultTimeoutMinutes) }/><small>An agent still working at this limit fails the run. Agents run one after another.</small></label>
 		</fieldset>
 	}
 }

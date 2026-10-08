@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettings, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens FROM model_profiles ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api FROM model_profiles ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -17,7 +17,7 @@ func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettin
 	var settings []overload.ReviewSettings
 	for rows.Next() {
 		var setting overload.ReviewSettings
-		if err := rows.Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens); err != nil {
+		if err := rows.Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API); err != nil {
 			return nil, err
 		}
 		settings = append(settings, setting)
@@ -27,8 +27,8 @@ func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettin
 
 func (s *Store) GetReviewSettings(ctx context.Context, name string) (overload.ReviewSettings, error) {
 	var setting overload.ReviewSettings
-	query := `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens FROM model_profiles WHERE name=$1 OR ($1='' AND is_default=true) ORDER BY is_default DESC LIMIT 1`
-	err := s.Pool.QueryRow(ctx, query, name).Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens)
+	query := `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api FROM model_profiles WHERE name=$1 OR ($1='' AND is_default=true) ORDER BY is_default DESC LIMIT 1`
+	err := s.Pool.QueryRow(ctx, query, name).Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API)
 	return setting, err
 }
 
@@ -67,7 +67,7 @@ func (s *Store) SaveReviewSettings(ctx context.Context, setting overload.ReviewS
 		}
 		setting.IsDefault = err == nil && current
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO model_profiles (name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (name) DO UPDATE SET provider=EXCLUDED.provider, connection_kind=EXCLUDED.connection_kind, base_url=EXCLUDED.base_url, model=EXCLUDED.model, api_key_env=EXCLUDED.api_key_env, prompt_profile=EXCLUDED.prompt_profile, is_default=EXCLUDED.is_default, concurrency=EXCLUDED.concurrency, reasoning_param=EXCLUDED.reasoning_param, reasoning_effort=EXCLUDED.reasoning_effort, max_output_tokens=EXCLUDED.max_output_tokens, updated_at=now()`, setting.Name, setting.Provider, setting.ConnectionKind, setting.BaseURL, setting.Model, setting.APIKeyEnv, setting.PromptProfile, setting.IsDefault, setting.Concurrency, setting.ReasoningParam, setting.ReasoningEffort, setting.MaxOutputTokens)
+	_, err = tx.Exec(ctx, `INSERT INTO model_profiles (name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (name) DO UPDATE SET provider=EXCLUDED.provider, connection_kind=EXCLUDED.connection_kind, base_url=EXCLUDED.base_url, model=EXCLUDED.model, api_key_env=EXCLUDED.api_key_env, prompt_profile=EXCLUDED.prompt_profile, is_default=EXCLUDED.is_default, concurrency=EXCLUDED.concurrency, reasoning_param=EXCLUDED.reasoning_param, reasoning_effort=EXCLUDED.reasoning_effort, max_output_tokens=EXCLUDED.max_output_tokens, api=EXCLUDED.api, updated_at=now()`, setting.Name, setting.Provider, setting.ConnectionKind, setting.BaseURL, setting.Model, setting.APIKeyEnv, setting.PromptProfile, setting.IsDefault, setting.Concurrency, setting.ReasoningParam, setting.ReasoningEffort, setting.MaxOutputTokens, setting.API)
 	if err != nil {
 		return err
 	}

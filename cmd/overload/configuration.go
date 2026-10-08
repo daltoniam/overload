@@ -12,11 +12,14 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/harness"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 func manageConfiguration(resource string, args []string) error {
 	if len(args) == 0 || len(args) > 4 {
-		return errors.New("usage: overload RESOURCE list|show|apply [path], or overload workflows preview NAME [files|-]")
+		return errors.New("usage: overload RESOURCE list|show|apply [path], overload workflows preview NAME [files|-], overload schedules run NAME, or overload tools check|delete NAME")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -46,7 +49,35 @@ func manageConfiguration(resource string, args []string) error {
 			return write(store.ListRepositories(ctx))
 		case "schedules":
 			return write(store.ListSchedules(ctx))
+		case "tools":
+			return write(store.ListToolServers(ctx))
 		}
+	}
+	if resource == "schedules" && args[0] == "run" && len(args) == 2 {
+		client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+		if err != nil {
+			return err
+		}
+		runID, err := store.RunScheduleNow(ctx, client, args[1])
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Printf("Queued run %d: /runs/%d (the overload server runs it)\n", runID, runID)
+		return err
+	}
+	if resource == "tools" && args[0] == "delete" && len(args) == 2 {
+		return store.DeleteToolServer(ctx, args[1])
+	}
+	if resource == "tools" && args[0] == "check" && len(args) == 2 {
+		server, err := store.GetToolServer(ctx, args[1])
+		if err != nil {
+			return fmt.Errorf("tool server %q: %w", args[1], err)
+		}
+		names, err := harness.ListTools(ctx, server)
+		if err != nil {
+			return fmt.Errorf("tool server %s: %w", server.Name, err)
+		}
+		return write(map[string]any{"server": server.Name, "tools": names}, nil)
 	}
 	if args[0] == "show" {
 		return showConfiguration(ctx, store, resource, args)
@@ -96,6 +127,7 @@ type configurationStore interface {
 	SaveBinding(context.Context, overload.TriggerBinding) error
 	SaveRepository(context.Context, string, bool, bool) error
 	SaveSchedule(context.Context, overload.Schedule) error
+	SaveToolServer(context.Context, overload.ToolServer) error
 }
 
 // maxConfigurationInput bounds a configuration file. A workflow with a
@@ -172,6 +204,15 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 			return err
 		}
 		result = schedule
+	case "tools":
+		var server overload.ToolServer
+		if err := decode("tool server", &server); err != nil {
+			return err
+		}
+		if err := store.SaveToolServer(ctx, server); err != nil {
+			return err
+		}
+		result = server
 	case "repositories":
 		var repo struct {
 			Name    string `json:"name"`

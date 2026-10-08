@@ -62,13 +62,14 @@ func manageSettings(args []string) error {
 		reasoningEffort := flags.String("reasoning-effort", "", "thinking level for --reasoning-param (none, minimal, low, medium, high, xhigh, max)")
 		maxOutputTokens := flags.Int("max-output-tokens", 0, "output token limit per review call, thinking included (0 = default)")
 		concurrency := flags.Int("concurrency", 1, "changed files reviewed at once (match the model server's parallel slots)")
+		api := flags.String("api", "", "request style: empty for Chat Completions, or responses for OpenAI's Responses API (newer OpenAI models need it for tools with reasoning)")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if flags.NArg() != 0 {
 			return errors.New("unexpected setting arguments")
 		}
-		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens}
+		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api}
 		if err := store.SaveReviewSettings(ctx, setting); err != nil {
 			return err
 		}

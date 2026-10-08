@@ -16,6 +16,12 @@ type JobOutput struct {
 type AgentOutput struct {
 	Name string `json:"name"`
 	Text string `json:"text"`
+	// Steps, ToolCalls and the token counts describe tool-using agents.
+	Steps        int   `json:"steps,omitempty"`
+	ToolCalls    int   `json:"tool_calls,omitempty"`
+	InputTokens  int64 `json:"input_tokens,omitempty"`
+	OutputTokens int64 `json:"output_tokens,omitempty"`
+	HitStepLimit bool  `json:"hit_step_limit,omitempty"`
 }
 
 func (s *Store) ReadJobOutput(ctx context.Context, runID int64) (JobOutput, error) {
@@ -28,7 +34,7 @@ func (s *Store) ReadJobOutput(ctx context.Context, runID int64) (JobOutput, erro
 	if err != nil {
 		return output, err
 	}
-	if len(content) > 40000 {
+	if len(content) > 200000 {
 		return JobOutput{}, errors.New("job output exceeds display limit")
 	}
 	if err := json.Unmarshal(content, &output.Agents); err != nil {

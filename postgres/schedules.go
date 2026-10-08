@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -157,3 +158,55 @@ type ScheduleArgs struct {
 }
 
 func (ScheduleArgs) Kind() string { return "scheduled_prompt" }
+
+// RunScheduleNow queues one run of a schedule's workflow with the
+// schedule's input, outside its cron times. It returns the run's ID.
+func (s *Store) RunScheduleNow(ctx context.Context, client *river.Client[pgx.Tx], name string) (int64, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var scheduleID int64
+	var workflowName string
+	var input []byte
+	err = tx.QueryRow(ctx, `SELECT s.id,w.name,s.input_json FROM schedules s JOIN workflows w ON w.id=s.workflow_id WHERE s.name=$1 FOR SHARE OF s`, name).Scan(&scheduleID, &workflowName, &input)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("schedule %q not found", name)
+	}
+	if err != nil {
+		return 0, err
+	}
+	resolved, err := resolveWorkflow(ctx, tx, workflowName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, fmt.Errorf("%w: workflow %s is disabled or missing", ErrWorkflowUnavailable, workflowName)
+	}
+	if err != nil {
+		return 0, err
+	}
+	if resolved.Kind != "scheduled_prompt" {
+		return 0, errors.New("schedule workflow is not a scheduled job")
+	}
+	if err := resolved.Verify(); err != nil {
+		return 0, err
+	}
+	snapshot, err := json.Marshal(resolved)
+	if err != nil {
+		return 0, err
+	}
+	var runID int64
+	if err := tx.QueryRow(ctx, `INSERT INTO runs(kind,pr_number,trigger,status,dry_run,config_snapshot,input_snapshot,schedule_id,scheduled_for) VALUES ('scheduled_prompt',NULL,'manual','queued',true,$1,$2,$3,now()) RETURNING id`, snapshot, input, scheduleID).Scan(&runID); err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'queued', 'Queued by hand')`, runID); err != nil {
+		return 0, err
+	}
+	job, err := client.InsertTx(ctx, tx, ScheduleArgs{RunID: runID}, nil)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE runs SET river_job_id=$2 WHERE id=$1`, runID, job.Job.ID); err != nil {
+		return 0, err
+	}
+	return runID, tx.Commit(ctx)
+}

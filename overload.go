@@ -81,6 +81,9 @@ type ModelProfile struct {
 	ReasoningParam  string
 	ReasoningEffort string
 	MaxOutputTokens int
+	// API is the request style: "" for Chat Completions, APIResponses for
+	// OpenAI's Responses API.
+	API string `json:",omitempty"`
 }
 
 type ReviewSettings struct {
@@ -96,7 +99,13 @@ type ReviewSettings struct {
 	ReasoningParam  string `json:"reasoning_param,omitempty"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
+	API             string `json:"api,omitempty"`
 }
+
+// APIResponses selects OpenAI's Responses API instead of Chat Completions.
+// Newer OpenAI reasoning models only accept tools together with a
+// reasoning effort there.
+const APIResponses = "responses"
 
 const MaxReviewConcurrency = 32
 
@@ -206,6 +215,15 @@ func (settings ReviewSettings) Validate() error {
 	if err := ValidateReasoning(settings.ReasoningParam, settings.ReasoningEffort, settings.MaxOutputTokens); err != nil {
 		return err
 	}
+	switch settings.API {
+	case "":
+	case APIResponses:
+		if settings.ReasoningParam == ReasoningChatTemplate {
+			return errors.New("the Responses API takes the reasoning_effort field, not the chat template switch")
+		}
+	default:
+		return errors.New("API must be empty (Chat Completions) or responses")
+	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {
 		return errors.New("invalid model base URL")
@@ -214,7 +232,7 @@ func (settings ReviewSettings) Validate() error {
 }
 
 func (settings ReviewSettings) Profile() ModelProfile {
-	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens}
+	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API}
 }
 
 type ReviewSpec struct {

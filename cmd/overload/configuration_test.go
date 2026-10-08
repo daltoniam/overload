@@ -10,6 +10,7 @@ import (
 
 type fakeConfigurationStore struct {
 	agent overload.AgentDefinition
+	tool  overload.ToolServer
 }
 
 func (store *fakeConfigurationStore) SaveAgent(_ context.Context, agent overload.AgentDefinition) error {
@@ -25,6 +26,39 @@ func (*fakeConfigurationStore) SaveBinding(context.Context, overload.TriggerBind
 }
 func (*fakeConfigurationStore) SaveRepository(context.Context, string, bool, bool) error { return nil }
 func (*fakeConfigurationStore) SaveSchedule(context.Context, overload.Schedule) error    { return nil }
+func (store *fakeConfigurationStore) SaveToolServer(_ context.Context, server overload.ToolServer) error {
+	if err := server.Validate(); err != nil {
+		return err
+	}
+	store.tool = server
+	return nil
+}
+
+func TestToolServerCLIInput(t *testing.T) {
+	for _, test := range []struct {
+		name, json, wantError string
+	}{
+		{"hosted switchboard", `{"name":"switchboard","url":"https://app.switchboard-mcp.com/orgs/acme/mcp","token_env":"OVERLOAD_TOOL_SWITCHBOARD","enabled":true}`, ""},
+		{"inline token refused", `{"name":"switchboard","url":"https://app.switchboard-mcp.com/mcp","token":"sb_secret"}`, "unknown field"},
+		{"wrong token variable", `{"name":"switchboard","url":"https://app.switchboard-mcp.com/mcp","token_env":"GITHUB_TOKEN"}`, "OVERLOAD_TOOL_"},
+		{"tools for a PR agent", `{"name":"lead","model":"qwen","prompt":"Review.","tools":["switchboard"]}`, "only scheduled agents"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeConfigurationStore{}
+			resource := "tools"
+			if strings.Contains(test.json, `"prompt"`) {
+				resource = "agents"
+			}
+			err := applyConfiguration(context.Background(), store, resource, strings.NewReader(test.json))
+			if test.wantError == "" && err != nil || test.wantError != "" && (err == nil || !strings.Contains(err.Error(), test.wantError)) || err != nil && strings.Contains(err.Error(), "sb_secret") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if err == nil && store.tool.TokenEnv != "OVERLOAD_TOOL_SWITCHBOARD" {
+				t.Fatalf("tool server not saved: %+v", store.tool)
+			}
+		})
+	}
+}
 
 func TestConfigurationCLIInput(t *testing.T) {
 	for _, test := range []struct {

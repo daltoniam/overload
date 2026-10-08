@@ -123,6 +123,7 @@ templ ScheduleForm(schedule overload.Schedule, workflows []overload.Workflow, no
 			<div class="actions"><button type="submit">Save schedule</button><a class="button secondary" href="/configure/schedules">Cancel</a></div>
 		</form></section>
 		if schedule.Name != "" {
+			<section class="panel"><h2>Run now</h2><p class="muted">Queues one run of the workflow with this schedule's saved input, outside its cron times.</p><form method="post" action={ templ.URL("/configure/schedules/" + schedule.Name + "/run") }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit">Run now</button></form></section>
 			<section class="panel"><h2>Delete schedule</h2><p class="muted">Schedules with run history cannot be deleted; disable the schedule to preserve its results.</p><form method="post" action={ templ.URL("/configure/schedules/" + schedule.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete schedule</button></form></section>
 		}
 	}

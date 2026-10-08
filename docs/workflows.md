@@ -48,7 +48,16 @@ overload workflows preview NAME < files.txt
 shows which agent would review each file, how many model calls that takes
 and roughly how long, without calling a model.
 
-## Scheduled prompts
+## Scheduled jobs
 
-Schedules run a workflow on a cron schedule with JSON input; see
-`overload schedules list|apply`.
+Schedules run a scheduled-prompt workflow on a cron schedule with JSON
+input; see `overload schedules list|apply`, and `overload schedules run
+NAME` (or **Run now** on the schedule's page) to run one immediately.
+
+Scheduled agents can call tools on MCP servers such as Switchboard; see
+[tools.md](tools.md). A scheduled workflow sets limits for those agents:
+
+| Field | What it does |
+| --- | --- |
+| `max_steps` | Model calls per agent (default 40, at most 200). On the last step the agent loses its tools and writes its report. |
+| `timeout_minutes` | Minutes per agent (default 30, at most 240). |

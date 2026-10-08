@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"slices"
 	"fmt"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
@@ -76,7 +77,7 @@ templ Agents(agents []overload.AgentDefinition) {
 	}
 }
 
-templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings, starters []StarterPrompt, nonce string) {
+templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings, starters []StarterPrompt, tools []overload.ToolServer, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Agent", CurrentPath: "/configure/agents"}) {
 		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/agents">Agents</a></p><h1>{ agentFormTitle(agent.Name) }</h1><p class="muted">An agent is a model and its instructions. For several focus areas, create one agent per area and add them to a workflow as sub-agents. Changes apply to future runs; runs already queued keep the instructions they started with.</p></div><a href="/configure/agents">All agents</a></div>
 		<section class="panel"><form method="post" action="/configure/agents"><input type="hidden" name="csrf" value={ nonce }/>
@@ -107,6 +108,19 @@ templ AgentForm(agent overload.AgentDefinition, models []overload.ReviewSettings
 					overload adds its own rules around these instructions: repository text is untrusted, and replies must be JSON findings. Do not put secrets here.
 				</small>
 			</label>
+			<fieldset class="tree-node"><legend>Tools (scheduled agents)</legend>
+				if len(tools) == 0 {
+					<p class="muted">No tool servers yet. <a href="/configure/tools/new">Connect Switchboard</a> to let scheduled agents call tools.</p>
+				}
+				for _, server := range tools {
+					<label class="check"><input type="checkbox" name="tools" value={ server.Name } checked?={ slices.Contains(agent.Tools, server.Name) }/> { server.Name }
+						if !server.Enabled {
+							(disabled)
+						}
+					</label>
+				}
+				<small>Only scheduled agents can use tools. The agent can call every tool the server offers with the server's token, so limit what that token can do (for Switchboard, an API key with a narrow policy).</small>
+			</fieldset>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ agent.Enabled }/> Allow this agent in future runs</label><p class="muted">Turn off to pause this agent without deleting its setup. Workflows using a disabled agent cannot start new runs; already queued runs keep their saved configuration.</p>
 			<div class="actions"><button type="submit">Save agent</button><a class="button secondary" href="/configure/agents">Cancel</a></div>
 		</form></section>

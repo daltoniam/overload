@@ -8,6 +8,7 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/charmbracelet/openai-go/option"
 	"github.com/daltoniam/overload"
 )
 
@@ -22,6 +23,18 @@ var localHTTPClient = func() *http.Client {
 }()
 
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
+	if model.API == overload.APIResponses {
+		options := []openai.Option{openai.WithBaseURL(model.BaseURL), openai.WithAPIKey(os.Getenv(model.APIKeyEnv)), openai.WithHeaders(model.Headers), openai.WithUseResponsesAPI(), openai.WithResponsesAPIFunc(func(string) bool { return true })}
+		if model.ConnectionKind != "hosted" {
+			options = append(options, openai.WithHTTPClient(localHTTPClient))
+		}
+		// Fantasy only sends reasoning settings for model names it knows, so
+		// set the field on every request instead.
+		if model.ReasoningParam == overload.ReasoningEffortField {
+			options = append(options, openai.WithSDKOptions(option.WithJSONSet("reasoning.effort", model.ReasoningEffort)))
+		}
+		return openai.New(options...)
+	}
 	options := []openaicompat.Option{openaicompat.WithBaseURL(model.BaseURL), openaicompat.WithAPIKey(os.Getenv(model.APIKeyEnv)), openaicompat.WithHeaders(model.Headers)}
 	if model.ConnectionKind == "hosted" {
 		options = append(options, openaicompat.WithLanguageModelOptions(openai.WithLanguageModelPrepareCallFunc(hostedPrepareCall)))
@@ -33,7 +46,7 @@ func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
 
 // newAgent builds a model client for one agent, applying its headers,
 // connection kind, reasoning style and output limit.
-func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt string) (fantasy.Agent, reasoningPlan, error) {
+func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt string, extra ...fantasy.AgentOption) (fantasy.Agent, reasoningPlan, error) {
 	if err := validateModelHeaders(model.Headers); err != nil {
 		return nil, reasoningPlan{}, err
 	}
@@ -46,7 +59,7 @@ func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt str
 		return nil, reasoningPlan{}, err
 	}
 	plan := planFor(model)
-	return fantasy.NewAgent(languageModel, reviewAgentOptions(plan, systemPrompt)...), plan, nil
+	return fantasy.NewAgent(languageModel, append(reviewAgentOptions(plan, systemPrompt), extra...)...), plan, nil
 }
 
 // Complete sends one prompt to a model with the same connection, reasoning

@@ -90,6 +90,11 @@ Everything in the UI is also available from the CLI as JSON
 a coding agent can configure overload too. [docs/workflows.md](docs/workflows.md)
 describes every workflow setting.
 
+Scheduled agents can also call tools on MCP servers such as
+[Switchboard](https://github.com/daltoniam/switchboard), for jobs like
+keeping an issue queue up to date every morning. See
+[docs/tools.md](docs/tools.md).
+
 ## Development
 
 Requires Go 1.26.5+ and Postgres (`overload install` or

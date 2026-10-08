@@ -160,10 +160,31 @@ type RunEvent struct {
 	Level   string
 	Step    string
 	Message string
+	// Input and Output hold a tool call's arguments and result (cut short)
+	// for "tool" events.
+	Input  string
+	Output string
+}
+
+// AddRunEvent records one entry on a run's timeline.
+func (s *Store) AddRunEvent(ctx context.Context, runID int64, event RunEvent) error {
+	data := map[string]string{}
+	if event.Input != "" {
+		data["input"] = event.Input
+	}
+	if event.Output != "" {
+		data["output"] = event.Output
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return err
+	}
+	_, err = s.Pool.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message, data) VALUES ($1, $2, $3, $4, $5)`, runID, event.Level, event.Step, overload.TruncateUTF8(event.Message, 1000), raw)
+	return err
 }
 
 func (s *Store) ListRunEvents(ctx context.Context, id int64) ([]RunEvent, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT at, level, step, message FROM run_events WHERE run_id = $1 ORDER BY at, id`, id)
+	rows, err := s.Pool.Query(ctx, `SELECT at, level, step, message, COALESCE(data->>'input',''), COALESCE(data->>'output','') FROM run_events WHERE run_id = $1 ORDER BY at, id`, id)
 	if err != nil {
 		return nil, err
 	}
@@ -171,7 +192,7 @@ func (s *Store) ListRunEvents(ctx context.Context, id int64) ([]RunEvent, error)
 	var events []RunEvent
 	for rows.Next() {
 		var event RunEvent
-		if err := rows.Scan(&event.At, &event.Level, &event.Step, &event.Message); err != nil {
+		if err := rows.Scan(&event.At, &event.Level, &event.Step, &event.Message, &event.Input, &event.Output); err != nil {
 			return nil, err
 		}
 		events = append(events, event)

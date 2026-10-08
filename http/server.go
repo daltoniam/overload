@@ -49,6 +49,12 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	if hasAppStore {
 		registerGitHubSetup(mux, appStore, csrf)
 	}
+	if tools, ok := reader.(ToolServerStore); ok {
+		registerTools(mux, tools, csrf)
+	}
+	if runner, ok := reader.(ScheduleRunner); ok {
+		registerScheduleRunner(mux, runner, csrf)
+	}
 	if provider, ok := reader.(TunnelProvider); ok && provider.Tunnel() != nil {
 		registerTunnel(mux, provider.Tunnel(), csrf)
 	}

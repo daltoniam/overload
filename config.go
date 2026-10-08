@@ -62,6 +62,8 @@ type AgentDefinition struct {
 	Prompt         string `json:"prompt"`
 	Enabled        bool   `json:"enabled"`
 	PromptRevision int    `json:"prompt_revision,omitempty"`
+	// Tools names the tool servers a scheduled agent can call.
+	Tools []string `json:"tools,omitempty"`
 }
 
 func (agent AgentDefinition) Validate() error {
@@ -74,7 +76,11 @@ func (agent AgentDefinition) Validate() error {
 	if agent.Kind != "" && agent.Kind != "pr_review" && agent.Kind != "scheduled_prompt" {
 		return errors.New("invalid agent type")
 	}
-	return nil
+	kind := agent.Kind
+	if kind == "" {
+		kind = "pr_review"
+	}
+	return validateAgentTools(kind, agent.Tools)
 }
 
 // MaxSubAgents caps sub-agents per workflow. A workflow's first agent is its
@@ -100,6 +106,10 @@ type Workflow struct {
 	// instructions; empty means no planner or verifier.
 	PlannerPrompt  string `json:"planner_prompt,omitempty"`
 	VerifierPrompt string `json:"verifier_prompt,omitempty"`
+	// MaxSteps and TimeoutMinutes limit each agent of a scheduled workflow;
+	// 0 means DefaultMaxSteps and DefaultTimeoutMinutes.
+	MaxSteps       int `json:"max_steps,omitempty"`
+	TimeoutMinutes int `json:"timeout_minutes,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -122,6 +132,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validatePromptText("the verifier prompt", workflow.VerifierPrompt, false); err != nil {
+		return err
+	}
+	if err := validateRunLimits(workflow.Kind, workflow.MaxSteps, workflow.TimeoutMinutes); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -165,6 +178,9 @@ type ResolvedAgent struct {
 	// agents had a single prompt; new snapshots never set it.
 	LegacyFocus PromptTemplate `json:"review_prompt,omitzero"`
 	Scope       Scope          `json:"scope"`
+	// Tools are the tool servers a scheduled agent can call, as configured
+	// when the run was queued.
+	Tools []ToolServer `json:"tools,omitempty"`
 }
 
 type ResolvedWorkflow struct {
@@ -179,6 +195,8 @@ type ResolvedWorkflow struct {
 	MaxFindings    int             `json:"max_findings,omitempty"`
 	PlannerPrompt  *PromptTemplate `json:"planner_prompt,omitempty"`
 	VerifierPrompt *PromptTemplate `json:"verifier_prompt,omitempty"`
+	MaxSteps       int             `json:"max_steps,omitempty"`
+	TimeoutMinutes int             `json:"timeout_minutes,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -203,6 +221,9 @@ func (workflow ResolvedWorkflow) Verify() error {
 		scopes[agent.Name] = agent.Scope
 	}
 	if err := validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: scopes, planner: workflow.PlannerPrompt != nil, verifier: workflow.VerifierPrompt != nil}); err != nil {
+		return err
+	}
+	if err := validateRunLimits(workflow.Kind, workflow.MaxSteps, workflow.TimeoutMinutes); err != nil {
 		return err
 	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {
@@ -230,6 +251,16 @@ func (workflow ResolvedWorkflow) Verify() error {
 		}
 		if agent.LegacyFocus.Kind != "" && (agent.LegacyFocus.Kind != "review" || PromptDigest(agent.LegacyFocus.Body) != agent.LegacyFocus.SHA256) {
 			return fmt.Errorf("agent %q review prompt does not match its pinned revision", agent.Name)
+		}
+		names := make([]string, 0, len(agent.Tools))
+		for _, server := range agent.Tools {
+			if err := server.Validate(); err != nil {
+				return fmt.Errorf("agent %q tool server %q: %w", agent.Name, server.Name, err)
+			}
+			names = append(names, server.Name)
+		}
+		if err := validateAgentTools(workflow.Kind, names); err != nil {
+			return fmt.Errorf("agent %q: %w", agent.Name, err)
 		}
 	}
 	return nil

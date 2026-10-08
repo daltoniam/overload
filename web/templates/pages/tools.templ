@@ -1,0 +1,94 @@
+package pages
+
+import (
+	"fmt"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+// ToolCheck is the result of connecting to a tool server from its page.
+type ToolCheck struct {
+	Tools []string
+	Error string
+}
+
+templ ToolServers(servers []overload.ToolServer) {
+	@layouts.Base(layouts.PageData{Title: "Tools", CurrentPath: "/configure/tools"}) {
+		<div class="page-header"><div><p class="eyebrow">Automation / Tools</p><h1>Tool servers</h1><p class="muted">MCP servers whose tools scheduled agents can call, such as a self-hosted Switchboard or hosted Switchboard. Pull request reviews never get tools: they read untrusted pull request text.</p></div><a class="button" href="/configure/tools/new">New tool server</a></div>
+		<section class="panel">
+			if len(servers) == 0 {
+				<div class="empty">No tool servers yet. <a href="/configure/tools/new">Connect Switchboard</a> to let scheduled agents work with GitHub, Linear, Slack and the other integrations it exposes.</div>
+			} else {
+				<div class="table-wrap"><table><thead><tr><th>Name</th><th>URL</th><th>Token variable</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+					for _, server := range servers {
+						<tr><td><a href={ templ.URL("/configure/tools/" + server.Name) }>{ server.Name }</a></td><td class="mono">{ safeEndpoint(server.URL) }</td><td><code>{ server.TokenEnv }</code></td><td><span class="badge neutral">{ enabledLabel(server.Enabled) }</span></td><td><a href={ templ.URL("/configure/tools/" + server.Name) }>View / edit</a></td></tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ ToolServerForm(server overload.ToolServer, check *ToolCheck, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Tool server", CurrentPath: "/configure/tools"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/tools">Tools</a> / Edit</p><h1>{ toolServerTitle(server.Name) }</h1><p class="muted">An MCP server reached over streamable HTTP. Agents see its tools as <code>{ toolPrefix(server.Name) }_&lt;tool&gt;</code>.</p></div><a href="/configure/tools">All tool servers</a></div>
+		<section class="panel"><form method="post" action="/configure/tools"><input type="hidden" name="csrf" value={ nonce }/>
+			if server.Name != "" {
+				<input type="hidden" name="existing" value={ server.Name }/>
+			}
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ server.Name } readonly?={ server.Name != "" } placeholder="switchboard"/></label>
+			<label class="field"><span>MCP URL</span><input name="url" type="url" required value={ server.URL } placeholder="https://app.switchboard-mcp.com/orgs/your-org/mcp"/><small>Hosted Switchboard: your organization's MCP URL. Self-hosted Switchboard: <code>http://127.0.0.1:3847/mcp</code>, or its cluster service address.</small></label>
+			<label class="field"><span>Token environment variable</span><input name="token_env" value={ server.TokenEnv } autocomplete="off" placeholder="OVERLOAD_TOOL_SWITCHBOARD"/><small>Sent as <code>Authorization: Bearer</code>. Only the variable name is stored; it must start with <code>{ overload.ToolTokenEnvPrefix }</code>. Leave empty for a server that needs no token, such as Switchboard on this machine.</small></label>
+			<label class="field"><span>Description (optional)</span><textarea name="description" maxlength="500" rows="3" placeholder="Switchboard for the acme org: GitHub, Linear, web search.">{ server.Description }</textarea><small>Shown to agents before each tool's own description.</small></label>
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ server.Enabled || server.Name == "" }/> Enabled</label><p class="muted">Workflows whose agents use a disabled server cannot start new runs.</p>
+			<div class="actions"><button type="submit">Save tool server</button><a class="button secondary" href="/configure/tools">Cancel</a></div>
+		</form></section>
+		if server.Name != "" {
+			<section class="panel"><h2>Check connection</h2><p class="muted">Connects with the token from the server's environment and lists the tools agents would get.</p>
+				<form method="get" action={ templ.URL("/configure/tools/" + server.Name) }><input type="hidden" name="check" value="1"/><button class="secondary" type="submit">Check connection</button></form>
+				if check != nil {
+					if check.Error != "" {
+						<p class="notice error">{ check.Error }</p>
+					} else {
+						<p class="notice">Connected. { pluralTools(len(check.Tools)) }:</p>
+						<ul>
+							for _, tool := range check.Tools {
+								<li><code>{ tool }</code></li>
+							}
+						</ul>
+					}
+				}
+			</section>
+			<section class="panel"><h2>Delete tool server</h2><p class="muted">Tool servers used by agents cannot be deleted. Disable it instead.</p><form method="post" action={ templ.URL("/configure/tools/" + server.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete tool server</button></form></section>
+		}
+	}
+}
+
+func toolServerTitle(name string) string {
+	if name == "" {
+		return "New tool server"
+	}
+	return name
+}
+
+func toolPrefix(name string) string {
+	if name == "" {
+		return "<name>"
+	}
+	return name
+}
+
+func enabledLabel(enabled bool) string {
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+func pluralTools(count int) string {
+	if count == 1 {
+		return "1 tool"
+	}
+	return fmt.Sprintf("%d tools", count)
+}

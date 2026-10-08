@@ -30,6 +30,7 @@ var (
 
 // reasoningPlan is how review requests to one model control thinking.
 type reasoningPlan struct {
+	api       string
 	param     string
 	effort    string
 	maxTokens int64
@@ -38,7 +39,7 @@ type reasoningPlan struct {
 
 func planFor(model overload.ModelProfile) reasoningPlan {
 	hosted := model.ConnectionKind == "hosted"
-	plan := reasoningPlan{param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout}
+	plan := reasoningPlan{api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout}
 	if hosted {
 		plan.timeout = hostedCallTimeout
 	}
@@ -71,6 +72,9 @@ func (plan reasoningPlan) providerOptions(effort string) fantasy.ProviderOptions
 		})
 	case overload.ReasoningEffortField:
 		level := openai.ReasoningEffort(effort)
+		if plan.api == overload.APIResponses {
+			return nil
+		}
 		return openaicompat.NewProviderOptions(&openaicompat.ProviderOptions{ReasoningEffort: &level})
 	default:
 		return nil

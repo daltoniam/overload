@@ -179,3 +179,6 @@ td.nowrap { white-space: nowrap; overflow-wrap: normal; width: 1%; }
 .steps .step > strong { display: block; margin-bottom: 4px; }
 .steps .step form { margin-top: 12px; }
 #tunnel-status .notice { margin-bottom: 16px; }
+.tool-call { margin-top: 6px; }
+.tool-call summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.tool-call pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; padding: 8px 10px; border-radius: 6px; font-size: 12px; margin: 6px 0; }
