@@ -655,8 +655,10 @@ pull request text.
   now**), which queues a run with trigger `manual`.
 - Model connections gained `api: responses`: newer OpenAI reasoning models
   (GPT-6.1 Sol) reject tools with `reasoning_effort` on Chat Completions.
-  Fantasy (upgraded to v0.45) only sends reasoning settings for model names
-  it recognizes, so overload sets `reasoning.effort` on each request.
+  Fantasy only sends reasoning settings for model names it recognizes
+  (`gpt-5`), so overload sets `reasoning.effort` on each request. Fantasy
+  0.44+ needs Go 1.27, which the Docker build and staticcheck do not
+  support yet, so overload stays on 0.40.
 
 Verified against a self-hosted Switchboard (GitHub) and hosted Switchboard
 with GPT-6.1 Sol through Cloudflare AI Gateway. The Switchboard
