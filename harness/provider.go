@@ -8,8 +8,8 @@ import (
 	"charm.land/fantasy"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
+	"github.com/charmbracelet/openai-go/option"
 	"github.com/daltoniam/overload"
-	"github.com/openai/openai-go/v3/option"
 )
 
 // localHTTPClient has no response-header timeout. Non-streaming calls to a
