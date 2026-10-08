@@ -249,6 +249,7 @@ func secure(next http.Handler) http.Handler {
 	password := os.Getenv("OVERLOAD_UI_PASSWORD")
 	insecure := os.Getenv("OVERLOAD_UI_INSECURE") == "1"
 	hosts := newHostPolicy(os.Getenv("OVERLOAD_BASE_URL"))
+	access, accessErr := accessFromEnv()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -260,7 +261,16 @@ func secure(next http.Handler) http.Handler {
 			http.Error(w, "Unknown host; set OVERLOAD_BASE_URL to the address you use", http.StatusMisdirectedRequest)
 			return
 		}
-		if !insecure {
+		if accessErr != nil {
+			http.Error(w, "Cloudflare Access is misconfigured", http.StatusInternalServerError)
+			return
+		}
+		if access != nil {
+			if _, err := access.verify(r.Context(), r.Header.Get(accessHeader)); err != nil {
+				http.Error(w, "Sign in through Cloudflare Access", http.StatusForbidden)
+				return
+			}
+		} else if !insecure {
 			givenUser, givenPassword, ok := r.BasicAuth()
 			if !ok || subtle.ConstantTimeCompare([]byte(givenUser), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(givenPassword), []byte(password)) != 1 {
 				w.Header().Set("WWW-Authenticate", `Basic realm="overload"`)
@@ -282,8 +292,15 @@ func secure(next http.Handler) http.Handler {
 }
 
 func ValidateAuth() error {
+	access, err := accessFromEnv()
+	if err != nil {
+		return err
+	}
+	if access != nil {
+		return nil
+	}
 	if os.Getenv("OVERLOAD_UI_INSECURE") != "1" && (os.Getenv("OVERLOAD_UI_USER") == "" || os.Getenv("OVERLOAD_UI_PASSWORD") == "") {
-		return errors.New("OVERLOAD_UI_USER and OVERLOAD_UI_PASSWORD required unless OVERLOAD_UI_INSECURE=1")
+		return errors.New("OVERLOAD_UI_USER and OVERLOAD_UI_PASSWORD required unless Cloudflare Access (OVERLOAD_ACCESS_TEAM_DOMAIN, OVERLOAD_ACCESS_AUD) or OVERLOAD_UI_INSECURE=1 is set")
 	}
 	return nil
 }

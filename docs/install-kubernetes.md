@@ -15,6 +15,7 @@ Kustomize in [`deploy/k8s`](../deploy/k8s):
 |---|---|
 | `base` | Namespace, non-root Deployment with a read-only root filesystem, Service, ServiceAccount without an API token |
 | `overlays/cloud` | A pinned image, an Ingress for the webhook path only, a NetworkPolicy |
+| `overlays/cloudflare`, `components/postgres` | No Ingress or load balancer: Cloudflare Tunnel, Cloudflare Access for the dashboard, an in-cluster Postgres; see [cloudflare-kubernetes.md](cloudflare-kubernetes.md) |
 | `overlays/kind`, `components/sandbox` | A self-contained test setup and sandboxed reviews (below) |
 
 You need:

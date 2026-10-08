@@ -114,7 +114,8 @@ Configuration via environment variables (flags override), loaded into one
 | `DATABASE_URL` | Postgres DSN |
 | `OVERLOAD_ADDR` | Listen address, default `:8080` |
 | `OVERLOAD_BASE_URL` | External URL, used for links in review comments |
-| `OVERLOAD_UI_USER`, `OVERLOAD_UI_PASSWORD` | Basic auth for the UI (required unless `OVERLOAD_UI_INSECURE=1`) |
+| `OVERLOAD_UI_USER`, `OVERLOAD_UI_PASSWORD` | Basic auth for the UI (required unless Cloudflare Access or `OVERLOAD_UI_INSECURE=1`) |
+| `OVERLOAD_ACCESS_TEAM_DOMAIN`, `OVERLOAD_ACCESS_AUD` | Cloudflare Access instead of basic auth: every UI request needs a valid `Cf-Access-Jwt-Assertion` for that application (RS256, team keys fetched hourly and on rotation) |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_WEBHOOK_SECRET` | GitHub App |
 | `OVERLOAD_SANDBOX_NAMESPACE`, `OVERLOAD_SANDBOX_WARMPOOL` | Agent Sandbox target |
 | `OVERLOAD_SANDBOX_CONNECTIVITY` | `port-forward` (dev, overload on host) or `in-cluster-service` |
@@ -782,6 +783,14 @@ state-changing forms, `SameSite=Strict` cookies, strict CSP.
 - **Kubernetes**: Kustomize base, a kind overlay with Postgres, and a sandbox
   component that runs webhook reviews in Agent Sandbox pods. Verified on
   disposable kind clusters by `make kind-test` and `make kind-sandbox-test`.
+- **Kubernetes behind Cloudflare** (`overlays/cloudflare`, 2026-10-08): no
+  Ingress or public IP. cloudflared pods carry the tunnel, a NetworkPolicy
+  lets only them reach the app, Cloudflare Access guards the UI and overload
+  verifies the Access token itself, and only `/webhooks/github` bypasses
+  Access. Running on DigitalOcean (`chapterchamp-k8s`, namespace
+  `overload`, `overload-review.daltoniam.com`) with Cloudflare AI Gateway
+  models, reviewing `daltoniam/switchboard` and `Vluxe/Switchboard-hosted`.
+  Guide: `docs/cloudflare-kubernetes.md`.
 
 ## 12. Status and roadmap
 
@@ -885,6 +894,23 @@ After:
 5. A reaper for sandbox claims left by a crashed worker; backup, restore and
    upgrade tests.
 6. Sentry and other signed webhook sources for generic jobs.
+7. Remote management: today the CLI configures overload by connecting to
+   Postgres (`DATABASE_URL`), so an agent must run next to the database
+   (`kubectl exec`). Add a token-authenticated JSON API for the same
+   resources (agents, workflows, bindings, repositories, schedules, model
+   settings, runs) and `overload --server URL` in the CLI, so coding agents
+   and automations can manage a remote overload. Behind Cloudflare Access,
+   clients authenticate with an Access service token; overload accepts the
+   service token's Access JWT like a user's.
+8. Tool-using agent jobs, to move the Orca switchboard automations (daily
+   integration research at 7:00 and implementation at 8:00 Central) onto
+   overload schedules. Scheduled prompts today are one model call without
+   tools, which cannot edit issues or open pull requests. Needed: a job
+   kind that runs a CLI harness (Crush) in a sandbox with a repository
+   checkout, scoped GitHub credentials (an App installation token limited
+   to the target repository), MCP access, time and token budgets, and the
+   transcript and outputs stored on the run. Research first (issues only,
+   no code), then implementation (branches and draft PRs, never merges).
 
 ## 13. Follow-ups (post v1, keep interfaces ready)
 

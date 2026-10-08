@@ -1,0 +1,28 @@
+# Only cloudflared reaches overload. kubectl port-forward still works (it
+# goes through the API server, which a NetworkPolicy does not block).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: overload-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: overload
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflared
+      ports:
+        - port: 8082
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudflared-no-ingress
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  policyTypes: [Ingress]

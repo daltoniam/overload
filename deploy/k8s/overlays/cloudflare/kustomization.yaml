@@ -1,0 +1,22 @@
+# Overload behind a Cloudflare Tunnel: no load balancer, no public IP and no
+# Ingress. cloudflared connects out to Cloudflare, Cloudflare Access protects
+# the dashboard, and only /webhooks/github is reachable without signing in.
+# See docs/cloudflare-kubernetes.md.
+#
+# Before applying, create the "overload", "overload-postgres" and
+# "cloudflared" Secrets. With a managed Postgres, remove the postgres
+# component and point DATABASE_URL at it.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: overload
+resources:
+  - ../../base
+  - cloudflared.yaml
+  - networkpolicy.yaml
+components:
+  - ../../components/postgres
+images:
+  - name: ghcr.io/daltoniam/overload
+    newTag: "0.1.0"
+  - name: cloudflare/cloudflared
+    newTag: "2026.10.0"

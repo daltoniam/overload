@@ -13,7 +13,9 @@ signed, so the webhook path is safe to expose; the UI is not meant to be
 public.
 
 You need a Cloudflare account with a domain whose DNS is on Cloudflare (the
-free plan is enough).
+free plan is enough). On Kubernetes, where the dashboard is also reached
+through the tunnel and protected by Cloudflare Access, follow
+[cloudflare-kubernetes.md](cloudflare-kubernetes.md) instead.
 
 ## One click on a Mac
 

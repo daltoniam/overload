@@ -194,15 +194,20 @@ image is built from `deploy/images/app/Dockerfile` and published to
 
 ## Kubernetes
 
-Tested on disposable kind clusters (kind v0.33, Agent Sandbox v1.0.4); not
-yet run on a managed provider.
+Tested on disposable kind clusters (kind v0.33, Agent Sandbox v1.0.4) and,
+with `overlays/cloudflare`, on DigitalOcean Kubernetes.
 
 - `deploy/k8s/base`: namespace, non-root app Deployment (read-only root,
   `/tmp` emptyDir, probes on `/healthz`), Service and ServiceAccount. It
   expects a Secret named `overload` with `DATABASE_URL`, `OVERLOAD_UI_USER`
   and `OVERLOAD_UI_PASSWORD`; bring your own Postgres.
-- `deploy/k8s/overlays/kind`: base plus a single-replica Postgres
-  StatefulSet and a network policy that lets only the app reach it.
+- `deploy/k8s/components/postgres`: a single-replica Postgres StatefulSet
+  and a network policy that lets only the app reach it.
+- `deploy/k8s/overlays/kind`: base plus `components/postgres`.
+- `deploy/k8s/overlays/cloudflare`: base, `components/postgres` and
+  cloudflared; only cloudflared can reach the app. Cloudflare Access guards
+  the UI (`OVERLOAD_ACCESS_TEAM_DOMAIN`, `OVERLOAD_ACCESS_AUD`). See
+  [docs/cloudflare-kubernetes.md](../docs/cloudflare-kubernetes.md).
 - `deploy/k8s/components/sandbox` and `overlays/kind-sandbox`: run webhook
   reviews in Agent Sandbox pods (`OVERLOAD_SANDBOX=agent-sandbox`), with a
   namespaced Role for sandbox claims and a warm pool. Needs the Agent Sandbox

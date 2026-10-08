@@ -18,6 +18,7 @@ GitHub App and posting reviews to real pull requests work and are tested.
 | Your Mac | Local or hosted | [docs/install-mac.md](docs/install-mac.md) |
 | A Linux server (DigitalOcean, AWS, …) | Hosted | [docs/install-linux.md](docs/install-linux.md) |
 | Kubernetes | Hosted | [docs/install-kubernetes.md](docs/install-kubernetes.md) |
+| Kubernetes behind Cloudflare Tunnel and Access (no public IP) | Hosted | [docs/cloudflare-kubernetes.md](docs/cloudflare-kubernetes.md) |
 | Receiving webhooks on a Mac or home server | | [docs/cloudflare-tunnel.md](docs/cloudflare-tunnel.md) |
 
 On a Mac, the short version is:

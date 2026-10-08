@@ -1,0 +1,8 @@
+# An in-cluster Postgres for clusters without a managed database. It reads
+# its password from the "overload-postgres" Secret; point DATABASE_URL at
+# postgres://overload:PASSWORD@postgres:5432/overload?sslmode=disable.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - postgres.yaml
+  - networkpolicy.yaml
