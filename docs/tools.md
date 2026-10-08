@@ -58,6 +58,30 @@ and add a tool server with its MCP URL, for example
 no token; if you expose it, put an authenticating proxy in front and give
 overload that token.
 
+## Add a browser
+
+[Playwright MCP](https://github.com/microsoft/playwright-mcp) is an MCP
+server with a real Chromium, so a browser is just another tool server:
+
+```sh
+npx @playwright/mcp@latest --headless --isolated --port 8931
+overload tools apply - <<'JSON'
+{"name":"browser","url":"http://localhost:8931/mcp","description":"Headless Chromium.","enabled":true}
+JSON
+```
+
+Agents then get `browser_navigate`, `browser_snapshot`, `browser_click`,
+`browser_fill_form`, `browser_take_screenshot` and so on, which is enough
+for UI smoke tests of a site the browser can reach (a staging deploy, a
+preview URL, or a service on the same machine). Run it next to overload, or
+as a separate Deployment on Kubernetes. `--isolated` gives each session a
+fresh profile. Keep it off the public internet: whoever can reach it
+controls the browser.
+
+The browser only tests what is already running. Building a branch and
+starting it to test it needs a workspace (checkout, shell, git), which
+overload does not provide.
+
 ## Give an agent tools
 
 1. Create an agent with job type **Scheduled prompt**, and tick its tool
