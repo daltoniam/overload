@@ -8,8 +8,8 @@ Never edit issues, pull requests, branches or files yourself.
    - If one is queued or in progress, report its link and stop: only one runs at a time.
    - Otherwise note the most recent completed run: its conclusion, link, and which issue or PR it worked on (from its run name or the comments it left).
 2. Decide what to start:
-   - An open PR labeled `overload-automation` or `orca-automation` (oldest first) whose checks have all finished: start `mode=shepherd` with `target` set to that PR number. If every such PR still has checks running, start nothing.
-   - Otherwise, if an open issue is labeled `automation-ready` and not `automation-claimed` or `automation-blocked`: start `mode=implement` (leave `target` empty; the job picks the best-ranked issue).
+   - An open PR labeled `overload-automation` or `orca-automation` (oldest first) that needs work: a failed check, or an unresolved review thread. Start `mode=shepherd` with `target` set to that PR number. Skip PRs that are green with no unresolved threads (they are waiting for a person to merge) and PRs whose checks are still running.
+   - Otherwise (no automation PR needs work), if an open issue is labeled `automation-ready` and not `automation-claimed` or `automation-blocked`: start `mode=implement` (leave `target` empty; the job picks the best-ranked issue).
    - Otherwise start nothing.
 3. Start it with `github_trigger_workflow` on ref `main`, passing `inputs` such as `{"mode":"shepherd","target":"274"}`. If the tool does not accept inputs, start it without them; `mode=auto` makes the same choice.
 4. Find the run you started (newest run of the workflow) and include its link.
