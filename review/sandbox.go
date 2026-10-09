@@ -23,6 +23,42 @@ type SandboxRunner struct {
 	Sandbox  overload.SandboxRunner
 	Workflow overload.ResolvedWorkflow
 	RunID    int64
+	// Models lets agents whose models need an API key reach them through
+	// overload's model proxy; without it such agents cannot run sandboxed.
+	Models ModelGrants
+}
+
+// ModelGrants issues short-lived model URLs for sandboxes, so API keys stay
+// in overload.
+type ModelGrants interface {
+	Grant(model overload.ModelProfile, ttl time.Duration) (baseURL string, revoke func())
+}
+
+// grantModels points agents whose models need an API key at the model
+// proxy. It copies the agents so the run's pinned workflow is unchanged.
+func (runner SandboxRunner) grantModels(ttl time.Duration) (overload.ResolvedWorkflow, func(), error) {
+	workflow := runner.Workflow
+	workflow.Agents = append([]overload.ResolvedAgent(nil), runner.Workflow.Agents...)
+	var revokes []func()
+	revokeAll := func() {
+		for _, revoke := range revokes {
+			revoke()
+		}
+	}
+	for index, agent := range workflow.Agents {
+		if agent.Model.APIKeyEnv == "" {
+			continue
+		}
+		if runner.Models == nil {
+			revokeAll()
+			return workflow, nil, fmt.Errorf("agent %s needs API key %s; credentials are not sent into sandboxes, so enable the model proxy (OVERLOAD_MODEL_PROXY_URL)", agent.Name, agent.Model.APIKeyEnv)
+		}
+		base, revoke := runner.Models.Grant(agent.Model, ttl)
+		revokes = append(revokes, revoke)
+		agent.Model.BaseURL, agent.Model.APIKeyEnv, agent.Model.Headers = base, "", nil
+		workflow.Agents[index] = agent
+	}
+	return workflow, revokeAll, nil
 }
 
 const sandboxReviewCommand = "set -e; mkdir repo; tar -xzf head.tar.gz -C repo --strip-components=1 --no-same-owner --no-same-permissions; rm head.tar.gz; overload-agent review --spec spec.json --repo repo --out result.json --timeout %s"
@@ -31,12 +67,12 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if runner.Source == nil || runner.Sandbox == nil {
 		return overload.ReviewSpec{}, overload.ReviewResult{}, "", errors.New("PR source and sandbox required")
 	}
-	for _, agent := range runner.Workflow.Agents {
-		if agent.Model.APIKeyEnv != "" {
-			return overload.ReviewSpec{}, overload.ReviewResult{}, "", fmt.Errorf("agent %s needs API key %s; credentials are not sent into sandboxes", agent.Name, agent.Model.APIKeyEnv)
-		}
+	workflow, revoke, err := runner.grantModels(maxAgentTimeout)
+	if err != nil {
+		return overload.ReviewSpec{}, overload.ReviewResult{}, "", err
 	}
-	spec, archive, sha, err := fetchPR(ctx, runner.Source, runner.Workflow, repo, prNumber)
+	defer revoke()
+	spec, archive, sha, err := fetchPR(ctx, runner.Source, workflow, repo, prNumber)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}

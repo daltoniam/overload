@@ -665,6 +665,29 @@ with GPT-6.1 Sol through Cloudflare AI Gateway. The Switchboard
 integration research job runs as an overload schedule
 (`switchboard-integration-research`, prompt in `docs/examples/switchboard-integration-research.md`).
 
+### 7.10 Workspace backends and the model proxy
+
+**Decision (2026-10-09): overload does not run workspaces itself.** Work
+that needs a checkout, a shell, Docker or a browser of the branch under
+test runs on a backend that already isolates and cleans up (GitHub
+Actions, Agent Sandbox, a hosted sandbox service, a trusted dev box).
+Overload schedules it, starts it, and records the outcome. A backend that
+exposes MCP tools can later be wired as a per-run tool server, so agents
+step through it under overload's limits.
+
+- First backend, by hand: GitHub Actions. Switchboard's
+  `overload-implement.yml` (`workflow_dispatch`, one pass per run, never
+  merges) replaces the Orca implementation job; an overload schedule
+  (`switchboard-implement`, prompt in
+  `docs/examples/switchboard-implement-dispatch.md`) decides whether to
+  start it and reports the previous run.
+- Agent Sandbox now works with hosted models: the **model proxy**
+  (`modelproxy`, port 8083, `OVERLOAD_MODEL_PROXY_URL`) gives each sandbox
+  a short-lived per-model URL; it adds the API key and forwards only
+  `chat/completions` and `responses` for the granted model. Sandbox pods
+  may reach overload only on 8083. The agent image is published to
+  `ghcr.io/daltoniam/overload-agent` with each release.
+
 ## 8. Data model (initial)
 
 ```

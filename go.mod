@@ -2,6 +2,8 @@ module github.com/daltoniam/overload
 
 go 1.27.0
 
+toolchain go1.27.2
+
 require (
 	charm.land/fantasy v0.45.0
 	github.com/a-h/templ v0.3.1001

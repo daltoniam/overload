@@ -1,0 +1,30 @@
+# The Cloudflare overlay with reviews run in Agent Sandbox pods. Hosted
+# models are reached through overload's model proxy, so API keys never
+# enter a sandbox. Needs the Agent Sandbox controller; see
+# docs/cloudflare-kubernetes.md#sandboxed-reviews.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: overload
+resources:
+  - ../cloudflare
+components:
+  - ../../components/sandbox
+images:
+  - name: overload-agent
+    newName: ghcr.io/daltoniam/overload-agent
+    newTag: "0.3.0"
+patches:
+  - target:
+      kind: SandboxWarmPool
+      name: overload-agent
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: SandboxTemplate
+      name: overload-agent
+    patch: |-
+      - op: replace
+        path: /spec/podTemplate/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

@@ -180,6 +180,14 @@ gh pr view 123 --json files -q '.files[].path' |
   kubectl -n overload exec -i deploy/overload -- overload workflows preview my-workflow -
 ```
 
+## Sandboxed reviews
+
+`overlays/cloudflare-sandbox` adds Agent Sandbox: each review unpacks and
+reads the pull request in an isolated pod that reaches hosted models only
+through overload's model proxy, so API keys stay in overload. See
+[install-kubernetes.md](install-kubernetes.md#sandboxed-reviews) for the
+controller install and how the proxy works.
+
 ## Upgrading
 
 Change the image tag in `kustomization.yaml` and apply again. The

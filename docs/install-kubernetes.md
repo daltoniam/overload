@@ -130,14 +130,35 @@ Open <http://127.0.0.1:8082> and sign in with `OVERLOAD_UI_USER` and
 ## Sandboxed reviews
 
 `components/sandbox` runs each review in an isolated
-[Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod with
-no network access except the model server. API keys are never sent into
-sandboxes, so this mode only works with **model servers inside the cluster
-that need no key** (for example vLLM on GPU nodes). With hosted models,
-reviews run in the overload pod itself; overload only reads the pull
-request's files there and never runs its code. The sandbox setup is tested
-on kind with `make kind-sandbox-test`; see
-[deploy/README.md](../deploy/README.md#kubernetes).
+[Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) pod. The
+pull request is unpacked and read only inside that pod, which can reach
+nothing but DNS, in-cluster model servers labeled `overload.dev/model:
+"true"`, and overload's **model proxy** on port 8083.
+
+API keys never enter a sandbox. For a model that needs a key, overload
+gives the sandbox a short-lived proxy URL for that one model (valid for the
+review); the proxy adds the key and forwards only chat completion and
+Responses API requests naming that model. Set `OVERLOAD_MODEL_PROXY_URL`
+(the component sets `http://overload:8083`) to enable it.
+
+1. Install the Agent Sandbox controller (cluster-wide CRDs and a controller
+   in `agent-sandbox-system`):
+
+   ```sh
+   kubectl apply --server-side -f https://github.com/kubernetes-sigs/agent-sandbox/releases/download/v1.0.4/sandbox-with-extensions.yaml
+   ```
+
+2. Add `components/sandbox` to your overlay and set the agent image, as
+   `overlays/cloudflare-sandbox` does:
+   `ghcr.io/daltoniam/overload-agent:<version>`. The warm pool keeps idle
+   sandbox pods ready (two by default; that overlay uses one).
+
+3. Apply, then check that a sandbox pod is ready:
+   `kubectl -n overload get sandboxes,pods -l app.kubernetes.io/name=overload-agent`.
+
+Your network plugin must enforce NetworkPolicy (Cilium on DigitalOcean
+does) or the sandbox is not isolated; `make kind-sandbox-test` probes the
+same rules on kind.
 
 ## Upgrading
 

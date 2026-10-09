@@ -135,7 +135,11 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	client, err := queue.NewClient(store, 2, int((260*time.Minute)/time.Second), runner)
+	models, err := modelProxyFromEnvironment(ctx, runner != nil)
+	if err != nil {
+		return err
+	}
+	client, err := queue.NewClient(store, 2, int((260*time.Minute)/time.Second), runner, models)
 	if err != nil {
 		return err
 	}

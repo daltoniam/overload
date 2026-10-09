@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/modelproxy"
 	"github.com/daltoniam/overload/review"
 	"github.com/daltoniam/overload/sandbox"
 	gh "github.com/google/go-github/v75/github"
@@ -144,4 +145,72 @@ func TestSandboxRunnerClosesSandboxOnFailure(t *testing.T) {
 	if err == nil || boxes.started != 1 || boxes.closed != 1 {
 		t.Fatalf("err=%v started=%d closed=%d", err, boxes.started, boxes.closed)
 	}
+}
+
+func TestSandboxRunnerReachesKeyedModelsThroughProxy(t *testing.T) {
+	if _, err := exec.LookPath("tar"); err != nil {
+		t.Skip("tar required")
+	}
+	buildAgent(t)
+	t.Setenv("OVERLOAD_MODEL_PROXY_TEST", "hosted-secret")
+	var gotAuth string
+	var specSawKey bool
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		content := `{"summary":"Issue","findings":[{"path":"file.go","line":1,"side":"RIGHT","severity":"high","category":"bug","title":"Bug","body":"Fix it","confidence":0.9,"evidence":"dangerous()"}]}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"hosted-m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, content)
+	}))
+	defer model.Close()
+	proxyServer := httptest.NewUnstartedServer(nil)
+	proxy := modelproxy.New("http://" + proxyServer.Listener.Addr().String())
+	proxyServer.Config.Handler = proxy
+	proxyServer.Start()
+	defer proxyServer.Close()
+	entry := "Hosted entry"
+	workflow := overload.ResolvedWorkflow{Name: "hosted", Kind: "pr_review", Revision: 1, Agents: []overload.ResolvedAgent{{Name: "hosted", Model: overload.ModelProfile{Provider: "openaicompat", ConnectionKind: "hosted", BaseURL: model.URL, Model: "hosted-m", APIKeyEnv: "OVERLOAD_MODEL_PROXY_TEST"}, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}}}}
+	boxes := &specSandbox{onSpec: func(spec string) {
+		specSawKey = strings.Contains(spec, "OVERLOAD_MODEL_PROXY_TEST") || strings.Contains(spec, model.URL)
+	}}
+	runner := review.SandboxRunner{Source: archiveSource{headArchive(t, map[string]string{"file.go": "dangerous()\n"})}, Sandbox: boxes, Workflow: workflow, RunID: 8, Models: proxy}
+	_, result, _, err := runner.Review(context.Background(), "acme/api", 3)
+	if err != nil || result.Error != "" || len(result.Findings) != 1 {
+		t.Fatalf("err=%v result=%+v", err, result)
+	}
+	if gotAuth != "Bearer hosted-secret" {
+		t.Fatalf("model saw auth %q, want the key added by the proxy", gotAuth)
+	}
+	if specSawKey {
+		t.Fatal("the sandbox spec named the key variable or the real model URL")
+	}
+	if runner.Workflow.Agents[0].Model.BaseURL != model.URL {
+		t.Fatal("the run's pinned workflow was changed")
+	}
+}
+
+type specSandbox struct {
+	sandbox.Local
+	onSpec func(string)
+}
+
+func (runner *specSandbox) Start(ctx context.Context, opts overload.SandboxOptions) (overload.Sandbox, error) {
+	box, err := runner.Local.Start(ctx, opts)
+	return &specHandle{Sandbox: box, onSpec: runner.onSpec}, err
+}
+
+type specHandle struct {
+	overload.Sandbox
+	onSpec func(string)
+}
+
+func (handle *specHandle) Upload(ctx context.Context, name string, reader io.Reader) error {
+	if name == "spec.json" {
+		raw, err := io.ReadAll(reader)
+		if err != nil {
+			return err
+		}
+		handle.onSpec(string(raw))
+		reader = bytes.NewReader(raw)
+	}
+	return handle.Sandbox.Upload(ctx, name, reader)
 }

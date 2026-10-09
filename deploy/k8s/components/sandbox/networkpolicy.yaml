@@ -1,0 +1,18 @@
+# Sandbox pods may reach overload only on the model proxy port. Policies
+# add up, so this works next to overlays that limit overload's other ports.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: overload-model-proxy
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: overload
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: overload-agent
+      ports:
+        - port: 8083

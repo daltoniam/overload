@@ -23,6 +23,7 @@ type ReviewWorker struct {
 	Store   *postgres.Store
 	Source  reviewpkg.PullRequestSource
 	Sandbox overload.SandboxRunner
+	Models  reviewpkg.ModelGrants
 }
 
 func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewArgs]) error {
@@ -81,7 +82,7 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	}
 	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved}
 	if w.Sandbox != nil {
-		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID}
+		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models}
 	}
 	spec, result, sha, reviewErr := runner.Review(ctx, repoName, run.PRNumber)
 	if name, ok := result.Metrics["sandbox"].(string); ok {
@@ -198,9 +199,9 @@ func planPosting(dryRun, enabled bool) postingPlan {
 	}
 }
 
-func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner) (*river.Client[pgx.Tx], error) {
+func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner, models reviewpkg.ModelGrants) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox})
+	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models})
 	river.AddWorker(workers, &ScheduleWorker{Store: store})
 	river.AddWorker(workers, &PostWorker{Store: store})
 	return river.NewClient(riverpgxv5.New(store.Pool), &river.Config{

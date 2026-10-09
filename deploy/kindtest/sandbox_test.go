@@ -58,6 +58,9 @@ func TestKindSandboxReview(t *testing.T) {
 	if out, err := c.run("kubectl", "--kubeconfig", c.kubeconfig, "-n", "overload", "exec", agentPod, "--", "bash", "-c", "timeout 5 bash -c '</dev/tcp/fake-model.overload.svc/8080'"); err != nil {
 		t.Fatalf("sandbox pod cannot reach the model: %v\n%s", err, out)
 	}
+	if out, err := c.run("kubectl", "--kubeconfig", c.kubeconfig, "-n", "overload", "exec", agentPod, "--", "bash", "-c", "timeout 5 bash -c '</dev/tcp/overload.overload.svc/8083'"); err != nil {
+		t.Fatalf("sandbox pod cannot reach the model proxy: %v\n%s", err, out)
+	}
 	for _, blocked := range []string{"postgres.overload.svc/5432", "overload.overload.svc/8082", "kubernetes.default.svc/443", "1.1.1.1/443", "api.github.com/443"} {
 		if out, err := c.run("kubectl", "--kubeconfig", c.kubeconfig, "-n", "overload", "exec", agentPod, "--", "bash", "-c", "timeout 5 bash -c '</dev/tcp/"+blocked+"'"); err == nil {
 			t.Fatalf("sandbox pod reached %s; egress policy not enforced\n%s", blocked, out)

@@ -116,8 +116,13 @@ func TestKindInstall(t *testing.T) {
 
 func (c *cluster) waitReady() {
 	c.t.Helper()
-	c.kubectl("-n", "overload", "rollout", "status", "statefulset/postgres", "--timeout=180s")
-	c.kubectl("-n", "overload", "rollout", "status", "deployment/overload", "--timeout=180s")
+	for _, target := range []string{"statefulset/postgres", "deployment/overload"} {
+		if out, err := c.run("kubectl", "--kubeconfig", c.kubeconfig, "--context", "kind-"+c.name, "-n", "overload", "rollout", "status", target, "--timeout=300s"); err != nil {
+			pods, _ := c.run("kubectl", "--kubeconfig", c.kubeconfig, "--context", "kind-"+c.name, "-n", "overload", "get", "pods,events", "-o", "wide")
+			logs, _ := c.run("kubectl", "--kubeconfig", c.kubeconfig, "--context", "kind-"+c.name, "-n", "overload", "logs", target, "--tail=40", "--all-containers")
+			c.t.Fatalf("%s not ready: %v\n%s\n%s\n%s", target, err, out, pods, logs)
+		}
+	}
 }
 
 func (c *cluster) portForward() (string, func()) {

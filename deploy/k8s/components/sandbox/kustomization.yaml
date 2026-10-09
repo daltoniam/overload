@@ -3,6 +3,7 @@ kind: Component
 resources:
   - rbac.yaml
   - sandbox.yaml
+  - networkpolicy.yaml
 patches:
   - target:
       kind: ServiceAccount
@@ -30,3 +31,23 @@ patches:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: OVERLOAD_MODEL_PROXY_URL
+          value: http://overload:8083
+      - op: add
+        path: /spec/template/spec/containers/0/ports/-
+        value:
+          name: model-proxy
+          containerPort: 8083
+  - target:
+      kind: Service
+      name: overload
+    patch: |-
+      - op: add
+        path: /spec/ports/-
+        value:
+          name: model-proxy
+          port: 8083
+          targetPort: model-proxy
