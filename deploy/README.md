@@ -195,7 +195,9 @@ image is built from `deploy/images/app/Dockerfile` and published to
 ## Kubernetes
 
 Tested on disposable kind clusters (kind v0.33, Agent Sandbox v1.0.4) and,
-with `overlays/cloudflare`, on DigitalOcean Kubernetes.
+with `overlays/cloudflare` and `overlays/cloudflare-sandbox` (Agent
+Sandbox reviews with hosted models through the model proxy), on
+DigitalOcean Kubernetes.
 
 - `deploy/k8s/base`: namespace, non-root app Deployment (read-only root,
   `/tmp` emptyDir, probes on `/healthz`), Service and ServiceAccount. It

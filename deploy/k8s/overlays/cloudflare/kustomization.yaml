@@ -17,6 +17,6 @@ components:
   - ../../components/postgres
 images:
   - name: ghcr.io/daltoniam/overload
-    newTag: "0.2.0"
+    newTag: "0.3.0"
   - name: cloudflare/cloudflared
     newTag: "2026.10.0"
