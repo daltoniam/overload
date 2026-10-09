@@ -102,6 +102,18 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 			<label class="field"><span>File review limit</span><input type="number" name="max_file_reviews" min="0" max="10000" value={ optionalNumber(workflow.MaxFileReviews) } placeholder="No limit"/><small>Most (agent, file) reviews per run. A review needing more fails before calling a model; planner additions are dropped first.</small></label>
 			<label class="field"><span>Findings posted per review</span><input type="number" name="max_findings" min="0" max={ fmt.Sprint(overload.MaxFindingsLimit) } value={ optionalNumber(workflow.MaxFindings) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxFindings) }/><small>The most severe findings are posted; the rest stay on the run as dropped. Raise it for workflows with several focused sub-agents.</small></label>
 		</fieldset>
+		<fieldset class="tree-node"><legend>Review decision</legend>
+			<label class="field"><span>Decision</span><select name="review_decision">
+				<option value="comment" selected?={ workflow.ReviewDecision == "" }>Comment only</option>
+				<option value="request_changes" selected?={ workflow.ReviewDecision == overload.ReviewDecisionRequestChanges }>Request changes on blocking findings</option>
+				<option value="approve" selected?={ workflow.ReviewDecision == overload.ReviewDecisionApprove }>Request changes on blocking findings, approve otherwise</option>
+			</select><small>Overload withdraws its own request for changes once a later review finds nothing blocking. It never approves a partial review. Approvals count toward required reviews only if your branch protection accepts reviews from GitHub Apps.</small></label>
+			<label class="field"><span>Blocking severity</span><select name="block_severity">
+				for _, severity := range []string{"critical", "high", "medium", "low"} {
+					<option value={ severity } selected?={ blockSeverity(workflow) == severity }>{ severity } and above</option>
+				}
+			</select><small>Findings at this severity or above request changes. Issues already reported on earlier commits that are still present keep counting.</small></label>
+		</fieldset>
 	} else {
 		<fieldset class="tree-node"><legend>Limits for agents with tools</legend>
 			<label class="field"><span>Steps per agent</span><input type="number" name="max_steps" min="0" max={ fmt.Sprint(overload.MaxStepsLimit) } value={ optionalNumber(workflow.MaxSteps) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxSteps) }/><small>A step is one model call. On its last step an agent loses its tools and must write its report.</small></label>
@@ -169,4 +181,11 @@ templ Confirmation(action string, nonce string, values map[string][]string) {
 		}
 		<div class="actions"><a class="button secondary" href="/">Cancel</a><button class="danger" type="submit">Confirm deletion</button></div>
 	</form></section>
+}
+
+func blockSeverity(workflow overload.Workflow) string {
+	if workflow.BlockSeverity == "" {
+		return overload.DefaultBlockSeverity
+	}
+	return workflow.BlockSeverity
 }

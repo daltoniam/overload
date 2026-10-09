@@ -201,38 +201,79 @@ func (client *Client) SetWebhookURL(ctx context.Context, webhookURL string) erro
 	return err
 }
 
-// FindReview returns the ID of a review overload already posted on the PR
-// whose body ends with marker, or 0. Reviews by anyone else are ignored, so
-// a PR author cannot fake a marker to stop overload from posting.
-func (client *Client) FindReview(ctx context.Context, installationID int64, repository string, number int, marker string) (int64, error) {
+// ChangesRequested returns overload's own reviews on the PR that still
+// request changes. Reviews by anyone else are never returned.
+func (client *Client) ChangesRequested(ctx context.Context, installationID int64, repository string, number int) ([]int64, error) {
+	var ids []int64
+	err := client.ownReviews(ctx, installationID, repository, number, func(review *gh.PullRequestReview) bool {
+		if review.GetState() == "CHANGES_REQUESTED" {
+			ids = append(ids, review.GetID())
+		}
+		return false
+	})
+	return ids, err
+}
+
+// DismissReview dismisses one of overload's reviews with message.
+func (client *Client) DismissReview(ctx context.Context, installationID int64, repository string, number int, reviewID int64, message string) error {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	api, err := client.installation(installationID)
 	if err != nil {
-		return 0, err
+		return err
+	}
+	_, _, err = api.PullRequests.DismissReview(ctx, owner, repo, number, reviewID, &gh.PullRequestReviewDismissalRequest{Message: gh.Ptr(message)})
+	return err
+}
+
+// ownReviews calls visit for each review overload posted on the PR, until
+// visit returns true.
+func (client *Client) ownReviews(ctx context.Context, installationID int64, repository string, number int, visit func(*gh.PullRequestReview) bool) error {
+	owner, repo, err := splitRepository(repository)
+	if err != nil {
+		return err
+	}
+	api, err := client.installation(installationID)
+	if err != nil {
+		return err
 	}
 	login, err := client.author(ctx)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	options := &gh.ListOptions{PerPage: 100}
 	for {
 		reviews, response, err := api.PullRequests.ListReviews(ctx, owner, repo, number, options)
 		if err != nil {
-			return 0, err
+			return err
 		}
 		for _, review := range reviews {
-			if strings.EqualFold(review.GetUser().GetLogin(), login) && strings.HasSuffix(strings.TrimSpace(review.GetBody()), marker) {
-				return review.GetID(), nil
+			if strings.EqualFold(review.GetUser().GetLogin(), login) && visit(review) {
+				return nil
 			}
 		}
 		if response.NextPage == 0 {
-			return 0, nil
+			return nil
 		}
 		options.Page = response.NextPage
 	}
+}
+
+// FindReview returns the ID of a review overload already posted on the PR
+// whose body ends with marker, or 0. Reviews by anyone else are ignored, so
+// a PR author cannot fake a marker to stop overload from posting.
+func (client *Client) FindReview(ctx context.Context, installationID int64, repository string, number int, marker string) (int64, error) {
+	var found int64
+	err := client.ownReviews(ctx, installationID, repository, number, func(review *gh.PullRequestReview) bool {
+		if strings.HasSuffix(strings.TrimSpace(review.GetBody()), marker) {
+			found = review.GetID()
+			return true
+		}
+		return false
+	})
+	return found, err
 }
 
 // ErrReviewRejected means GitHub refused the review itself, for example
@@ -240,7 +281,9 @@ func (client *Client) FindReview(ctx context.Context, installationID int64, repo
 // push. Posting the same review again would fail the same way.
 var ErrReviewRejected = errors.New("GitHub rejected the review")
 
-func (client *Client) PostReview(ctx context.Context, installationID int64, repository string, number int, sha, summary string, findings []overload.Finding) (int64, error) {
+// PostReview posts a review with the given event (COMMENT, REQUEST_CHANGES
+// or APPROVE) and one comment per finding.
+func (client *Client) PostReview(ctx context.Context, installationID int64, repository string, number int, sha, event, summary string, findings []overload.Finding) (int64, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
 		return 0, err
@@ -254,7 +297,7 @@ func (client *Client) PostReview(ctx context.Context, installationID int64, repo
 		body := "**" + finding.Title + "** (" + finding.Severity + ")\n\n" + finding.Body
 		comments = append(comments, &gh.DraftReviewComment{Path: gh.Ptr(finding.Path), Line: gh.Ptr(finding.Line), Side: gh.Ptr("RIGHT"), Body: gh.Ptr(body)})
 	}
-	review, _, err := api.PullRequests.CreateReview(ctx, owner, repo, number, &gh.PullRequestReviewRequest{CommitID: gh.Ptr(sha), Body: gh.Ptr(summary), Event: gh.Ptr("COMMENT"), Comments: comments})
+	review, _, err := api.PullRequests.CreateReview(ctx, owner, repo, number, &gh.PullRequestReviewRequest{CommitID: gh.Ptr(sha), Body: gh.Ptr(summary), Event: gh.Ptr(event), Comments: comments})
 	var response *gh.ErrorResponse
 	if errors.As(err, &response) && response.Response != nil && response.Response.StatusCode == http.StatusUnprocessableEntity {
 		return 0, fmt.Errorf("%w: %s", ErrReviewRejected, overload.TruncateUTF8(response.Message, 300))

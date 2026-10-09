@@ -23,6 +23,13 @@ type PostTarget struct {
 	InstallationID int64
 	Findings       []overload.Finding
 	Duplicates     []int64
+	// DuplicateSeverities are the severities of findings already posted on
+	// an earlier commit and still present; they count toward the review
+	// decision without being commented again.
+	DuplicateSeverities []string
+	// ReviewDecision and BlockSeverity come from the run's pinned workflow.
+	ReviewDecision string
+	BlockSeverity  string
 	// Partial is set when the review completed degraded, for example
 	// because a sub-agent failed.
 	Partial bool
@@ -41,7 +48,7 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')) FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded)
+	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')), COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', '') FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.ReviewDecision, &target.BlockSeverity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}
@@ -66,6 +73,7 @@ FROM findings f JOIN runs r ON r.id = f.run_id WHERE f.run_id = $1 AND f.status 
 		}
 		if duplicate {
 			target.Duplicates = append(target.Duplicates, finding.ID)
+			target.DuplicateSeverities = append(target.DuplicateSeverities, finding.Severity)
 		} else {
 			target.Findings = append(target.Findings, finding)
 		}

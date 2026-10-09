@@ -531,6 +531,9 @@ func (workflow *Workflow) Normalize() {
 	workflow.Name = strings.TrimSpace(workflow.Name)
 	workflow.PlannerPrompt = normalizePrompt(workflow.PlannerPrompt)
 	workflow.VerifierPrompt = normalizePrompt(workflow.VerifierPrompt)
+	if workflow.ReviewDecision == ReviewDecisionComment {
+		workflow.ReviewDecision, workflow.BlockSeverity = "", ""
+	}
 	if workflow.MainReviews == MainReviewsAll {
 		workflow.MainReviews = ""
 	}

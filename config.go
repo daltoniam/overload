@@ -110,6 +110,10 @@ type Workflow struct {
 	// 0 means DefaultMaxSteps and DefaultTimeoutMinutes.
 	MaxSteps       int `json:"max_steps,omitempty"`
 	TimeoutMinutes int `json:"timeout_minutes,omitempty"`
+	// ReviewDecision and BlockSeverity decide whether a PR review only
+	// comments, requests changes or approves; see ReviewEvent.
+	ReviewDecision string `json:"review_decision,omitempty"`
+	BlockSeverity  string `json:"block_severity,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -135,6 +139,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateRunLimits(workflow.Kind, workflow.MaxSteps, workflow.TimeoutMinutes); err != nil {
+		return err
+	}
+	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -197,6 +204,8 @@ type ResolvedWorkflow struct {
 	VerifierPrompt *PromptTemplate `json:"verifier_prompt,omitempty"`
 	MaxSteps       int             `json:"max_steps,omitempty"`
 	TimeoutMinutes int             `json:"timeout_minutes,omitempty"`
+	ReviewDecision string          `json:"review_decision,omitempty"`
+	BlockSeverity  string          `json:"block_severity,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -224,6 +233,9 @@ func (workflow ResolvedWorkflow) Verify() error {
 		return err
 	}
 	if err := validateRunLimits(workflow.Kind, workflow.MaxSteps, workflow.TimeoutMinutes); err != nil {
+		return err
+	}
+	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
 		return err
 	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {

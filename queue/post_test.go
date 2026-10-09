@@ -15,10 +15,25 @@ import (
 )
 
 type fakePoster struct {
-	reject   bool
-	existing int64
-	posts    [][]overload.Finding
-	summary  string
+	reject    bool
+	existing  int64
+	posts     [][]overload.Finding
+	events    []string
+	summary   string
+	standing  []int64
+	dismissed []int64
+}
+
+func (poster *fakePoster) ChangesRequested(context.Context, int64, string, int) ([]int64, error) {
+	return poster.standing, nil
+}
+
+func (poster *fakePoster) DismissReview(_ context.Context, _ int64, _ string, _ int, reviewID int64, message string) error {
+	if message == "" {
+		return fmt.Errorf("dismissal without a message")
+	}
+	poster.dismissed = append(poster.dismissed, reviewID)
+	return nil
 }
 
 func (poster *fakePoster) FindReview(_ context.Context, installationID int64, _ string, _ int, marker string) (int64, error) {
@@ -28,11 +43,12 @@ func (poster *fakePoster) FindReview(_ context.Context, installationID int64, _ 
 	return poster.existing, nil
 }
 
-func (poster *fakePoster) PostReview(_ context.Context, _ int64, _ string, _ int, _ string, summary string, findings []overload.Finding) (int64, error) {
+func (poster *fakePoster) PostReview(_ context.Context, _ int64, _ string, _ int, _ string, event, summary string, findings []overload.Finding) (int64, error) {
 	if poster.reject {
 		return 0, fmt.Errorf("%w: commit_id is not part of the pull request", github.ErrReviewRejected)
 	}
 	poster.posts = append(poster.posts, findings)
+	poster.events = append(poster.events, event)
 	poster.summary = summary
 	poster.existing = int64(1000 + len(poster.posts))
 	return poster.existing, nil
@@ -200,6 +216,126 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, disabled).Scan(&postStatus); err != nil || postStatus != "posting_disabled" || len(poster.posts) != 2 {
 		t.Fatalf("posted with switch off: %q %d", postStatus, len(poster.posts))
 	}
+}
+
+func TestPostWorkerReviewDecisions(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL required")
+	}
+	t.Setenv("OVERLOAD_ENABLE_POSTING", "1")
+	ctx := context.Background()
+	store, err := postgres.Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Pool.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := time.Now().UnixNano()
+	installationID := id % 1_000_000_000_000
+	repo := fmt.Sprintf("test-decision-%d/api", id)
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM findings WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1)`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE full_name=$1`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM github_installations WHERE id=$1`, installationID)
+	})
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO github_installations (id, account_login, account_type) VALUES ($1,'acme','Organization')`, installationID); err != nil {
+		t.Fatal(err)
+	}
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name, enabled, dry_run, installation_id) VALUES ($1, true, false, $2) RETURNING id`, repo, installationID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	pr := 10
+	newRun := func(decision string, findings ...overload.Finding) int64 {
+		t.Helper()
+		pr++
+		snapshot := fmt.Sprintf(`{"review_decision":%q}`, decision)
+		var runID int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, post_status, installation_id, config_snapshot) VALUES ($1, $2, $3, $4, 'webhook', 'completed', false, 'queued', $5, $6) RETURNING id`, repoID, pr, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID, snapshot).Scan(&runID); err != nil {
+			t.Fatal(err)
+		}
+		tx, err := store.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := postgres.InsertFindings(ctx, tx, runID, repo, pr, "pending", findings); err != nil {
+			t.Fatal(err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return runID
+	}
+	finding := func(severity string) overload.Finding {
+		return overload.Finding{Path: "a.go", Line: 3, Side: "RIGHT", Severity: severity, Category: "bug", Title: severity + " bug", Body: "b", Confidence: 0.9, Evidence: "x()"}
+	}
+	work := func(poster *fakePoster, runID int64) string {
+		t.Helper()
+		if err := (&PostWorker{Store: store, Poster: poster}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: runID}}); err != nil {
+			t.Fatal(err)
+		}
+		var status string
+		if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, runID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		return status
+	}
+	tests := []struct {
+		name          string
+		decision      string
+		findings      []overload.Finding
+		standing      []int64
+		wantStatus    string
+		wantEvent     string
+		wantDismissed []int64
+	}{
+		{"comment mode is unchanged", "", []overload.Finding{finding("critical")}, []int64{9}, "posted", overload.ReviewComment, nil},
+		{"blocking finding requests changes", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("high")}, []int64{9}, "posted", overload.ReviewRequestChanges, nil},
+		{"minor finding comments and withdraws earlier request", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("low")}, []int64{9}, "posted", overload.ReviewComment, []int64{9}},
+		{"clean review withdraws earlier request", overload.ReviewDecisionRequestChanges, nil, []int64{9}, "nothing_new", "", []int64{9}},
+		{"clean review approves", overload.ReviewDecisionApprove, nil, nil, "posted", overload.ReviewApprove, nil},
+		{"approve with minor findings", overload.ReviewDecisionApprove, []overload.Finding{finding("medium")}, []int64{9}, "posted", overload.ReviewApprove, []int64{9}},
+		{"approve mode still blocks", overload.ReviewDecisionApprove, []overload.Finding{finding("critical")}, nil, "posted", overload.ReviewRequestChanges, nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			poster := &fakePoster{standing: tt.standing}
+			status := work(poster, newRun(tt.decision, tt.findings...))
+			if status != tt.wantStatus {
+				t.Fatalf("status %q, want %q", status, tt.wantStatus)
+			}
+			if tt.wantEvent == "" && len(poster.events) != 0 || tt.wantEvent != "" && (len(poster.events) != 1 || poster.events[0] != tt.wantEvent) {
+				t.Fatalf("events %v, want %q", poster.events, tt.wantEvent)
+			}
+			if len(poster.dismissed)+len(tt.wantDismissed) > 0 && fmt.Sprint(poster.dismissed) != fmt.Sprint(tt.wantDismissed) {
+				t.Fatalf("dismissed %v, want %v", poster.dismissed, tt.wantDismissed)
+			}
+		})
+	}
+
+	t.Run("still-present blocking issue keeps the earlier request", func(t *testing.T) {
+		first := newRun(overload.ReviewDecisionRequestChanges, finding("critical"))
+		poster := &fakePoster{}
+		if status := work(poster, first); status != "posted" || poster.events[0] != overload.ReviewRequestChanges {
+			t.Fatalf("first review %q %v", status, poster.events)
+		}
+		pr--
+		again := newRun(overload.ReviewDecisionRequestChanges, finding("critical"))
+		poster = &fakePoster{standing: []int64{1001}}
+		if status := work(poster, again); status != "nothing_new" || len(poster.events) != 0 || len(poster.dismissed) != 0 {
+			t.Fatalf("repeat review %q events=%v dismissed=%v", status, poster.events, poster.dismissed)
+		}
+		pr--
+		withdrawn := newRun(overload.ReviewDecisionRequestChanges, finding("critical"))
+		poster = &fakePoster{}
+		if status := work(poster, withdrawn); status != "posted" || len(poster.events) != 1 || poster.events[0] != overload.ReviewRequestChanges || len(poster.posts[0]) != 0 || !strings.Contains(poster.summary, "still present") {
+			t.Fatalf("earlier request was dismissed by someone; expected a new request: %q %v %q", status, poster.events, poster.summary)
+		}
+	})
 }
 
 func TestPlanPosting(t *testing.T) {

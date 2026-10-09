@@ -190,3 +190,16 @@ func TestWorkflowTreeEditor(t *testing.T) {
 		t.Fatalf("number message: %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestWorkflowFormReviewDecision(t *testing.T) {
+	values := url.Values{"name": {"review"}, "kind": {"pr_review"}, "main_agent": {"lead"}, "review_decision": {"approve"}, "block_severity": {"medium"}}
+	workflow, err := workflowFromForm(values)
+	if err != nil || workflow.ReviewDecision != overload.ReviewDecisionApprove || workflow.BlockSeverity != "medium" || workflow.Validate() != nil {
+		t.Fatalf("workflow %+v err %v", workflow, err)
+	}
+	values.Set("review_decision", "comment")
+	workflow, err = workflowFromForm(values)
+	if err != nil || workflow.ReviewDecision != "" || workflow.BlockSeverity != "" || workflow.Validate() != nil {
+		t.Fatalf("comment mode should store nothing: %+v %v", workflow, err)
+	}
+}

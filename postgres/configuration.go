@@ -186,7 +186,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -221,6 +221,8 @@ type workflowRouting struct {
 	VerifierRevisionID int64                     `json:"verifier_prompt_revision_id,omitempty"`
 	MaxSteps           int                       `json:"max_steps,omitempty"`
 	TimeoutMinutes     int                       `json:"timeout_minutes,omitempty"`
+	ReviewDecision     string                    `json:"review_decision,omitempty"`
+	BlockSeverity      string                    `json:"block_severity,omitempty"`
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -245,6 +247,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 		}
 		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.MaxFindings = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
 		workflow.MaxSteps, workflow.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
+		workflow.ReviewDecision, workflow.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()
@@ -278,6 +281,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	}
 	result.SkipPaths, result.MainReviews, result.MaxFileReviews, result.MaxFindings = routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
 	result.MaxSteps, result.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
+	result.ReviewDecision, result.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue

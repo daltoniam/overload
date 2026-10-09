@@ -186,7 +186,7 @@ func TestPostReviewRejection(t *testing.T) {
 	if client.api.BaseURL, err = url.Parse(server.URL + "/"); err != nil {
 		t.Fatal(err)
 	}
-	_, err = client.PostReview(context.Background(), 0, "acme/api", 5, strings.Repeat("a", 40), "summary", nil)
+	_, err = client.PostReview(context.Background(), 0, "acme/api", 5, strings.Repeat("a", 40), "COMMENT", "summary", nil)
 	if !errors.Is(err, ErrReviewRejected) {
 		t.Fatalf("422 not reported as a rejection: %v", err)
 	}
@@ -216,5 +216,48 @@ func TestSetWebhookURL(t *testing.T) {
 	}
 	if got["url"] != "https://overload.example.com/webhooks/github" || got["content_type"] != "json" {
 		t.Fatalf("hook config %v", got)
+	}
+}
+
+func TestChangesRequestedAndDismissOnlyOwnReviews(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	var dismissed, message string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app":
+			_, _ = w.Write([]byte(`{"slug":"overload-test"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token":"installation-token","expires_at":"2099-01-01T00:00:00Z"}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/api/pulls/5/reviews":
+			_, _ = w.Write([]byte(`[{"id":1,"user":{"login":"mallory"},"state":"CHANGES_REQUESTED"},{"id":2,"user":{"login":"overload-test[bot]"},"state":"COMMENTED"},{"id":3,"user":{"login":"overload-test[bot]"},"state":"CHANGES_REQUESTED"},{"id":4,"user":{"login":"overload-test[bot]"},"state":"DISMISSED"}]`))
+		case r.Method == http.MethodPut && r.URL.Path == "/repos/acme/api/pulls/5/reviews/3/dismissals":
+			var body struct {
+				Message string `json:"message"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			dismissed, message = "3", body.Message
+			_, _ = w.Write([]byte(`{"id":3,"state":"DISMISSED"}`))
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(9, pemKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.baseURL = server.URL
+	ids, err := client.ChangesRequested(context.Background(), 7, "acme/api", 5)
+	if err != nil || len(ids) != 1 || ids[0] != 3 {
+		t.Fatalf("ids=%v err=%v; want only overload's own standing request", ids, err)
+	}
+	if err := client.DismissReview(context.Background(), 7, "acme/api", 5, 3, "nothing blocking"); err != nil || dismissed != "3" || message != "nothing blocking" {
+		t.Fatalf("dismiss: %v %q %q", err, dismissed, message)
 	}
 }

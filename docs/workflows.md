@@ -32,6 +32,16 @@ eight) are **sub-agents**.
 | `max_findings` | Caps the findings posted per review (default 10, at most 50), most severe first. The rest stay on the run as dropped. |
 | `planner_prompt` | One call on the main agent's model that can send extra files to sub-agents whatever their path. Empty means no planner. |
 | `verifier_prompt` | One call per sub-agent finding that keeps or drops it before posting. Empty means no verifier. |
+| `review_decision` | `comment` (default) posts findings as comments. `request_changes` requests changes when a finding is at or above `block_severity`. `approve` does that and approves a complete review with nothing blocking. |
+| `block_severity` | `critical`, `high` (default), `medium` or `low`: the lowest severity that requests changes. |
+
+With a review decision, overload withdraws (dismisses) its own earlier
+request for changes once a later review of the pull request finds nothing
+blocking, so a fixed pull request is not left blocked. A blocking issue
+still present from an earlier commit keeps counting even though it is not
+commented again. A partial review (a sub-agent failed) never approves.
+Approvals from GitHub Apps count toward required reviews only if branch
+protection accepts them.
 
 Planner assignments only add reviews: the main agent still reviews every
 file no sub-agent's paths matched. The verifier never drops critical or
