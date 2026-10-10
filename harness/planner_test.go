@@ -3,7 +3,9 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -34,7 +36,12 @@ func (model *fakeModel) serve(t *testing.T) *httptest.Server {
 			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
+			// A review that fails cancels its other in-flight requests, so
+			// a body cut off mid-read is the client giving up, not a bug.
+			if !errors.Is(err, io.ErrUnexpectedEOF) && r.Context().Err() == nil {
+				t.Error(err)
+			}
+			return
 		}
 		system, user := request.Messages[0].Content, request.Messages[len(request.Messages)-1].Content
 		path := ""
