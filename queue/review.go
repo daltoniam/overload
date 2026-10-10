@@ -98,11 +98,11 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	}
 	if reviewErr != nil {
 		slog.Error("PR review failed", "run_id", runID, "repository", repoName, "error", reviewErr)
-		return w.failRun(ctx, runID, "review_failed", "PR review failed; inspect worker logs")
+		return w.failRun(ctx, runID, "review_failed", "PR review failed: "+reviewErr.Error())
 	}
 	if result.Error != "" {
 		slog.Error("model review failed", "run_id", runID, "repository", repoName, "error", result.Error)
-		return w.failRun(ctx, runID, "model_failed", "Model review failed")
+		return w.failRun(ctx, runID, "model_failed", "Model review failed: "+result.Error)
 	}
 	if err := w.finishReview(ctx, run, repoName, spec, result, sha); err != nil {
 		return err
@@ -130,6 +130,9 @@ func appClient(ctx context.Context, store *postgres.Store) (*github.Client, erro
 func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message string) error {
 	message = overload.TruncateUTF8(message, 500)
 	_, err := w.Store.Pool.Exec(context.WithoutCancel(ctx), `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1 AND status='running'`, runID, code, message)
+	if err == nil {
+		_, err = w.Store.Pool.Exec(context.WithoutCancel(ctx), `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'error', 'failed', $2)`, runID, message)
+	}
 	reportStatus(ctx, w.Store, w.Status, runID, statusError, "Review failed: "+message)
 	return err
 }
