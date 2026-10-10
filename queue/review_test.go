@@ -39,7 +39,7 @@ func TestReviewWorkerTransitions(t *testing.T) {
 		t.Fatalf("run: %+v %v", run, err)
 	}
 	events, err := store.ListRunEvents(ctx, id)
-	if err != nil || len(events) != 1 {
+	if err != nil || len(events) != 2 || events[1].Level != "error" || events[1].Message != "Pinned PR workflow is unavailable" {
 		t.Fatalf("events: %+v %v", events, err)
 	}
 	if err := worker.Work(ctx, &river.Job[postgres.ReviewArgs]{Args: postgres.ReviewArgs{RunID: id}}); err != nil {
