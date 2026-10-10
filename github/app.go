@@ -81,6 +81,7 @@ func Manifest(name, baseURL, webhookURL string) (string, error) {
 			"contents":      "read",
 			"metadata":      "read",
 			"pull_requests": "write",
+			"statuses":      "write",
 		},
 		DefaultEvents: []string{"pull_request"},
 	})

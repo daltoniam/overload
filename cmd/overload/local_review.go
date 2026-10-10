@@ -13,14 +13,18 @@ import (
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/harness"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/queue"
 	reviewpkg "github.com/daltoniam/overload/review"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 type reviewOptions struct {
 	repo, workflow, profile, model, modelURL, promptProfile string
 	pr, concurrency                                         int
 	timeout                                                 time.Duration
+	queue                                                   bool
 }
 
 func parseReviewOptions(args []string) (reviewOptions, error) {
@@ -35,6 +39,7 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 	flags.StringVar(&options.promptProfile, "prompt-profile", "", "built-in prompt: context or switchboard-go")
 	flags.DurationVar(&options.timeout, "timeout", 260*time.Minute, "maximum review duration (up to 5h)")
 	flags.IntVar(&options.concurrency, "concurrency", 0, "changed files reviewed at once (overrides the saved model)")
+	flags.BoolVar(&options.queue, "queue", false, "queue a review on the overload server like a newly opened PR (uses the repository's binding and posting settings) instead of reviewing here")
 	if err := flags.Parse(args); err != nil {
 		return options, err
 	}
@@ -47,6 +52,8 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 		return options, fmt.Errorf("concurrency must be between 1 and %d", overload.MaxReviewConcurrency)
 	case options.workflow != "" && (options.profile != "" || options.model != "" || options.modelURL != "" || options.promptProfile != ""):
 		return options, errors.New("--workflow cannot be combined with model or prompt overrides")
+	case options.queue && (options.workflow != "" || options.profile != "" || options.model != "" || options.modelURL != "" || options.promptProfile != "" || options.concurrency != 0):
+		return options, errors.New("--queue uses the repository's binding; it cannot be combined with workflow, model or prompt options")
 	}
 	return options, nil
 }
@@ -90,6 +97,9 @@ func inlineReview(args []string) error {
 	options, err := parseReviewOptions(args)
 	if err != nil {
 		return err
+	}
+	if options.queue {
+		return queueReview(options)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
@@ -167,4 +177,33 @@ func inlineReview(args []string) error {
 		fmt.Printf("Run %d: /runs/%d\n", runID, runID)
 	}
 	return nil
+}
+
+// queueReview queues a server-side review of a pull request's current head,
+// with the repository's binding and posting settings.
+func queueReview(options reviewOptions) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	store, err := database(ctx)
+	if err != nil {
+		return err
+	}
+	defer store.Pool.Close()
+	if err := store.Migrate(ctx); err != nil {
+		return err
+	}
+	reader, err := queue.AppClient(ctx, store)
+	if err != nil {
+		return fmt.Errorf("GitHub App unavailable: %w", err)
+	}
+	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+	if err != nil {
+		return err
+	}
+	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Printf("Queued run %d: /runs/%d (the overload server runs it)\n", runID, runID)
+	return err
 }

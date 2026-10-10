@@ -195,6 +195,16 @@ type serverStore struct {
 	jobs   *river.Client[pgx.Tx]
 }
 
+// RequestReview queues a review of a pull request's current head on this
+// server's job queue.
+func (store serverStore) RequestReview(ctx context.Context, repository string, number int) (int64, error) {
+	reader, err := queue.AppClient(ctx, store.Store)
+	if err != nil {
+		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
+	}
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number)
+}
+
 // RunScheduleNow queues a schedule's workflow on this server's job queue.
 func (store serverStore) RunScheduleNow(ctx context.Context, name string) (int64, error) {
 	return store.Store.RunScheduleNow(ctx, store.jobs, name)

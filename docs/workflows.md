@@ -47,6 +47,22 @@ Planner assignments only add reviews: the main agent still reviews every
 file no sub-agent's paths matched. The verifier never drops critical or
 security findings, because it reads untrusted pull request text.
 
+## Commit status and reviewing on demand
+
+Overload sets an `overload` commit status on the pull request's head:
+pending while it reviews, then success, or failure when the review
+requests changes (and error if the review fails). Dry-run repositories get
+no status. Make it a required check in branch protection to hold merges
+until overload has reviewed. The GitHub App needs **Commit statuses: Read
+and write**; Apps created before this was added must grant it in their
+settings, and each installation must accept it.
+
+Pull requests opened before overload was watching (or that you want
+reviewed again) can be queued by hand: **Review now** on the repository's
+page, or `overload review --repo owner/name --pr 123 --queue`. It runs like
+a newly opened pull request: the repository's `opened` binding, its posting
+settings, and no second review of a head that already has one.
+
 ## Preview before you run
 
 **Preview routing** on the workflow page, or

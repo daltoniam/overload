@@ -24,6 +24,8 @@ type ReviewWorker struct {
 	Source  reviewpkg.PullRequestSource
 	Sandbox overload.SandboxRunner
 	Models  reviewpkg.ModelGrants
+	// Status sets commit statuses; nil uses the GitHub App.
+	Status StatusSetter
 }
 
 func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewArgs]) error {
@@ -55,6 +57,7 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
+	reportStatus(ctx, w.Store, w.Status, runID, statusPending, "Reviewing")
 	run, resolved, repoName, err := w.Store.LoadRunWorkflow(ctx, runID)
 	if err != nil || resolved.Kind != "pr_review" || resolved.Verify() != nil {
 		return w.failRun(ctx, runID, "invalid_workflow", "Pinned PR workflow is unavailable")
@@ -107,6 +110,12 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	return nil
 }
 
+// AppClient returns the GitHub App client from the environment or the
+// App stored by the setup flow.
+func AppClient(ctx context.Context, store *postgres.Store) (*github.Client, error) {
+	return appClient(ctx, store)
+}
+
 func appClient(ctx context.Context, store *postgres.Store) (*github.Client, error) {
 	if os.Getenv("GITHUB_APP_ID") != "" {
 		return github.FromEnvironment()
@@ -121,6 +130,7 @@ func appClient(ctx context.Context, store *postgres.Store) (*github.Client, erro
 func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message string) error {
 	message = overload.TruncateUTF8(message, 500)
 	_, err := w.Store.Pool.Exec(context.WithoutCancel(ctx), `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1 AND status='running'`, runID, code, message)
+	reportStatus(ctx, w.Store, w.Status, runID, statusError, "Review failed: "+message)
 	return err
 }
 
@@ -175,7 +185,17 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	if _, err := finalTx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'completed', $2)`, runID, message); err != nil {
 		return err
 	}
-	return finalTx.Commit(ctx)
+	if err := finalTx.Commit(ctx); err != nil {
+		return err
+	}
+	if !plan.enqueue {
+		state, description := finalStatus(overload.ReviewComment, len(result.Findings))
+		if plan.postStatus != "" {
+			description += " (not posted: posting is off)"
+		}
+		reportStatus(ctx, w.Store, w.Status, runID, state, description)
+	}
+	return nil
 }
 
 type postingPlan struct {

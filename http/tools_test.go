@@ -13,6 +13,7 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/queue"
 )
 
 type toolStore struct {
@@ -122,5 +123,52 @@ func TestToolServerPages(t *testing.T) {
 	post("/configure/schedules/research/run", url.Values{"csrf": {csrf}}, http.StatusSeeOther, "/runs/77")
 	if len(store.ran) != 1 || store.ran[0] != "research" {
 		t.Fatalf("ran %v", store.ran)
+	}
+}
+
+type reviewRequestStore struct {
+	crudStore
+	requested []string
+	fail      error
+}
+
+func (store *reviewRequestStore) RequestReview(_ context.Context, repository string, number int) (int64, error) {
+	store.requested = append(store.requested, fmt.Sprintf("%s#%d", repository, number))
+	return 91, store.fail
+}
+
+func TestReviewNowForm(t *testing.T) {
+	t.Setenv("OVERLOAD_UI_INSECURE", "1")
+	store := &reviewRequestStore{crudStore: crudStore{repos: []overload.Repository{{ID: 1, FullName: "owner/repo", Enabled: true}}}}
+	handler := Handler(store)
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/configure/repositories/%d", store.repos[0].ID), nil))
+	if !strings.Contains(page.Body.String(), "Review now") {
+		t.Fatalf("repository page has no Review now form: %d", page.Code)
+	}
+	csrf := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(page.Body.String())[1]
+	post := func(form url.Values) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, fmt.Sprintf("/configure/repositories/%d/review", store.repos[0].ID), strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	repo := store.repos[0].FullName
+	if response := post(url.Values{"repository": {repo}, "pr": {"296"}}); response.Code != http.StatusForbidden {
+		t.Fatalf("no CSRF token: %d", response.Code)
+	}
+	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"abc"}}); response.Code != http.StatusBadRequest {
+		t.Fatalf("bad number: %d", response.Code)
+	}
+	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"#296"}}); response.Code != http.StatusSeeOther || !strings.HasPrefix(response.Header().Get("Location"), "/runs/91") {
+		t.Fatalf("queue: %d %s", response.Code, response.Header().Get("Location"))
+	}
+	store.fail = fmt.Errorf("%w: #296 is a draft", queue.ErrReviewNotQueued)
+	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"296"}}); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "is a draft") {
+		t.Fatalf("refusal: %d %s", response.Code, response.Body.String())
+	}
+	if strings.Join(store.requested, ",") != repo+"#296,"+repo+"#296" {
+		t.Fatalf("requested %v", store.requested)
 	}
 }

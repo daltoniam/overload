@@ -1179,14 +1179,14 @@ func RepositoryForm(repo overload.Repository, bindings []overload.TriggerBinding
 						}
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 108, "</select></label><button type=\"submit\">Add or update binding</button></form></section><section class=\"panel\"><h2>Remove repository</h2><p class=\"muted\">Repositories with bindings or runs cannot be deleted. Disable processing to keep their history.</p><form method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 108, "</select></label><button type=\"submit\">Add or update binding</button></form></section><section class=\"panel\"><h2>Review a pull request</h2><p class=\"muted\">Queues a review of the pull request's current head as if it had just been opened: it uses this repository's \"opened\" binding and posting settings. Use it for pull requests opened before overload was watching. A head that already has a review is not reviewed again.</p><form method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var61 templ.SafeURL
-				templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(fmt.Sprintf("/configure/repositories/%d/delete", repo.ID)))
+				templ_7745c5c3_Var61, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(fmt.Sprintf("/configure/repositories/%d/review", repo.ID)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 181, Col: 265}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 182, Col: 101}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var61))
 				if templ_7745c5c3_Err != nil {
@@ -1199,13 +1199,52 @@ func RepositoryForm(repo overload.Repository, bindings []overload.TriggerBinding
 				var templ_7745c5c3_Var62 string
 				templ_7745c5c3_Var62, templ_7745c5c3_Err = templ.JoinStringErrs(nonce)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 181, Col: 314}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 182, Col: 150}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var62))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 110, "\"><button class=\"danger\" type=\"submit\">Delete repository</button></form></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 110, "\"><input type=\"hidden\" name=\"repository\" value=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var63 string
+				templ_7745c5c3_Var63, templ_7745c5c3_Err = templ.JoinStringErrs(repo.FullName)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 182, Col: 214}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var63))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 111, "\"> <label class=\"field\"><span>Pull request number</span><input name=\"pr\" required inputmode=\"numeric\" pattern=\"#?[0-9]+\" placeholder=\"296\"></label><div class=\"actions\"><button type=\"submit\" class=\"secondary\">Review now</button></div></form></section><section class=\"panel\"><h2>Remove repository</h2><p class=\"muted\">Repositories with bindings or runs cannot be deleted. Disable processing to keep their history.</p><form method=\"post\" action=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var64 templ.SafeURL
+				templ_7745c5c3_Var64, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(fmt.Sprintf("/configure/repositories/%d/delete", repo.ID)))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 187, Col: 265}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var64))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 112, "\"><input type=\"hidden\" name=\"csrf\" value=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var65 string
+				templ_7745c5c3_Var65, templ_7745c5c3_Err = templ.JoinStringErrs(nonce)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/configuration_crud.templ`, Line: 187, Col: 314}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var65))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, "\"><button class=\"danger\" type=\"submit\">Delete repository</button></form></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}

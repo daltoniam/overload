@@ -24,6 +24,20 @@ type fakePoster struct {
 	dismissed []int64
 }
 
+type fakeStatus struct {
+	states []string
+	shas   []string
+}
+
+func (status *fakeStatus) SetStatus(_ context.Context, installationID int64, _ string, sha, state, description, _ string) error {
+	if installationID < 1 || description == "" {
+		return fmt.Errorf("bad status")
+	}
+	status.states = append(status.states, state)
+	status.shas = append(status.shas, sha)
+	return nil
+}
+
 func (poster *fakePoster) ChangesRequested(context.Context, int64, string, int) ([]int64, error) {
 	return poster.standing, nil
 }
@@ -273,9 +287,10 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 	finding := func(severity string) overload.Finding {
 		return overload.Finding{Path: "a.go", Line: 3, Side: "RIGHT", Severity: severity, Category: "bug", Title: severity + " bug", Body: "b", Confidence: 0.9, Evidence: "x()"}
 	}
+	statuses := &fakeStatus{}
 	work := func(poster *fakePoster, runID int64) string {
 		t.Helper()
-		if err := (&PostWorker{Store: store, Poster: poster}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: runID}}); err != nil {
+		if err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: runID}}); err != nil {
 			t.Fatal(err)
 		}
 		var status string
@@ -292,19 +307,24 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		wantStatus    string
 		wantEvent     string
 		wantDismissed []int64
+		wantState     string
 	}{
-		{"comment mode is unchanged", "", []overload.Finding{finding("critical")}, []int64{9}, "posted", overload.ReviewComment, nil},
-		{"blocking finding requests changes", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("high")}, []int64{9}, "posted", overload.ReviewRequestChanges, nil},
-		{"minor finding comments and withdraws earlier request", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("low")}, []int64{9}, "posted", overload.ReviewComment, []int64{9}},
-		{"clean review withdraws earlier request", overload.ReviewDecisionRequestChanges, nil, []int64{9}, "nothing_new", "", []int64{9}},
-		{"clean review approves", overload.ReviewDecisionApprove, nil, nil, "posted", overload.ReviewApprove, nil},
-		{"approve with minor findings", overload.ReviewDecisionApprove, []overload.Finding{finding("medium")}, []int64{9}, "posted", overload.ReviewApprove, []int64{9}},
-		{"approve mode still blocks", overload.ReviewDecisionApprove, []overload.Finding{finding("critical")}, nil, "posted", overload.ReviewRequestChanges, nil},
+		{"comment mode is unchanged", "", []overload.Finding{finding("critical")}, []int64{9}, "posted", overload.ReviewComment, nil, "success"},
+		{"blocking finding requests changes", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("high")}, []int64{9}, "posted", overload.ReviewRequestChanges, nil, "failure"},
+		{"minor finding comments and withdraws earlier request", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("low")}, []int64{9}, "posted", overload.ReviewComment, []int64{9}, "success"},
+		{"clean review withdraws earlier request", overload.ReviewDecisionRequestChanges, nil, []int64{9}, "nothing_new", "", []int64{9}, "success"},
+		{"clean review approves", overload.ReviewDecisionApprove, nil, nil, "posted", overload.ReviewApprove, nil, "success"},
+		{"approve with minor findings", overload.ReviewDecisionApprove, []overload.Finding{finding("medium")}, []int64{9}, "posted", overload.ReviewApprove, []int64{9}, "success"},
+		{"approve mode still blocks", overload.ReviewDecisionApprove, []overload.Finding{finding("critical")}, nil, "posted", overload.ReviewRequestChanges, nil, "failure"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			poster := &fakePoster{standing: tt.standing}
+			before := len(statuses.states)
 			status := work(poster, newRun(tt.decision, tt.findings...))
+			if len(statuses.states) != before+1 || statuses.states[before] != tt.wantState || statuses.shas[before] != strings.Repeat("b", 40) {
+				t.Fatalf("commit statuses %v, want one %q", statuses.states[before:], tt.wantState)
+			}
 			if status != tt.wantStatus {
 				t.Fatalf("status %q, want %q", status, tt.wantStatus)
 			}
@@ -336,6 +356,55 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			t.Fatalf("earlier request was dismissed by someone; expected a new request: %q %v %q", status, poster.events, poster.summary)
 		}
 	})
+}
+
+func TestStatusSkipsDryRunRepositories(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL required")
+	}
+	ctx := context.Background()
+	store, err := postgres.Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Pool.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := time.Now().UnixNano()
+	installationID := id % 1_000_000_000_000
+	repo := fmt.Sprintf("test-status-%d/api", id)
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1)`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE full_name=$1`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM github_installations WHERE id=$1`, installationID)
+	})
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO github_installations (id, account_login, account_type) VALUES ($1,'acme','Organization')`, installationID); err != nil {
+		t.Fatal(err)
+	}
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name, enabled, dry_run, installation_id) VALUES ($1, true, true, $2) RETURNING id`, repo, installationID).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	var runID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, installation_id) VALUES ($1, 1, $2, $3, 'webhook', 'running', true, $4) RETURNING id`, repoID, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	statuses := &fakeStatus{}
+	reportStatus(ctx, store, statuses, runID, statusPending, "Reviewing")
+	if len(statuses.states) != 0 {
+		t.Fatalf("set a status on a dry-run repository: %v", statuses.states)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run=false WHERE id=$1; `, repoID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET dry_run=false WHERE id=$1`, runID); err != nil {
+		t.Fatal(err)
+	}
+	reportStatus(ctx, store, statuses, runID, statusPending, "Reviewing")
+	if len(statuses.states) != 1 || statuses.states[0] != statusPending {
+		t.Fatalf("statuses %v", statuses.states)
+	}
 }
 
 func TestPlanPosting(t *testing.T) {

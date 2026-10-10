@@ -52,6 +52,10 @@ templ GitHubSetup(data GitHubSetupData) {
 			}
 			</section>
 			if data.SettingsURL != "" {
+				<section class="panel"><h2>Commit status</h2>
+					<p class="muted">Overload shows an <code>overload</code> status on each pull request it reviews: pending while it reviews, then success, or failure when the review requests changes. Apps created before this option need one more permission: open the App's settings, then <strong>Permissions &amp; events → Repository permissions → Commit statuses: Read and write</strong>, and save. Each installation then has to accept the new permission (GitHub emails the account owner, or open the installation's settings). Until then reviews work as before, without a status.</p>
+					<p><a class="button secondary" href={ templ.URL(data.SettingsURL + "/permissions") } target="_blank" rel="noopener">Open App permissions</a></p>
+				</section>
 				<section class="panel"><h2>App logo</h2>
 					<div class="logo-row"><img src="/assets/overload-logo.png" alt="" width="64" height="64"/>
 						<p class="muted">Until you upload a logo, GitHub shows the owner's profile picture next to the App's reviews. GitHub has no API for App logos, so upload one yourself: download the overload logo (or use your own square image, at least 200×200 pixels and under 1 MB), then open the App's settings and choose <strong>Upload a logo</strong> under Display information.</p>

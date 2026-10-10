@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/harness"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/queue"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -25,6 +27,12 @@ type ToolServerStore interface {
 // ScheduleRunner queues a schedule's workflow outside its cron times.
 type ScheduleRunner interface {
 	RunScheduleNow(context.Context, string) (int64, error)
+}
+
+// ReviewRequester queues a review of a pull request's current head, as if
+// it had just been opened.
+type ReviewRequester interface {
+	RequestReview(ctx context.Context, repository string, number int) (int64, error)
 }
 
 // listTools connects to a tool server; a variable so tests can replace it.
@@ -100,6 +108,29 @@ func registerTools(mux *http.ServeMux, store ToolServerStore, csrf string) {
 			return
 		}
 		http.Redirect(w, r, "/configure/tools", http.StatusSeeOther)
+	})
+}
+
+func registerReviewRequests(mux *http.ServeMux, requester ReviewRequester, csrf string) {
+	mux.HandleFunc("POST /configure/repositories/{id}/review", func(w http.ResponseWriter, r *http.Request) {
+		if !validForm(w, r, csrf) {
+			return
+		}
+		number, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(r.PostForm.Get("pr"), "#")))
+		if err != nil || number < 1 {
+			http.Error(w, "Enter a pull request number", http.StatusBadRequest)
+			return
+		}
+		runID, err := requester.RequestReview(r.Context(), r.PostForm.Get("repository"), number)
+		if err != nil {
+			message := "Review not queued"
+			if errors.Is(err, queue.ErrReviewNotQueued) {
+				message = "Review not queued: " + strings.TrimPrefix(err.Error(), queue.ErrReviewNotQueued.Error()+": ")
+			}
+			http.Error(w, message+".", http.StatusConflict)
+			return
+		}
+		http.Redirect(w, r, fmt.Sprintf("/runs/%d", runID), http.StatusSeeOther)
 	})
 }
 

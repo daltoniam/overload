@@ -27,7 +27,15 @@ type PullRequestDelivery struct {
 	BaseSHA        string
 	Eligible       bool
 	Payload        []byte
+	// Manual marks a review someone asked for (the UI's "Review now" or
+	// the CLI) instead of a GitHub webhook. It matches the repository's
+	// "opened" binding and is recorded with the manual trigger.
+	Manual bool
 }
+
+// ManualReviewAction is the binding action a manual review uses: the same
+// workflow as a newly opened pull request.
+const ManualReviewAction = "opened"
 
 // repoFacts is what the database knows about the repository a delivery
 // names. A zero value means no matching repository.
@@ -113,7 +121,11 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	defer func() { _ = tx.Rollback(ctx) }()
 	var deliveryRow int64
 	digest := sha256.Sum256(delivery.Payload)
-	err = tx.QueryRow(ctx, `INSERT INTO webhook_deliveries (delivery_id, event, action, repository_full_name, payload, outcome, payload_sha256) VALUES ($1, 'pull_request', $2, $3, $4, 'skipped', $5) ON CONFLICT DO NOTHING RETURNING id`, delivery.DeliveryID, delivery.Action, delivery.RepoName, delivery.Payload, hex.EncodeToString(digest[:])).Scan(&deliveryRow)
+	source, trigger := "github", "webhook"
+	if delivery.Manual {
+		source, trigger = "manual", "manual"
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO webhook_deliveries (delivery_id, event, action, repository_full_name, payload, outcome, payload_sha256, source) VALUES ($1, 'pull_request', $2, $3, $4, 'skipped', $5, $6) ON CONFLICT DO NOTHING RETURNING id`, delivery.DeliveryID, delivery.Action, delivery.RepoName, delivery.Payload, hex.EncodeToString(digest[:]), source).Scan(&deliveryRow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -177,7 +189,7 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 		installation = &repo.installation
 	}
 	var runID int64
-	err = tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, binding_id, config_snapshot, installation_id) VALUES ($1, $2, $3, $4, 'webhook', $5, $6, $7, $8) RETURNING id`, repo.id, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, repo.dryRun, bindingID, snapshot, installation).Scan(&runID)
+	err = tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, binding_id, config_snapshot, installation_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`, repo.id, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, trigger, repo.dryRun, bindingID, snapshot, installation).Scan(&runID)
 	if err != nil {
 		return false, err
 	}
@@ -191,7 +203,11 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET outcome = $1, run_id = $2 WHERE id = $3`, deliveryOutcomeQueued, runID, deliveryRow); err != nil {
 		return false, err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'queued', 'Review queued')`, runID); err != nil {
+	queuedMessage := "Review queued"
+	if delivery.Manual {
+		queuedMessage = "Review queued by hand"
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'queued', $2)`, runID, queuedMessage); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
@@ -213,4 +229,19 @@ func supersedeQueued(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx
 		}
 	}
 	return nil
+}
+
+// DeliveryOutcome reports what became of a recorded delivery: its outcome,
+// skip reason and run, if any.
+func (s *Store) DeliveryOutcome(ctx context.Context, source, deliveryID string) (string, string, int64, error) {
+	var outcome, reason string
+	var runID *int64
+	err := s.Pool.QueryRow(ctx, `SELECT outcome, COALESCE(skip_reason, ''), run_id FROM webhook_deliveries WHERE source = $1 AND delivery_id = $2`, source, deliveryID).Scan(&outcome, &reason, &runID)
+	if err != nil {
+		return "", "", 0, err
+	}
+	if runID == nil {
+		return outcome, reason, 0, nil
+	}
+	return outcome, reason, *runID, nil
 }

@@ -32,12 +32,18 @@ type PostWorker struct {
 	river.WorkerDefaults[postgres.PostReviewArgs]
 	Store  *postgres.Store
 	Poster ReviewPoster
+	// Status sets commit statuses; nil uses the GitHub App.
+	Status StatusSetter
 }
 
 func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostReviewArgs]) error {
 	runID := job.Args.RunID
 	if !PostingEnabled() {
-		return w.Store.SkipPost(ctx, runID, "posting_disabled")
+		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
+			return err
+		}
+		reportStatus(ctx, w.Store, w.Status, runID, statusSuccess, "Reviewed; not posted because posting is off")
+		return nil
 	}
 	target, err := w.Store.LoadPostTarget(ctx, runID)
 	if errors.Is(err, postgres.ErrNothingToPost) {
@@ -87,12 +93,21 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		if err := w.dismiss(ctx, poster, target, event, standing); err != nil {
 			return err
 		}
-		return w.Store.FinishPost(ctx, target, "nothing_new", 0)
+		if err := w.Store.FinishPost(ctx, target, "nothing_new", 0); err != nil {
+			return err
+		}
+		state, description := finalStatus(event, len(severities))
+		reportStatus(ctx, w.Store, w.Status, runID, state, description)
+		return nil
 	}
 	summary := reviewSummary(event, target, len(severities)-len(target.Findings)) + "\n\n" + marker
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, event, summary, target.Findings)
 	if errors.Is(err, github.ErrReviewRejected) {
-		return w.Store.RejectPost(ctx, runID, err.Error())
+		if err := w.Store.RejectPost(ctx, runID, err.Error()); err != nil {
+			return err
+		}
+		reportStatus(ctx, w.Store, w.Status, runID, statusError, "GitHub rejected the review")
+		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)
@@ -100,7 +115,12 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err := w.dismiss(ctx, poster, target, event, standing); err != nil {
 		return err
 	}
-	return w.Store.FinishPost(ctx, target, "posted", reviewID)
+	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
+		return err
+	}
+	state, description := finalStatus(event, len(severities))
+	reportStatus(ctx, w.Store, w.Status, runID, state, description)
+	return nil
 }
 
 // dismiss withdraws overload's earlier requests for changes once a review

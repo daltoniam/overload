@@ -346,3 +346,38 @@ func FromEnvironment() (*Client, error) {
 	}
 	return NewClient(id, key)
 }
+
+// StatusContext is the name overload's commit status appears under.
+const StatusContext = "overload"
+
+// SetStatus sets overload's commit status on sha: state is pending,
+// success, failure or error. targetURL may be empty. It needs the App's
+// "Commit statuses: write" permission; without it GitHub answers 403 and
+// ErrStatusForbidden is returned.
+func (client *Client) SetStatus(ctx context.Context, installationID int64, repository, sha, state, description, targetURL string) error {
+	owner, repo, err := splitRepository(repository)
+	if err != nil {
+		return err
+	}
+	if !commitSHA.MatchString(sha) {
+		return errors.New("invalid commit SHA")
+	}
+	api, err := client.installation(installationID)
+	if err != nil {
+		return err
+	}
+	status := &gh.RepoStatus{State: gh.Ptr(state), Context: gh.Ptr(StatusContext), Description: gh.Ptr(overload.TruncateUTF8(description, 140))}
+	if targetURL != "" {
+		status.TargetURL = gh.Ptr(targetURL)
+	}
+	_, _, err = api.Repositories.CreateStatus(ctx, owner, repo, sha, status)
+	var response *gh.ErrorResponse
+	if errors.As(err, &response) && response.Response != nil && (response.Response.StatusCode == http.StatusForbidden || response.Response.StatusCode == http.StatusNotFound) {
+		return fmt.Errorf("%w: %s", ErrStatusForbidden, overload.TruncateUTF8(response.Message, 200))
+	}
+	return err
+}
+
+// ErrStatusForbidden means the App may not set commit statuses (it lacks
+// "Commit statuses: write", or the installation has not accepted it yet).
+var ErrStatusForbidden = errors.New("GitHub App may not set commit statuses")

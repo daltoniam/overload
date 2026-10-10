@@ -178,6 +178,12 @@ templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBindin
 					}
 				</select></label><button type="submit">Add or update binding</button></form>
 			</section>
+			<section class="panel"><h2>Review a pull request</h2><p class="muted">Queues a review of the pull request's current head as if it had just been opened: it uses this repository's "opened" binding and posting settings. Use it for pull requests opened before overload was watching. A head that already has a review is not reviewed again.</p>
+				<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/review", repo.ID)) }><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/>
+					<label class="field"><span>Pull request number</span><input name="pr" required inputmode="numeric" pattern="#?[0-9]+" placeholder="296"/></label>
+					<div class="actions"><button type="submit" class="secondary">Review now</button></div>
+				</form>
+			</section>
 			<section class="panel"><h2>Remove repository</h2><p class="muted">Repositories with bindings or runs cannot be deleted. Disable processing to keep their history.</p><form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/delete", repo.ID)) }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete repository</button></form></section>
 		}
 	}

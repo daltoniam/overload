@@ -55,6 +55,9 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	if runner, ok := reader.(ScheduleRunner); ok {
 		registerScheduleRunner(mux, runner, csrf)
 	}
+	if requester, ok := reader.(ReviewRequester); ok {
+		registerReviewRequests(mux, requester, csrf)
+	}
 	if provider, ok := reader.(TunnelProvider); ok && provider.Tunnel() != nil {
 		registerTunnel(mux, provider.Tunnel(), csrf)
 	}

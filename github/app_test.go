@@ -27,7 +27,7 @@ func TestManifest(t *testing.T) {
 	if parsed.RedirectURL != "http://127.0.0.1:8082/setup/github/callback" || parsed.HookAttributes["url"] != "https://hooks.example.com/webhooks/github" || parsed.Public {
 		t.Fatalf("manifest %+v", parsed)
 	}
-	if parsed.DefaultPermissions["pull_requests"] != "write" || parsed.DefaultPermissions["contents"] != "read" || len(parsed.DefaultPermissions) != 3 {
+	if parsed.DefaultPermissions["pull_requests"] != "write" || parsed.DefaultPermissions["contents"] != "read" || parsed.DefaultPermissions["statuses"] != "write" || len(parsed.DefaultPermissions) != 4 {
 		t.Fatalf("permissions %+v", parsed.DefaultPermissions)
 	}
 	for _, bad := range [][3]string{
@@ -259,5 +259,45 @@ func TestChangesRequestedAndDismissOnlyOwnReviews(t *testing.T) {
 	}
 	if err := client.DismissReview(context.Background(), 7, "acme/api", 5, 3, "nothing blocking"); err != nil || dismissed != "3" || message != "nothing blocking" {
 		t.Fatalf("dismiss: %v %q %q", err, dismissed, message)
+	}
+}
+
+func TestSetStatus(t *testing.T) {
+	var body map[string]any
+	var path string
+	forbidden := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		if forbidden {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+			return
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer server.Close()
+	client, err := NewTokenClient("token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.api.BaseURL, err = url.Parse(server.URL + "/"); err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.Repeat("a", 40)
+	if err := client.SetStatus(context.Background(), 0, "acme/api", sha, "pending", "Reviewing", "https://overload.example.com/runs/4"); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/repos/acme/api/statuses/"+sha || body["state"] != "pending" || body["context"] != StatusContext || body["target_url"] != "https://overload.example.com/runs/4" {
+		t.Fatalf("path=%s body=%v", path, body)
+	}
+	if err := client.SetStatus(context.Background(), 0, "acme/api", "not-a-sha", "pending", "x", ""); err == nil {
+		t.Fatal("invalid SHA accepted")
+	}
+	forbidden = true
+	if err := client.SetStatus(context.Background(), 0, "acme/api", sha, "success", "ok", ""); !errors.Is(err, ErrStatusForbidden) {
+		t.Fatalf("403 not reported as missing permission: %v", err)
 	}
 }
