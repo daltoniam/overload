@@ -32,7 +32,7 @@ type ScheduleRunner interface {
 // ReviewRequester queues a review of a pull request's current head, as if
 // it had just been opened.
 type ReviewRequester interface {
-	RequestReview(ctx context.Context, repository string, number int) (int64, error)
+	RequestReview(ctx context.Context, repositoryID int64, number int, again bool) (int64, error)
 }
 
 // listTools connects to a tool server; a variable so tests can replace it.
@@ -116,12 +116,17 @@ func registerReviewRequests(mux *http.ServeMux, requester ReviewRequester, csrf 
 		if !validForm(w, r, csrf) {
 			return
 		}
+		repositoryID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || repositoryID < 1 {
+			http.NotFound(w, r)
+			return
+		}
 		number, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(r.PostForm.Get("pr"), "#")))
 		if err != nil || number < 1 {
 			http.Error(w, "Enter a pull request number", http.StatusBadRequest)
 			return
 		}
-		runID, err := requester.RequestReview(r.Context(), r.PostForm.Get("repository"), number)
+		runID, err := requester.RequestReview(r.Context(), repositoryID, number, r.PostForm.Get("again") == "true")
 		if err != nil {
 			message := "Review not queued"
 			if errors.Is(err, queue.ErrReviewNotQueued) {

@@ -55,7 +55,7 @@ templ Runs(runs []overload.Run) {
 	}
 }
 
-templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput, routing overload.Routing) {
+templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overload.Finding, output postgres.JobOutput, routing overload.Routing, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Run detail", CurrentPath: "/runs"}) {
 		<div class="page-header"><div><p class="eyebrow">{ run.Kind } run</p><h1>Run #{ fmt.Sprint(run.ID) }</h1><p class="muted">{ runSource(run) } · <span class={ "badge " + string(run.Status) }>{ string(run.Status) }</span></p></div><a href="/runs">← All runs</a></div>
 		<section class="panel"><h2>Details</h2><dl><dt>Trigger</dt><dd>{ run.Trigger }</dd>
@@ -68,6 +68,10 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 			}
 			if run.Kind != "scheduled_prompt" {
 				<p><a href={ templ.URL(fmt.Sprintf("/runs/%d/artifacts/spec.json", run.ID)) }>Download input</a> · <a href={ templ.URL(fmt.Sprintf("/runs/%d/artifacts/result.json", run.ID)) }>Download result</a></p>
+				if nonce != "" && run.RepositoryID > 0 && (run.Status == overload.RunCompleted || run.Status == overload.RunFailed) {
+					<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/review", run.RepositoryID)) }><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="pr" value={ fmt.Sprint(run.PRNumber) }/><input type="hidden" name="again" value="true"/><button type="submit" class="secondary">Review the pull request again</button></form>
+					<p class="muted">Reviews its current head with the repository's current workflow and posting settings.</p>
+				}
 			}
 		</section>
 		if run.Kind == "scheduled_prompt" {

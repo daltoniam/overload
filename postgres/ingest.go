@@ -31,6 +31,9 @@ type PullRequestDelivery struct {
 	// the CLI) instead of a GitHub webhook. It matches the repository's
 	// "opened" binding and is recorded with the manual trigger.
 	Manual bool
+	// Again reviews a head that already has a completed review; a review
+	// that is still queued or running is never duplicated.
+	Again bool
 }
 
 // ManualReviewAction is the binding action a manual review uses: the same
@@ -163,7 +166,11 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 		return false, err
 	}
 	var existing int64
-	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND status IN ('queued', 'running', 'completed') LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA).Scan(&existing)
+	statuses := []string{"queued", "running", "completed"}
+	if delivery.Manual && delivery.Again {
+		statuses = []string{"queued", "running"}
+	}
+	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND status = ANY($4) ORDER BY id DESC LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA, statuses).Scan(&existing)
 	if err == nil {
 		return skip(skipAlreadyReviewed, &existing)
 	}

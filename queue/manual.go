@@ -30,7 +30,11 @@ var ErrReviewNotQueued = errors.New("review not queued")
 // a webhook review follows still applies: the repository must be enabled
 // and installed, an "opened" binding must exist, and a head that already
 // has a review is not reviewed twice.
-func QueueManualReview(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader PullRequestReader, repository string, number int) (int64, error) {
+//
+// again reviews a head that already has a completed review (for example
+// after changing the workflow); a review still queued or running is never
+// duplicated.
+func QueueManualReview(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader PullRequestReader, repository string, number int, again bool) (int64, error) {
 	if number < 1 {
 		return 0, fmt.Errorf("%w: pull request number must be positive", ErrReviewNotQueued)
 	}
@@ -85,6 +89,7 @@ func QueueManualReview(ctx context.Context, store *postgres.Store, client *river
 		Eligible:       head != "" && base != "",
 		Payload:        payload,
 		Manual:         true,
+		Again:          again,
 	}
 	if _, err := store.IngestPR(ctx, client, delivery); err != nil {
 		return 0, err
@@ -95,7 +100,10 @@ func QueueManualReview(ctx context.Context, store *postgres.Store, client *river
 	}
 	if outcome != "queued" {
 		if runID > 0 && reason == "head already reviewed" {
-			return runID, fmt.Errorf("%w: the current head of #%d already has run %d", ErrReviewNotQueued, number, runID)
+			if again {
+				return runID, fmt.Errorf("%w: run %d for the current head of #%d is still queued or running", ErrReviewNotQueued, runID, number)
+			}
+			return runID, fmt.Errorf("%w: the current head of #%d already has run %d; choose to review again to run it anyway", ErrReviewNotQueued, number, runID)
 		}
 		return 0, fmt.Errorf("%w: %s", ErrReviewNotQueued, reason)
 	}

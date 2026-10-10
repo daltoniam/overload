@@ -80,7 +80,7 @@ func TestQueueManualReview(t *testing.T) {
 	}
 	head := strings.Repeat("c", 40)
 	reader := &fakePRReader{pr: &gh.PullRequest{Number: gh.Ptr(296), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(head)}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40)), Repo: &gh.Repository{ID: gh.Ptr(id % 1_000_000_000)}}}}
-	queue := func() (int64, error) { return QueueManualReview(ctx, store, client, reader, repo, 296) }
+	queue := func() (int64, error) { return QueueManualReview(ctx, store, client, reader, repo, 296, false) }
 
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("disabled repository: %v", err)
@@ -106,6 +106,16 @@ func TestQueueManualReview(t *testing.T) {
 	if !errors.Is(err, ErrReviewNotQueued) || again != runID || !strings.Contains(err.Error(), "already has run") {
 		t.Fatalf("second request for the same head: %d %v", again, err)
 	}
+	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "still queued or running") {
+		t.Fatalf("again while the first is queued: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed' WHERE id=$1`, runID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := QueueManualReview(ctx, store, client, reader, repo, 296, true)
+	if err != nil || second == runID || second == 0 {
+		t.Fatalf("review again after completion: %d %v", second, err)
+	}
 	reader.pr.Draft = gh.Ptr(true)
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("draft: %v", err)
@@ -114,7 +124,7 @@ func TestQueueManualReview(t *testing.T) {
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("closed: %v", err)
 	}
-	if _, err := QueueManualReview(ctx, store, client, reader, "nobody/nothing", 1); !errors.Is(err, ErrReviewNotQueued) {
+	if _, err := QueueManualReview(ctx, store, client, reader, "nobody/nothing", 1, false); !errors.Is(err, ErrReviewNotQueued) {
 		t.Fatalf("unknown repository: %v", err)
 	}
 }

@@ -134,7 +134,11 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			http.Error(w, "Unable to load run results", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.RunDetail(run, events, findings, output, routing).Render(r.Context(), w)
+		nonce := ""
+		if _, ok := reader.(ReviewRequester); ok {
+			nonce = csrf
+		}
+		_ = pages.RunDetail(run, events, findings, output, routing, nonce).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /runs/{id}/events", func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)

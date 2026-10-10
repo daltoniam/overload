@@ -132,8 +132,8 @@ type reviewRequestStore struct {
 	fail      error
 }
 
-func (store *reviewRequestStore) RequestReview(_ context.Context, repository string, number int) (int64, error) {
-	store.requested = append(store.requested, fmt.Sprintf("%s#%d", repository, number))
+func (store *reviewRequestStore) RequestReview(_ context.Context, repositoryID int64, number int, again bool) (int64, error) {
+	store.requested = append(store.requested, fmt.Sprintf("%d#%d again=%v", repositoryID, number, again))
 	return 91, store.fail
 }
 
@@ -161,14 +161,14 @@ func TestReviewNowForm(t *testing.T) {
 	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"abc"}}); response.Code != http.StatusBadRequest {
 		t.Fatalf("bad number: %d", response.Code)
 	}
-	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"#296"}}); response.Code != http.StatusSeeOther || !strings.HasPrefix(response.Header().Get("Location"), "/runs/91") {
+	if response := post(url.Values{"csrf": {csrf}, "pr": {"#296"}, "again": {"true"}}); response.Code != http.StatusSeeOther || !strings.HasPrefix(response.Header().Get("Location"), "/runs/91") {
 		t.Fatalf("queue: %d %s", response.Code, response.Header().Get("Location"))
 	}
 	store.fail = fmt.Errorf("%w: #296 is a draft", queue.ErrReviewNotQueued)
 	if response := post(url.Values{"csrf": {csrf}, "repository": {repo}, "pr": {"296"}}); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "is a draft") {
 		t.Fatalf("refusal: %d %s", response.Code, response.Body.String())
 	}
-	if strings.Join(store.requested, ",") != repo+"#296,"+repo+"#296" {
+	if strings.Join(store.requested, ",") != "1#296 again=true,1#296 again=false" {
 		t.Fatalf("requested %v", store.requested)
 	}
 }

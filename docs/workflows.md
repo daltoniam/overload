@@ -60,8 +60,10 @@ settings, and each installation must accept it.
 Pull requests opened before overload was watching (or that you want
 reviewed again) can be queued by hand: **Review now** on the repository's
 page, or `overload review --repo owner/name --pr 123 --queue`. It runs like
-a newly opened pull request: the repository's `opened` binding, its posting
-settings, and no second review of a head that already has one.
+a newly opened pull request: the repository's `opened` binding and its
+posting settings. A head that already has a review is reviewed again only
+when you ask for it (the checkbox, **Review the pull request again** on a
+run's page, or `--again`), for example after changing the workflow.
 
 ## Preview before you run
 

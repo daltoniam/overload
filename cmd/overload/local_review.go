@@ -24,7 +24,7 @@ type reviewOptions struct {
 	repo, workflow, profile, model, modelURL, promptProfile string
 	pr, concurrency                                         int
 	timeout                                                 time.Duration
-	queue                                                   bool
+	queue, again                                            bool
 }
 
 func parseReviewOptions(args []string) (reviewOptions, error) {
@@ -40,6 +40,7 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 	flags.DurationVar(&options.timeout, "timeout", 260*time.Minute, "maximum review duration (up to 5h)")
 	flags.IntVar(&options.concurrency, "concurrency", 0, "changed files reviewed at once (overrides the saved model)")
 	flags.BoolVar(&options.queue, "queue", false, "queue a review on the overload server like a newly opened PR (uses the repository's binding and posting settings) instead of reviewing here")
+	flags.BoolVar(&options.again, "again", false, "with --queue: review the current head even if it was already reviewed")
 	if err := flags.Parse(args); err != nil {
 		return options, err
 	}
@@ -54,6 +55,8 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 		return options, errors.New("--workflow cannot be combined with model or prompt overrides")
 	case options.queue && (options.workflow != "" || options.profile != "" || options.model != "" || options.modelURL != "" || options.promptProfile != "" || options.concurrency != 0):
 		return options, errors.New("--queue uses the repository's binding; it cannot be combined with workflow, model or prompt options")
+	case options.again && !options.queue:
+		return options, errors.New("--again needs --queue")
 	}
 	return options, nil
 }
@@ -200,7 +203,7 @@ func queueReview(options reviewOptions) error {
 	if err != nil {
 		return err
 	}
-	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr)
+	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr, options.again)
 	if err != nil {
 		return err
 	}
