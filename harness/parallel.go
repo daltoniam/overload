@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -141,8 +140,8 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bu
 	outcome.fallback = fallback
 	outcome.addUsage(response.TotalUsage)
 	text := strings.TrimSpace(response.Response.Content.Text())
-	var fileResult overload.ReviewResult
-	if err := json.Unmarshal([]byte(cleanModelJSON(text)), &fileResult); err != nil {
+	fileResult, err := decodeModelReview(text)
+	if err != nil {
 		if len(text) > 12000 {
 			text = text[:12000]
 		}
@@ -151,7 +150,7 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bu
 			return outcome, fmt.Errorf("review incomplete repairing %s: %w", path, err)
 		}
 		outcome.addUsage(response.TotalUsage)
-		if err := json.Unmarshal([]byte(cleanModelJSON(response.Response.Content.Text())), &fileResult); err != nil {
+		if fileResult, err = decodeModelReview(response.Response.Content.Text()); err != nil {
 			return outcome, fmt.Errorf("review incomplete at %s: model_output_invalid: %w", path, err)
 		}
 	}

@@ -215,6 +215,28 @@ func TestReviewerRepairsInvalidJSON(t *testing.T) {
 	}
 }
 
+// TestReviewerAcceptsQuotedNumbers covers a hosted model that quoted its
+// confidence and line, which used to discard the file's whole review.
+func TestReviewerAcceptsQuotedNumbers(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		content := `{"summary":"Found a bug","findings":[{"path":"a.go","line":"1","side":"RIGHT","severity":"high","category":"bug","title":"Bug","body":"Fix it","confidence":"0.9","evidence":"dangerous()"}]}`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"chat-1","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`, content)
+	}))
+	defer server.Close()
+	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+dangerous()\n"
+	spec := profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context")
+	result, err := (Reviewer{}).Review(context.Background(), spec, fstest.MapFS{"a.go": &fstest.MapFile{Data: []byte("dangerous()\n")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || len(result.Findings) != 1 || result.Findings[0].Confidence != 0.9 || result.Metrics["degraded"] != nil {
+		t.Fatalf("calls=%d result=%+v", calls, result)
+	}
+}
+
 func firstBatch(patch string, repo fs.FS) (string, error) {
 	parsed, err := parseReviewDiff(patch)
 	if err != nil {

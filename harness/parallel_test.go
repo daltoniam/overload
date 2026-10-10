@@ -23,8 +23,10 @@ type concurrencyModel struct {
 	server   *httptest.Server
 	inFlight atomic.Int64
 	peak     atomic.Int64
-	mu       sync.Mutex
-	started  []int
+	// expect is the peak the test waits for before answering (0: none).
+	expect  atomic.Int64
+	mu      sync.Mutex
+	started []int
 }
 
 var filePattern = regexp.MustCompile(`\+\+\+ b/f(\d+)\.go`)
@@ -65,6 +67,17 @@ func newConcurrencyModel(t *testing.T, files, fail int) *concurrencyModel {
 			time.Sleep(20 * time.Millisecond)
 			http.Error(w, "boom", http.StatusBadRequest)
 			return
+		}
+		// Hold each answer until every request that can run at once has
+		// started (or 2s pass), so a slow test machine cannot make the
+		// observed peak lower than the real limit.
+		deadline := time.Now().Add(2 * time.Second)
+		for model.peak.Load() < model.expect.Load() && time.Now().Before(deadline) {
+			select {
+			case <-time.After(2 * time.Millisecond):
+			case <-r.Context().Done():
+				return
+			}
 		}
 		select {
 		case <-time.After(time.Duration(files-index) * 15 * time.Millisecond):
@@ -114,6 +127,7 @@ func TestParallelWorkflowReviewIsBoundedAndOrdered(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			model := newConcurrencyModel(t, files, -1)
+			model.expect.Store(test.wantPeak)
 			result, err := (Reviewer{}).Review(context.Background(), workflowSpec(model.server.URL, files, test.concurrency), fstest.MapFS{})
 			if err != nil {
 				t.Fatal(err)
