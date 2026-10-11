@@ -29,7 +29,10 @@ func TestDecodeModelReviewToleratesQuotedNumbers(t *testing.T) {
 		{"quoted numbers", `{"summary":"s","findings":[{"path":"a.go","line":"12","start_line":"10","confidence":"0.9"}]}`, 12, 0.9, false},
 		{"percent confidence", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":"85%"}]}`, 3, 0.85, false},
 		{"fenced", "```json\n{\"summary\":\"s\",\"findings\":[{\"path\":\"a.go\",\"line\":\"7\",\"confidence\":\"0.5\"}]}\n```", 7, 0.5, false},
-		{"word confidence", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":"high"}]}`, 0, 0, true},
+		{"word confidence", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":"high"}]}`, 3, 0.8, false},
+		{"two-word confidence", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":"Very Low"}]}`, 3, 0.1, false},
+		{"unknown confidence word", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":"probably"}]}`, 3, unknownConfidence, false},
+		{"out of range confidence", `{"summary":"s","findings":[{"path":"a.go","line":3,"confidence":7}]}`, 3, unknownConfidence, false},
 		{"word line", `{"summary":"s","findings":[{"path":"a.go","line":"twelve","confidence":0.9}]}`, 0, 0, true},
 		{"not json", `here are my findings`, 0, 0, true},
 	}

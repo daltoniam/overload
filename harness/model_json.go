@@ -26,9 +26,10 @@ func cleanModelJSON(text string) string {
 }
 
 // decodeModelReview parses a model's review reply. Models sometimes quote
-// numbers ("line": "12", "confidence": "0.9" or "85%"); those are accepted
-// rather than discarding the whole file's review. Anything that is not a
-// number is still an error.
+// numbers ("line": "12", "confidence": "0.9" or "85%") or describe
+// confidence in words ("high"); those are accepted rather than discarding
+// the whole file's review. A line that is not a number is still an error,
+// because findings are placed on lines.
 func decodeModelReview(text string) (overload.ReviewResult, error) {
 	var raw struct {
 		Summary  string         `json:"summary"`
@@ -91,18 +92,37 @@ func looseInt(raw json.RawMessage) (int, error) {
 	return value, nil
 }
 
+// unknownConfidence is used when a model's confidence cannot be read.
+// Confidence only orders findings, so an unreadable value never fails a
+// review.
+const unknownConfidence = 0.5
+
+var confidenceWords = map[string]float64{
+	"very high": 0.95, "certain": 0.95, "high": 0.8, "medium": 0.5, "moderate": 0.5,
+	"low": 0.3, "very low": 0.1,
+}
+
 func looseConfidence(raw json.RawMessage) (float64, error) {
 	text, err := looseNumber(raw)
-	if err != nil || text == "" {
-		return 0, err
+	if err != nil {
+		return unknownConfidence, nil
+	}
+	if text == "" {
+		return 0, nil
+	}
+	if value, ok := confidenceWords[strings.Join(strings.Fields(strings.ToLower(text)), " ")]; ok {
+		return value, nil
 	}
 	percent := strings.HasSuffix(text, "%")
 	value, err := strconv.ParseFloat(strings.TrimSuffix(text, "%"), 64)
 	if err != nil {
-		return 0, fmt.Errorf("%q is not a number", text)
+		return unknownConfidence, nil
 	}
 	if percent {
 		value /= 100
+	}
+	if value < 0 || value > 1 {
+		return unknownConfidence, nil
 	}
 	return value, nil
 }
