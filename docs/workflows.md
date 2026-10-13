@@ -32,6 +32,7 @@ eight) are **sub-agents**.
 | `max_findings` | Caps the findings posted per review (default 10, at most 50), most severe first. The rest stay on the run as dropped. |
 | `planner_prompt` | One call on the main agent's model that can send extra files to sub-agents whatever their path. Empty means no planner. |
 | `verifier_prompt` | One call per sub-agent finding that keeps or drops it before posting. Empty means no verifier. |
+| `max_file_chars` | Characters of a file's diff and content sent in one review (8,000–400,000). Files whose diff alone is larger are skipped as too large and the review is marked partial. Default: 160,000 when every agent uses a hosted model, 32,000 when any agent uses a local model. |
 | `review_decision` | `comment` (default) posts findings as comments. `request_changes` requests changes when a finding is at or above `block_severity`. `approve` does that and approves a complete review with nothing blocking. |
 | `block_severity` | `critical`, `high` (default), `medium` or `low`: the lowest severity that requests changes. |
 
@@ -56,6 +57,12 @@ no status. Make it a required check in branch protection to hold merges
 until overload has reviewed. The GitHub App needs **Commit statuses: Read
 and write**; Apps created before this was added must grant it in their
 settings, and each installation must accept it.
+
+GitHub does not retry webhooks a GitHub App failed to receive. Every five
+minutes overload asks GitHub for deliveries from the last day that never
+reached it (no response, a timeout or a server error, for example during
+a restart or a tunnel outage) and has GitHub send them again, at most 20
+at a time. Set `OVERLOAD_WEBHOOK_CATCHUP=0` to turn this off.
 
 Pull requests opened before overload was watching (or that you want
 reviewed again) can be queued by hand: **Review now** on the repository's

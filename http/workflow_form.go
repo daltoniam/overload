@@ -60,6 +60,7 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.PlannerPrompt, workflow.VerifierPrompt = values.Get("planner_prompt"), values.Get("verifier_prompt")
 		workflow.MaxFileReviews = number(values.Get("max_file_reviews"), "the file review limit must be a number")
 		workflow.MaxFindings = number(values.Get("max_findings"), "the finding limit must be a number")
+		workflow.MaxFileChars = number(values.Get("max_file_chars"), "the largest file size must be a number")
 		workflow.ReviewDecision = values.Get("review_decision")
 		if workflow.ReviewDecision != "" && workflow.ReviewDecision != overload.ReviewDecisionComment {
 			workflow.BlockSeverity = values.Get("block_severity")

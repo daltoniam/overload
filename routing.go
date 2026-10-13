@@ -598,3 +598,41 @@ func Plural(count int, noun string) string {
 	}
 	return fmt.Sprintf("%d %ss", count, noun)
 }
+
+// Characters of diff and file content sent in one file review. Local models
+// usually run with small context windows; hosted models take far more.
+const (
+	DefaultLocalFileChars  = 32000
+	DefaultHostedFileChars = 160000
+	MinFileChars           = 8000
+	MaxFileCharsLimit      = 400000
+)
+
+// FileCharBudget is how many characters of a changed file's diff and
+// content one review may send: the workflow's max_file_chars, or a default
+// that suits its models (hosted only: DefaultHostedFileChars; any local
+// model: DefaultLocalFileChars).
+func (workflow ResolvedWorkflow) FileCharBudget() int {
+	if workflow.MaxFileChars > 0 {
+		return workflow.MaxFileChars
+	}
+	for _, agent := range workflow.Agents {
+		if agent.Model.ConnectionKind != "hosted" {
+			return DefaultLocalFileChars
+		}
+	}
+	return DefaultHostedFileChars
+}
+
+func validateFileChars(kind string, chars int) error {
+	if chars == 0 {
+		return nil
+	}
+	if kind != "pr_review" {
+		return errors.New("only PR review workflows have a file size limit")
+	}
+	if chars < MinFileChars || chars > MaxFileCharsLimit {
+		return fmt.Errorf("max_file_chars must be between %d and %d (0 picks a default for the workflow's models)", MinFileChars, MaxFileCharsLimit)
+	}
+	return nil
+}

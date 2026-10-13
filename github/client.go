@@ -381,3 +381,57 @@ func (client *Client) SetStatus(ctx context.Context, installationID int64, repos
 // ErrStatusForbidden means the App may not set commit statuses (it lacks
 // "Commit statuses: write", or the installation has not accepted it yet).
 var ErrStatusForbidden = errors.New("GitHub App may not set commit statuses")
+
+// Delivery is one webhook GitHub sent (or tried to send) to the App.
+type Delivery struct {
+	ID          int64
+	GUID        string
+	Event       string
+	Action      string
+	StatusCode  int
+	Redelivery  bool
+	DeliveredAt time.Time
+}
+
+// RecentDeliveries lists the App's webhook deliveries newest first, back to
+// since (at most limit).
+func (client *Client) RecentDeliveries(ctx context.Context, since time.Time, limit int) ([]Delivery, error) {
+	api, err := client.appAPI()
+	if err != nil {
+		return nil, err
+	}
+	var deliveries []Delivery
+	options := &gh.ListCursorOptions{PerPage: 100}
+	for len(deliveries) < limit {
+		page, response, err := api.Apps.ListHookDeliveries(ctx, options)
+		if err != nil {
+			return deliveries, err
+		}
+		for _, item := range page {
+			at := item.GetDeliveredAt().Time
+			if at.Before(since) {
+				return deliveries, nil
+			}
+			deliveries = append(deliveries, Delivery{ID: item.GetID(), GUID: item.GetGUID(), Event: item.GetEvent(), Action: item.GetAction(), StatusCode: item.GetStatusCode(), Redelivery: item.GetRedelivery(), DeliveredAt: at})
+		}
+		if response.Cursor == "" || len(page) == 0 {
+			return deliveries, nil
+		}
+		options.Cursor = response.Cursor
+	}
+	return deliveries, nil
+}
+
+// Redeliver asks GitHub to send a webhook delivery again.
+func (client *Client) Redeliver(ctx context.Context, deliveryID int64) error {
+	api, err := client.appAPI()
+	if err != nil {
+		return err
+	}
+	_, _, err = api.Apps.RedeliverHookDelivery(ctx, deliveryID)
+	var accepted *gh.AcceptedError
+	if errors.As(err, &accepted) {
+		return nil
+	}
+	return err
+}

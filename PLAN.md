@@ -115,6 +115,7 @@ Configuration via environment variables (flags override), loaded into one
 | `OVERLOAD_ADDR` | Listen address, default `:8080` |
 | `OVERLOAD_BASE_URL` | External URL, used for links in review comments |
 | `OVERLOAD_UI_USER`, `OVERLOAD_UI_PASSWORD` | Basic auth for the UI (required unless Cloudflare Access or `OVERLOAD_UI_INSECURE=1`) |
+| `OVERLOAD_WEBHOOK_CATCHUP` | `0` turns off redelivering GitHub webhooks that never reached overload (on by default with a GitHub App) |
 | `OVERLOAD_TOOL_*` | Bearer tokens for tool servers (Switchboard API keys), named by each tool server |
 | `OVERLOAD_ACCESS_TEAM_DOMAIN`, `OVERLOAD_ACCESS_AUD` | Cloudflare Access instead of basic auth: every UI request needs a valid `Cf-Access-Jwt-Assertion` for that application (RS256, team keys fetched hourly and on rotation) |
 | `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY` or `GITHUB_APP_PRIVATE_KEY_PATH`, `GITHUB_WEBHOOK_SECRET` | GitHub App |

@@ -121,7 +121,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
 	paths := reviewablePaths(reviewable, routing.Skipped)
-	batches := makeReviewBatches(parsed, repo, paths)
+	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())
 	fileIndex := make(map[string]int, len(paths))
 	for index, path := range paths {
 		fileIndex[path] = index
@@ -216,7 +216,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 func routeFiles(workflow overload.ResolvedWorkflow, parsed reviewDiff) (overload.Routing, []string, error) {
 	changed := parsed.paths()
 	initial, err := workflow.Route(changed)
-	large := parsed.tooLarge()
+	large := parsed.tooLarge(workflow.FileCharBudget())
 	if len(large) == 0 {
 		return initial, changed, err
 	}

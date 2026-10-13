@@ -102,8 +102,8 @@ func TestReviewSkipsFilesTooLargeToReview(t *testing.T) {
 		mu.Unlock()
 		return `{"summary":"None","findings":[]}`
 	})
-	huge := "diff --git a/generated.go b/generated.go\n--- a/generated.go\n+++ b/generated.go\n@@ -1 +1 @@\n-x\n+" + strings.Repeat("y", contextBudget) + "\n"
-	lock := "diff --git a/go.lock b/go.lock\n--- a/go.lock\n+++ b/go.lock\n@@ -1 +1 @@\n-x\n+" + strings.Repeat("z", contextBudget) + "\n"
+	huge := "diff --git a/generated.go b/generated.go\n--- a/generated.go\n+++ b/generated.go\n@@ -1 +1 @@\n-x\n+" + strings.Repeat("y", overload.DefaultLocalFileChars) + "\n"
+	lock := "diff --git a/go.lock b/go.lock\n--- a/go.lock\n+++ b/go.lock\n@@ -1 +1 @@\n-x\n+" + strings.Repeat("z", overload.DefaultLocalFileChars) + "\n"
 	small := "diff --git a/main.go b/main.go\n--- a/main.go\n+++ b/main.go\n@@ -1 +1 @@\n-x\n+run()\n"
 	workflow := edgeWorkflow(server.URL)
 	workflow.SkipPaths = []string{"*.lock"}
@@ -272,5 +272,36 @@ func TestHungModelCallTimesOut(t *testing.T) {
 	workflow.Agents[0], workflow.Agents[1] = workflow.Agents[1], workflow.Agents[0]
 	if _, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{}); err == nil || !strings.Contains(err.Error(), "model call timed out") {
 		t.Fatalf("a hung main agent must fail the review clearly: %v", err)
+	}
+}
+
+func TestHostedWorkflowsReviewLargerFiles(t *testing.T) {
+	var mu sync.Mutex
+	var reviewed []string
+	server := replyServer(t, func(_, user string) string {
+		mu.Lock()
+		reviewed = append(reviewed, fileUnderReview(user))
+		mu.Unlock()
+		return `{"summary":"None","findings":[]}`
+	})
+	big := "diff --git a/big_test.go b/big_test.go\n--- a/big_test.go\n+++ b/big_test.go\n@@ -1 +1 @@\n-x\n+" + strings.Repeat("y", overload.DefaultLocalFileChars+1000) + "\n"
+	workflow := edgeWorkflow(server.URL)
+	workflow.Agents[0].Model.ConnectionKind, workflow.Agents[0].Model.APIKeyEnv = "hosted", "OVERLOAD_MODEL_EDGE"
+	t.Setenv("OVERLOAD_MODEL_EDGE", "key")
+	result, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: big, Workflow: workflow}, fstest.MapFS{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routing := result.Metrics["routing"].(overload.Routing); len(routing.TooLarge) != 0 || strings.Join(reviewed, ",") != "big_test.go" {
+		t.Fatalf("hosted workflow skipped a file under its budget: reviewed %v too large %v", reviewed, routing.TooLarge)
+	}
+	reviewed = nil
+	workflow.MaxFileChars = overload.MinFileChars
+	result, err = (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: big, Workflow: workflow}, fstest.MapFS{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if routing := result.Metrics["routing"].(overload.Routing); strings.Join(routing.TooLarge, ",") != "big_test.go" || len(reviewed) != 0 {
+		t.Fatalf("explicit limit ignored: reviewed %v too large %v", reviewed, routing.TooLarge)
 	}
 }

@@ -9,8 +9,6 @@ import (
 	"github.com/daltoniam/overload/diff"
 )
 
-const contextBudget = 32000
-
 type reviewSection struct {
 	path  string
 	patch string
@@ -78,12 +76,12 @@ func (parsed reviewDiff) paths() []string {
 	return paths
 }
 
-// tooLarge lists files whose diff alone exceeds the context budget; they
+// tooLarge lists files whose diff alone exceeds budget characters; they
 // cannot be reviewed.
-func (parsed reviewDiff) tooLarge() map[string]bool {
+func (parsed reviewDiff) tooLarge(budget int) map[string]bool {
 	large := map[string]bool{}
 	for _, section := range parsed.sections {
-		if section.path != "" && len(section.patch)+len(bundleHeader) > contextBudget {
+		if section.path != "" && len(section.patch)+len(bundleHeader) > budget {
 			large[section.path] = true
 		}
 	}
@@ -101,18 +99,21 @@ func (parsed reviewDiff) patchFor(path string) string {
 }
 
 // makeReviewBatches builds one review bundle per file in paths: the file's
-// diff plus as much of its current content as fits the context budget.
-func makeReviewBatches(parsed reviewDiff, repo fs.FS, paths []string) []string {
+// diff plus as much of its current content as fits in budget characters.
+// File content is capped at a quarter of the budget (at least 10,000
+// characters) so the diff stays the focus.
+func makeReviewBatches(parsed reviewDiff, repo fs.FS, paths []string, budget int) []string {
+	contentCap := max(10000, budget/4)
 	batches := make([]string, len(paths))
 	for index, path := range paths {
 		var bundle strings.Builder
 		bundle.WriteString(bundleHeader)
 		bundle.WriteString(parsed.patchFor(path))
 		if data, err := fs.ReadFile(repo, path); err == nil {
-			if len(data) > 10000 {
-				data = data[:10000]
+			if len(data) > contentCap {
+				data = data[:contentCap]
 			}
-			remaining := contextBudget - bundle.Len() - len(path) - 32
+			remaining := budget - bundle.Len() - len(path) - 32
 			if remaining > 128 {
 				if len(data) > remaining {
 					data = data[:remaining]

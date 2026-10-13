@@ -252,3 +252,10 @@ func (s *Store) DeliveryOutcome(ctx context.Context, source, deliveryID string) 
 	}
 	return outcome, reason, *runID, nil
 }
+
+// KnownDelivery reports whether a GitHub webhook delivery was recorded.
+func (s *Store) KnownDelivery(ctx context.Context, guid string) (bool, error) {
+	var known bool
+	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE source = 'github' AND delivery_id = $1)`, guid).Scan(&known)
+	return known, err
+}

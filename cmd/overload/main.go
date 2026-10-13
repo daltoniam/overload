@@ -147,6 +147,7 @@ func serve() error {
 		return err
 	}
 	go scanSchedules(ctx, store, client)
+	go catchUpWebhooks(ctx, store)
 	defer func() {
 		stop()
 		<-client.Stopped()

@@ -242,5 +242,5 @@ func firstBatch(patch string, repo fs.FS) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return makeReviewBatches(parsed, repo, parsed.paths()[:1])[0], nil
+	return makeReviewBatches(parsed, repo, parsed.paths()[:1], overload.DefaultLocalFileChars)[0], nil
 }

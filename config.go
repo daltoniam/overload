@@ -114,6 +114,10 @@ type Workflow struct {
 	// comments, requests changes or approves; see ReviewEvent.
 	ReviewDecision string `json:"review_decision,omitempty"`
 	BlockSeverity  string `json:"block_severity,omitempty"`
+	// MaxFileChars caps the characters of diff and file content sent in one
+	// file review; larger diffs are skipped as too large. 0 picks a default
+	// for the workflow's models (see FileCharBudget).
+	MaxFileChars int `json:"max_file_chars,omitempty"`
 }
 
 func (workflow Workflow) Validate() error {
@@ -142,6 +146,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
+		return err
+	}
+	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -206,6 +213,7 @@ type ResolvedWorkflow struct {
 	TimeoutMinutes int             `json:"timeout_minutes,omitempty"`
 	ReviewDecision string          `json:"review_decision,omitempty"`
 	BlockSeverity  string          `json:"block_severity,omitempty"`
+	MaxFileChars   int             `json:"max_file_chars,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -236,6 +244,9 @@ func (workflow ResolvedWorkflow) Verify() error {
 		return err
 	}
 	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
+		return err
+	}
+	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
 	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {

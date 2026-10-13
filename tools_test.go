@@ -95,3 +95,34 @@ func TestVerifyRejectsToolsOnPRReviews(t *testing.T) {
 		t.Fatal("snapshot with an unsafe token variable verified")
 	}
 }
+
+func TestFileCharBudget(t *testing.T) {
+	hosted := ResolvedAgent{Model: ModelProfile{ConnectionKind: "hosted"}}
+	local := ResolvedAgent{Model: ModelProfile{ConnectionKind: "local"}}
+	tests := []struct {
+		name     string
+		workflow ResolvedWorkflow
+		want     int
+	}{
+		{"hosted only", ResolvedWorkflow{Agents: []ResolvedAgent{hosted, hosted}}, DefaultHostedFileChars},
+		{"any local model", ResolvedWorkflow{Agents: []ResolvedAgent{hosted, local}}, DefaultLocalFileChars},
+		{"explicit", ResolvedWorkflow{Agents: []ResolvedAgent{local}, MaxFileChars: 90000}, 90000},
+	}
+	for _, tt := range tests {
+		if got := tt.workflow.FileCharBudget(); got != tt.want {
+			t.Errorf("%s: %d, want %d", tt.name, got, tt.want)
+		}
+	}
+	for name, workflow := range map[string]Workflow{
+		"too small":          {Name: "r", Kind: "pr_review", Agents: []string{"a"}, MaxFileChars: MinFileChars - 1},
+		"too large":          {Name: "r", Kind: "pr_review", Agents: []string{"a"}, MaxFileChars: MaxFileCharsLimit + 1},
+		"scheduled workflow": {Name: "r", Kind: "scheduled_prompt", Agents: []string{"a"}, MaxFileChars: 50000},
+	} {
+		if err := workflow.Validate(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	if err := (Workflow{Name: "r", Kind: "pr_review", Agents: []string{"a"}, MaxFileChars: 100000}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
