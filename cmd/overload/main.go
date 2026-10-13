@@ -143,6 +143,11 @@ func serve() error {
 	if err != nil {
 		return err
 	}
+	if recovered, err := store.RecoverInterruptedRuns(ctx, client); err != nil {
+		return fmt.Errorf("recover interrupted runs: %w", err)
+	} else if recovered > 0 {
+		slog.Info("queued runs interrupted by a restart", "runs", recovered)
+	}
 	if err := client.Start(ctx); err != nil {
 		return err
 	}

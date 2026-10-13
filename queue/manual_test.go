@@ -128,3 +128,70 @@ func TestQueueManualReview(t *testing.T) {
 		t.Fatalf("unknown repository: %v", err)
 	}
 }
+
+func TestRecoverInterruptedRuns(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL required")
+	}
+	ctx := context.Background()
+	store, err := postgres.Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Pool.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	repo := fmt.Sprintf("test-recover-%d/api", time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1)`, repo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE full_name=$1`, repo)
+	})
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name, enabled, dry_run) VALUES ($1, true, true) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	newRun := func(trigger, status string, job *int64) int64 {
+		var id int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, river_job_id, started_at) VALUES ($1, 1, 'h', 'b', $2, $3, true, $4, now()) RETURNING id`, repoID, trigger, status, job).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	oldJob := int64(987654321)
+	interrupted := newRun("webhook", "running", &oldJob)
+	local := newRun("cli_inline", "running", nil)
+	done := newRun("webhook", "completed", &oldJob)
+	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecoverInterruptedRuns(ctx, client); err != nil {
+		t.Fatal(err)
+	}
+	status := func(id int64) (string, int64) {
+		var value string
+		var job *int64
+		if err := store.Pool.QueryRow(ctx, `SELECT status, river_job_id FROM runs WHERE id=$1`, id).Scan(&value, &job); err != nil {
+			t.Fatal(err)
+		}
+		if job == nil {
+			return value, 0
+		}
+		return value, *job
+	}
+	if value, job := status(interrupted); value != "queued" || job == oldJob || job == 0 {
+		t.Fatalf("interrupted run: %s job %d", value, job)
+	}
+	if value, _ := status(local); value != "running" {
+		t.Fatalf("a local CLI review was touched: %s", value)
+	}
+	if value, job := status(done); value != "completed" || job != oldJob {
+		t.Fatalf("a completed run was touched: %s %d", value, job)
+	}
+	var message string
+	if err := store.Pool.QueryRow(ctx, `SELECT message FROM run_events WHERE run_id=$1 ORDER BY id DESC LIMIT 1`, interrupted).Scan(&message); err != nil || !strings.Contains(message, "restarted") {
+		t.Fatalf("no timeline entry: %q %v", message, err)
+	}
+}

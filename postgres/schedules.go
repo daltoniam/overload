@@ -210,3 +210,62 @@ func (s *Store) RunScheduleNow(ctx context.Context, client *river.Client[pgx.Tx]
 	}
 	return runID, tx.Commit(ctx)
 }
+
+// RecoverInterruptedRuns queues again the reviews and scheduled jobs that
+// were running when overload stopped (a restart or a deploy). It must run
+// at startup, before the job queue starts working: overload runs as a
+// single process, so anything still marked running was cut off. Local CLI
+// reviews are left alone. It returns how many runs were queued again.
+func (s *Store) RecoverInterruptedRuns(ctx context.Context, client *river.Client[pgx.Tx]) (int, error) {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `SELECT id, kind FROM runs WHERE status = 'running' AND river_job_id IS NOT NULL AND trigger <> 'cli_inline' FOR UPDATE`)
+	if err != nil {
+		return 0, err
+	}
+	type interrupted struct {
+		id   int64
+		kind string
+	}
+	var runs []interrupted
+	for rows.Next() {
+		var run interrupted
+		if err := rows.Scan(&run.id, &run.kind); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		runs = append(runs, run)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	for _, run := range runs {
+		var args river.JobArgs
+		switch run.kind {
+		case "pr_review":
+			args = ReviewArgs{RunID: run.id}
+		case "scheduled_prompt":
+			args = ScheduleArgs{RunID: run.id}
+		default:
+			continue
+		}
+		if _, err := tx.Exec(ctx, `UPDATE runs SET status = 'queued', started_at = NULL WHERE id = $1`, run.id); err != nil {
+			return 0, err
+		}
+		job, err := client.InsertTx(ctx, tx, args, nil)
+		if err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE runs SET river_job_id = $2 WHERE id = $1`, run.id, job.Job.ID); err != nil {
+			return 0, err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'warn', 'queued', 'Overload restarted while this was running; queued again')`, run.id); err != nil {
+			return 0, err
+		}
+	}
+	return len(runs), tx.Commit(ctx)
+}
