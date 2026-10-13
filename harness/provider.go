@@ -12,11 +12,12 @@ import (
 	"github.com/daltoniam/overload"
 )
 
-// localHTTPClient has no response-header timeout. Non-streaming calls to a
-// local model send no headers until the whole answer, thinking included, is
-// generated, which can take longer than the OpenAI SDK's 10-minute default.
-// The review context still bounds every call.
-var localHTTPClient = func() *http.Client {
+// modelHTTPClient has no response-header timeout. Non-streaming calls send
+// no headers until the whole answer, thinking included, is generated, which
+// can take longer than the OpenAI SDK's 10-minute default for local models
+// and for hosted reasoning models on large files. Each call is still bounded
+// by its plan's timeout (local 90 minutes, hosted 15).
+var modelHTTPClient = func() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 0
 	return &http.Client{Transport: transport}
@@ -25,9 +26,7 @@ var localHTTPClient = func() *http.Client {
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
 	if model.API == overload.APIResponses {
 		options := []openai.Option{openai.WithBaseURL(model.BaseURL), openai.WithAPIKey(os.Getenv(model.APIKeyEnv)), openai.WithHeaders(model.Headers), openai.WithUseResponsesAPI(), openai.WithResponsesAPIFunc(func(string) bool { return true })}
-		if model.ConnectionKind != "hosted" {
-			options = append(options, openai.WithHTTPClient(localHTTPClient))
-		}
+		options = append(options, openai.WithHTTPClient(modelHTTPClient))
 		// Fantasy only sends reasoning settings for model names it knows, so
 		// set the field on every request instead.
 		if model.ReasoningParam == overload.ReasoningEffortField {
@@ -35,11 +34,9 @@ func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
 		}
 		return openai.New(options...)
 	}
-	options := []openaicompat.Option{openaicompat.WithBaseURL(model.BaseURL), openaicompat.WithAPIKey(os.Getenv(model.APIKeyEnv)), openaicompat.WithHeaders(model.Headers)}
+	options := []openaicompat.Option{openaicompat.WithBaseURL(model.BaseURL), openaicompat.WithAPIKey(os.Getenv(model.APIKeyEnv)), openaicompat.WithHeaders(model.Headers), openaicompat.WithHTTPClient(modelHTTPClient)}
 	if model.ConnectionKind == "hosted" {
 		options = append(options, openaicompat.WithLanguageModelOptions(openai.WithLanguageModelPrepareCallFunc(hostedPrepareCall)))
-	} else {
-		options = append(options, openaicompat.WithHTTPClient(localHTTPClient))
 	}
 	return openaicompat.New(options...)
 }

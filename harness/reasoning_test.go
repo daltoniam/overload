@@ -113,9 +113,9 @@ func TestValidateReasoning(t *testing.T) {
 }
 
 func TestLocalModelsHaveNoResponseHeaderTimeout(t *testing.T) {
-	transport, ok := localHTTPClient.Transport.(*http.Transport)
-	if !ok || transport.ResponseHeaderTimeout != 0 || localHTTPClient.Timeout != 0 {
-		t.Fatalf("local client would cut off long thinking: %+v", localHTTPClient)
+	transport, ok := modelHTTPClient.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout != 0 || modelHTTPClient.Timeout != 0 {
+		t.Fatalf("model client would cut off long thinking: %+v", modelHTTPClient)
 	}
 	if _, err := newProvider(overload.ModelProfile{ConnectionKind: "local", BaseURL: "http://127.0.0.1:1/v1"}); err != nil {
 		t.Fatal(err)

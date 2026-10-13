@@ -275,6 +275,32 @@ func TestHungModelCallTimesOut(t *testing.T) {
 	}
 }
 
+// TestHostedCallsUseOverloadsTimeout checks hosted calls are cut off by
+// overload's hosted limit, not an HTTP client limit of their own, so slow
+// reasoning models are not stopped early.
+func TestHostedCallsUseOverloadsTimeout(t *testing.T) {
+	previous := hostedCallTimeout
+	hostedCallTimeout = 300 * time.Millisecond
+	t.Cleanup(func() { hostedCallTimeout = previous })
+	t.Setenv("OVERLOAD_MODEL_EDGE", "key")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}]}`, `{"summary":"None","findings":[]}`)
+	}))
+	t.Cleanup(server.Close)
+	workflow := edgeWorkflow(server.URL)
+	workflow.Agents[0].Model.ConnectionKind, workflow.Agents[0].Model.APIKeyEnv = "hosted", "OVERLOAD_MODEL_EDGE"
+	diff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y()\n"
+	if _, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{}); err != nil {
+		t.Fatalf("slow hosted answer within overload's limit: %v", err)
+	}
+	transport, ok := modelHTTPClient.Transport.(*http.Transport)
+	if !ok || transport.ResponseHeaderTimeout != 0 {
+		t.Fatal("hosted calls would be cut off by a response-header timeout")
+	}
+}
+
 func TestHostedWorkflowsReviewLargerFiles(t *testing.T) {
 	var mu sync.Mutex
 	var reviewed []string

@@ -165,3 +165,13 @@ same rules on kind.
 Change the image tag in `kustomization.yaml` and apply again. The
 Deployment uses the `Recreate` strategy, so the old pod stops before the new
 one migrates the database. Queued reviews wait in Postgres and continue.
+
+With sandboxed reviews, warm-pool sandbox pods keep the agent image they
+started with, so the next review after an upgrade can still run the old
+agent. Replace them after applying:
+
+```sh
+kubectl -n overload delete sandboxes -l agents.x-k8s.io/launch-type=warm
+```
+
+The warm pool starts new ones with the new image within a few seconds.
