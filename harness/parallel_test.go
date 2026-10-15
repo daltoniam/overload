@@ -149,18 +149,45 @@ func TestParallelWorkflowReviewIsBoundedAndOrdered(t *testing.T) {
 	}
 }
 
-func TestParallelWorkflowStopsOnFirstFailure(t *testing.T) {
+// TestParallelWorkflowSkipsOnlyTheFailingFile checks one file the main
+// agent cannot review (a timeout, a bad reply) leaves the review partial
+// instead of failing it, and the other files are still reviewed.
+func TestParallelWorkflowSkipsOnlyTheFailingFile(t *testing.T) {
 	const files = 12
 	model := newConcurrencyModel(t, files, 1)
-	_, err := (Reviewer{}).Review(context.Background(), workflowSpec(model.server.URL, files, 3), fstest.MapFS{})
-	if err == nil || !strings.Contains(err.Error(), "f1.go") {
-		t.Fatalf("error does not name the failing file: %v", err)
+	result, err := (Reviewer{}).Review(context.Background(), workflowSpec(model.server.URL, files, 3), fstest.MapFS{})
+	if err != nil {
+		t.Fatalf("one failed file failed the review: %v", err)
 	}
-	model.mu.Lock()
-	started := len(model.started)
-	model.mu.Unlock()
-	if started >= files {
-		t.Fatalf("all %d files started after an early failure", started)
+	routing := result.Metrics["routing"].(overload.Routing)
+	if strings.Join(routing.Agents[0].Unreviewed, ",") != "f1.go" || !strings.Contains(routing.Agents[0].Failed, "f1.go") || routing.Agents[0].Reviewed != files-1 {
+		t.Fatalf("agent %+v", routing.Agents[0])
+	}
+	if len(routing.Degraded) != 1 || !strings.Contains(routing.Degraded[0], "main agent local failed and did not review 1 of its 12 files") || result.Metrics["degraded"] != true {
+		t.Fatalf("degraded %q", routing.Degraded)
+	}
+	if got := len(result.Findings) + len(result.Dropped); got != files-1 {
+		t.Fatalf("findings from the other files missing: %d kept + dropped", got)
+	}
+}
+
+// TestAgentStopsAfterRepeatedFailures checks an agent that cannot review
+// anything (a bad key, a model that is down) stops after a few files, and a
+// main agent that reviewed nothing still fails the review.
+func TestAgentStopsAfterRepeatedFailures(t *testing.T) {
+	const files = 12
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "invalid key", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	_, err := (Reviewer{}).Review(context.Background(), workflowSpec(server.URL, files, 1), fstest.MapFS{})
+	if err == nil || !strings.Contains(err.Error(), "review incomplete at f") {
+		t.Fatalf("a main agent that reviewed nothing must fail the review: %v", err)
+	}
+	if got := calls.Load(); got != maxFileFailures {
+		t.Fatalf("%d model calls, want the agent to stop after %d failures", got, maxFileFailures)
 	}
 }
 

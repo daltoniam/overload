@@ -128,8 +128,11 @@ func TestReviewerDoesNotClaimPartialCoverage(t *testing.T) {
 	defer server.Close()
 	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+new\n"
 	result, err := (Reviewer{}).Review(context.Background(), profileSpec(t, patch, overload.ModelProfile{BaseURL: server.URL, Model: "test"}, "context"), fstest.MapFS{})
-	if err == nil || result.Metrics["agent_reviewer_reviewed_files"] != 1 || result.Metrics["total_files"] != 2 {
+	if err != nil || result.Metrics["agent_reviewer_reviewed_files"] != 1 || result.Metrics["total_files"] != 2 || result.Metrics["degraded"] != true {
 		t.Fatalf("partial result=%+v error=%v", result, err)
+	}
+	if routing := result.Metrics["routing"].(overload.Routing); strings.Join(routing.Agents[0].Unreviewed, ",") != "b.go" {
+		t.Fatalf("the unreviewed file is not listed: %+v", routing.Agents[0])
 	}
 }
 

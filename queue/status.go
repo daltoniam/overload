@@ -80,16 +80,20 @@ func runURL(runID int64) string {
 }
 
 // finalStatus describes a posted review as a commit status: failure when
-// the review requested changes, success otherwise.
-func finalStatus(event string, findings int) (string, string) {
-	switch event {
-	case overload.ReviewRequestChanges:
-		return statusFailure, "Changes requested: blocking issues found"
-	case overload.ReviewApprove:
-		return statusSuccess, "Approved"
+// the review requested changes, success otherwise. A partial review (some
+// files could not be reviewed) says so.
+func finalStatus(event string, findings int, partial bool) (string, string) {
+	state, description := statusSuccess, fmt.Sprintf("%d issue(s) noted as comments", findings)
+	switch {
+	case event == overload.ReviewRequestChanges:
+		state, description = statusFailure, "Changes requested: blocking issues found"
+	case event == overload.ReviewApprove:
+		description = "Approved"
+	case findings == 0:
+		description = "No issues found"
 	}
-	if findings == 0 {
-		return statusSuccess, "No issues found"
+	if partial {
+		description = "Partial review, some files not reviewed. " + description
 	}
-	return statusSuccess, fmt.Sprintf("%d issue(s) noted as comments", findings)
+	return state, description
 }

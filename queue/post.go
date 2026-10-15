@@ -96,7 +96,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		if err := w.Store.FinishPost(ctx, target, "nothing_new", 0); err != nil {
 			return err
 		}
-		state, description := finalStatus(event, len(severities))
+		state, description := finalStatus(event, len(severities), target.Partial)
 		reportStatus(ctx, w.Store, w.Status, runID, state, description)
 		return nil
 	}
@@ -118,7 +118,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
 		return err
 	}
-	state, description := finalStatus(event, len(severities))
+	state, description := finalStatus(event, len(severities), target.Partial)
 	reportStatus(ctx, w.Store, w.Status, runID, state, description)
 	return nil
 }

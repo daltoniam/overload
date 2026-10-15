@@ -81,8 +81,9 @@ type Reviewer struct{}
 // together, limited per model server, and the validated findings are merged
 // in agent then file order with each finding attributed to the agents that
 // reported it. An optional verifier then keeps or drops each sub-agent
-// finding. A failed sub-agent or verifier leaves the review degraded rather
-// than failed; a failed main agent fails it.
+// finding. A file an agent cannot review, or a failed verifier, leaves the
+// review degraded rather than failed; a main agent that reviews none of its
+// files fails it.
 func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS) (result overload.ReviewResult, err error) {
 	workflow := spec.Workflow
 	if workflow.Kind != "pr_review" {
@@ -141,16 +142,17 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
 	runs := newAgentRuns(len(workflow.Agents), len(batches))
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
-		if runs.failures[task.agent].Load() != nil {
+		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
 		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], parsed.patchFor(paths[task.file]))
 		if err != nil {
-			if task.agent == 0 || ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return err
 			}
 			message := overload.TruncateUTF8(err.Error(), 300)
 			runs.failures[task.agent].CompareAndSwap(nil, &message)
+			runs.failed[task.agent].Add(1)
 			return nil
 		}
 		for index := range outcome.findings {
@@ -167,6 +169,12 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			return result, fmt.Errorf("review incomplete: %w", ctxErr)
 		}
 		return result, err
+	}
+	// A main agent that could not review any of its files (a bad key, a
+	// model that is down) fails the review: there is nothing to stand on.
+	// One that failed only some files leaves the review partial.
+	if message := runs.failures[0].Load(); message != nil && len(routing.Agents[0].Files) > 0 && runs.completed[0].Load() == 0 {
+		return result, errors.New(*message)
 	}
 	var summaries []string
 	for index := range runs.outcomes {
@@ -251,15 +259,22 @@ func scheduleReviews(workflow overload.ResolvedWorkflow, routing overload.Routin
 }
 
 // agentRuns collects what each agent did while reviews run in parallel.
+// maxFileFailures is how many of its files an agent may fail before it
+// stops: one slow or malformed file is skipped, but repeated failures (a
+// bad key, a model that is down) end the agent instead of trying every
+// file.
+const maxFileFailures = 3
+
 type agentRuns struct {
 	outcomes  [][]fileOutcome
 	done      [][]bool
 	completed []atomic.Int64
 	failures  []atomic.Pointer[string]
+	failed    []atomic.Int64
 }
 
 func newAgentRuns(agents, files int) *agentRuns {
-	runs := &agentRuns{outcomes: make([][]fileOutcome, agents), done: make([][]bool, agents), completed: make([]atomic.Int64, agents), failures: make([]atomic.Pointer[string], agents)}
+	runs := &agentRuns{outcomes: make([][]fileOutcome, agents), done: make([][]bool, agents), completed: make([]atomic.Int64, agents), failures: make([]atomic.Pointer[string], agents), failed: make([]atomic.Int64, agents)}
 	for index := range agents {
 		runs.outcomes[index] = make([]fileOutcome, files)
 		runs.done[index] = make([]bool, files)
@@ -268,8 +283,8 @@ func newAgentRuns(agents, files int) *agentRuns {
 }
 
 // record copies per-agent results onto the routing and metrics. When the
-// run completed, a failed sub-agent's unreviewed files are listed and the
-// review is marked degraded.
+// run completed, an agent's unreviewed files are listed and the review is
+// marked degraded.
 func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overload.Routing, metrics map[string]any, groups []connectionGroup, groupOf []int, fileIndex map[string]int, completed bool) {
 	for index, resolved := range workflow.Agents {
 		reviewed := int(runs.completed[index].Load())
@@ -291,7 +306,11 @@ func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overl
 				agent.Unreviewed = append(agent.Unreviewed, path)
 			}
 		}
-		routing.Degraded = append(routing.Degraded, fmt.Sprintf("sub-agent %s failed and did not review %d of its %d files", resolved.Name, len(agent.Unreviewed), len(agent.Files)))
+		role := "sub-agent"
+		if index == 0 {
+			role = "main agent"
+		}
+		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%s %s failed and did not review %d of its %d files", role, resolved.Name, len(agent.Unreviewed), len(agent.Files)))
 	}
 }
 

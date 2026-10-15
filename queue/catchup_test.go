@@ -62,3 +62,28 @@ func TestCatchUpWebhooksCapsRedeliveries(t *testing.T) {
 		t.Fatalf("sent %d err %v, want %d", sent, err, maxRedelivered)
 	}
 }
+
+func TestFinalStatusMarksPartialReviews(t *testing.T) {
+	tests := []struct {
+		event       string
+		findings    int
+		partial     bool
+		state, desc string
+	}{
+		{"COMMENT", 0, false, statusSuccess, "No issues found"},
+		{"COMMENT", 2, false, statusSuccess, "2 issue(s) noted as comments"},
+		{"APPROVE", 0, false, statusSuccess, "Approved"},
+		{"REQUEST_CHANGES", 1, false, statusFailure, "Changes requested: blocking issues found"},
+		{"COMMENT", 0, true, statusSuccess, "Partial review, some files not reviewed. No issues found"},
+		{"REQUEST_CHANGES", 1, true, statusFailure, "Partial review, some files not reviewed. Changes requested: blocking issues found"},
+	}
+	for _, tt := range tests {
+		state, desc := finalStatus(tt.event, tt.findings, tt.partial)
+		if state != tt.state || desc != tt.desc {
+			t.Errorf("finalStatus(%s,%d,%v) = %s %q, want %s %q", tt.event, tt.findings, tt.partial, state, desc, tt.state, tt.desc)
+		}
+		if len(desc) > 140 {
+			t.Errorf("description longer than GitHub's 140 characters: %q", desc)
+		}
+	}
+}

@@ -192,7 +192,8 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	if !plan.enqueue {
-		state, description := finalStatus(overload.ReviewComment, len(result.Findings))
+		degraded, _ := result.Metrics["degraded"].(bool)
+		state, description := finalStatus(overload.ReviewComment, len(result.Findings), degraded)
 		if plan.postStatus != "" {
 			description += " (not posted: posting is off)"
 		}

@@ -505,10 +505,15 @@ Workflow "go-service-review"
    duplicates, records attribution, and is the only component that posts to
    GitHub.
 
-**Failure handling.** A failed sub-agent does not fail the review silently
-or pass silently: the run completes as **degraded**, names the failed agent
-and the files it did not review, and posting includes a note that the
-review is partial. A failed planner falls back to globs. A failed verifier
+**Failure handling.** A file an agent cannot review (a timeout, an
+unreadable reply) does not fail the review silently or pass silently: the
+run completes as **degraded**, names the agent and the files it did not
+review, posting includes a note that the review is partial, and the commit
+status says "Partial review". This applies to the main agent too
+(2026-10-15: one 38 KB file that Grok 4.7 could not finish in 15 minutes
+failed every review of a PR). An agent stops after 3 failed files (a bad
+key, a model that is down), and a main agent that reviewed none of its
+files still fails the review. A failed planner falls back to globs. A failed verifier
 keeps all findings and marks the run degraded.
 
 **Model connections, memory and parallelism.**
@@ -949,8 +954,8 @@ Before the first release:
    instead of overwriting the newer save (configuration files that omit
    the revision are not checked), and saving an unchanged workflow no
    longer bumps its revision. Each model call has a time limit (local 90
-   minutes, hosted 15): a hung sub-agent leaves the review partial, and a
-   hung main agent fails it with "model call timed out".
+   minutes, hosted 15): a hung call leaves its file unreviewed and the
+   review partial (see Failure handling in 7.8).
 
 After:
 4. Evaluation: real PRs with known bugs, scored per model and per workflow
