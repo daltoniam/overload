@@ -9,8 +9,28 @@ import (
 	"github.com/daltoniam/overload"
 )
 
-func cleanModelJSON(text string) string {
+// stripThinking drops reasoning a server left inline in the answer as a
+// <think>...</think> block, as Recursive Flint and other always-thinking
+// models do when the server has no reasoning parser for their template. A
+// lone </think> counts too, for templates that open the block in the prompt;
+// it must come before the first '{' so a finding that quotes the tag is kept.
+func stripThinking(text string) string {
 	text = strings.TrimSpace(text)
+	end := strings.Index(text, "</think>")
+	if end < 0 {
+		if strings.HasPrefix(text, "<think>") {
+			return ""
+		}
+		return text
+	}
+	if brace := strings.IndexByte(text, '{'); !strings.HasPrefix(text, "<think>") && brace >= 0 && brace < end {
+		return text
+	}
+	return strings.TrimSpace(text[end+len("</think>"):])
+}
+
+func cleanModelJSON(text string) string {
+	text = stripThinking(text)
 	if !strings.HasPrefix(text, "```") {
 		return text
 	}

@@ -98,6 +98,30 @@ overload settings set --name local --url http://127.0.0.1:8080/v1 \
   --model local --reasoning-param chat_template --reasoning-effort medium
 ```
 
+### Local: Recursive Flint on llama.cpp
+
+[Recursive Flint](https://huggingface.co/RecursiveSI/flint) (Apache 2.0) is
+a 40B mixture-of-experts coding model with about 2.5B parameters active per
+token, so it is fast for its size. The
+[community GGUF](https://huggingface.co/lmstudio-community/flint-GGUF) at
+Q4_K_M is a 24 GB download; plan on a 32 GB Mac or larger. On an M1 Max it
+found three or four of the five planted bugs at about 5.5 to 7.5 minutes per
+file. It needs llama.cpp build b11801 or newer: Homebrew's llama.cpp 0.7.0 is
+too old and fails with `unknown model architecture: 'flint'`, so download the
+`macos-arm64` archive from the
+[llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases) and run
+its `llama-server` until the formula is updated.
+
+```sh
+llama-server -hf lmstudio-community/flint-GGUF:Q4_K_M --port 8080 -ngl 99 \
+  -c 65536 --jinja --reasoning-format deepseek
+overload settings set --name flint --url http://127.0.0.1:8080/v1 \
+  --model flint --reasoning-param none
+```
+
+Flint always thinks and its chat template has no effort setting, so use
+`--reasoning-param none`; Reasoning effort has no effect on it.
+
 Smaller models find fewer bugs; see the measurements in
 [deploy/README.md](../deploy/README.md#measurements).
 

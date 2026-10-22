@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	"strings"
 
 	"charm.land/fantasy"
 	"github.com/daltoniam/overload"
@@ -54,7 +53,7 @@ func RunAgent(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	}
 	if result != nil {
 		run.Steps = len(result.Steps)
-		run.Text = strings.TrimSpace(result.Response.Content.Text())
+		run.Text = stripThinking(result.Response.Content.Text())
 		run.InputTokens, run.OutputTokens = result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens
 	}
 	return run, err
