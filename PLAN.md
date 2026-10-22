@@ -784,7 +784,9 @@ which model and mode to use.
   schema-failure rate, p50/p95 latency, tokens, estimated cost.
 - Initial matrix: Qwen3-4B-Instruct-2507, Qwen3-8B, Ternary Bonsai 8B, and
   Qwen3-Coder-30B-A3B-Instruct when a GPU or large-memory host is available;
-  modes context, plan, tools.
+  Recursive Flint (40B-A2.5B, llama.cpp GGUF, Q4_K_M and Q8_0 at its native
+  256k context) is measured on the planted-bug eval (3 to 4 of 5, see
+  deploy/README.md); modes context, plan, tools.
 
 ## 10. UI
 

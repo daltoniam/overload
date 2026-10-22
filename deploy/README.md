@@ -104,6 +104,38 @@ Start `llama-server --jinja` with a context of at least 64k tokens per slot
 add it with `--reasoning-param chat_template`. A per-request effort overrides
 a server default such as `--chat-template-kwargs '{"reasoning_effort":"medium"}'`.
 
+[Recursive Flint](https://huggingface.co/RecursiveSI/flint) (40B-A2.5B MoE,
+Apache 2.0) runs from the
+[community GGUF](https://huggingface.co/lmstudio-community/flint-GGUF)
+(Q4_K_M is 24 GB, Q6_K 33 GB, Q8_0 42 GB). It needs llama.cpp build b11801
+or newer; Homebrew's llama.cpp 0.7.0 (build 11669) fails with `unknown model
+architecture: 'flint'`, so use a
+[prebuilt release](https://github.com/ggml-org/llama.cpp/releases) until the
+formula catches up. Its native context is 262,144 tokens (no RoPE scaling,
+so 1M is not available), and llama.cpp holds the full window in about 7 GiB
+of KV cache because only 14 of its 49 layers use full attention:
+
+```sh
+llama-server -hf lmstudio-community/flint-GGUF:Q4_K_M --port 8080 -ngl 99 \
+  -c 262144 --jinja --reasoning-format deepseek
+overload settings set --name flint --url http://127.0.0.1:8080/v1 \
+  --model flint --reasoning-param none
+```
+
+Use `:Q8_0` for the 8-bit weights. A review prompt is about 11k tokens, so
+the large window matters for agents and big contexts rather than per-file
+reviews. Long prompts are slow on an M1 Max: a 205k-token prompt took about
+55 minutes to process (100 tokens/s at first, 36 by the end) and generation
+fell to 8 tokens/s, though Flint still retrieved a fact planted two-thirds
+of the way in.
+
+Flint always thinks and its chat template takes no effort setting, so use
+`--reasoning-param none`; the out-of-tokens retry at `medium` does not
+shorten its thinking, so raise `--max-output-tokens` rather than lowering
+effort if files run out. Servers that leave its `<think>...</think>` block
+in the answer instead of splitting it out (no `--reasoning-format`) still
+work: overload drops the block before reading the review.
+
 ### Measurements
 
 A 92-line Go file with five planted bugs (`harness/testdata/planted`), run
@@ -116,6 +148,9 @@ the `OVERLOAD_EVAL_*` variables described in the test.
 | Qwen3.8 Flash Next Q2, ds4, `reasoning_effort:high` | 5/5 in 4 of 4 runs | 7.5k to 13.5k | 8 to 12 min |
 | Bonsai 2 27B, llama.cpp, `xhigh` | 4/5 in 2 of 2 runs | 11k to 15k | 15 to 19 min |
 | Bonsai 2 27B, llama.cpp, `medium` | 3/5 in 2 of 2 runs | 2.7k to 3.5k | 3.5 to 4.5 min |
+| Recursive Flint Q4_K_M, llama.cpp b11803, 64k context | 4/5 in 1 of 4 runs, 3/5 in 3 | 12k to 17k | 5.5 to 7.5 min |
+| Recursive Flint Q4_K_M, llama.cpp b11803, 256k context | 4/5 in 2 of 4 runs, 3/5 in 2 | 7.9k to 16k | 4 to 7.5 min |
+| Recursive Flint Q8_0, llama.cpp b11803, 256k context | 4/5 in 3 of 4 runs, 3/5 in 1 | 9.6k to 17.5k | 5.5 to 10.5 min |
 | GPT-6 Sol (hosted) | 5/5 in 14 of 14 runs | 1.4k to 2.0k | 13 to 21 s |
 
 GPT-6 Sol counts its hidden reasoning against the output limit: with the
@@ -123,7 +158,16 @@ old 2,048-token hosted default, two runs were cut off and lost most of their
 findings, so the default is now 16,384 (you pay only for tokens used). Two
 correct findings it worded or anchored differently were scored as misses
 until the scorer was widened. No run reported a false positive. Bonsai missed the mutex left locked on a
-cache hit at both efforts. This is one synthetic file; treat it as
+cache hit at both efforts. Flint Q4_K_M generated about 50 tokens/s, the
+fastest local model here, and Q8_0 about 37; neither found all five in any
+run. Q4_K_M found the mutex bug in 2 of 8 runs and the negative refund in
+3 of 8 (the context size made no clear difference), and in all four 256k
+runs it also flagged the never-initialized cache map, which is only a bug if
+callers use a zero `Store`. Q8_0 found the mutex bug in 2 of 4 runs and the
+negative refund in 3 of 4 but missed the stale cache twice. Both flagged the
+ignored refund-amount parse error, a real bug that was not planted. The Q8_0
+runs left 5% of memory free with the Mac swapping, so its times
+are pessimistic. This is one synthetic file; treat it as
 directional. Parallel files did not help on the M1 Max (two streams gave
 10 tokens/s combined against 13 for one); it is meant for GPUs and hosted
 APIs, where eight at once cut a 21-file review from 138 s to 24 s.
