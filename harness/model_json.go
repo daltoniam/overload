@@ -12,8 +12,9 @@ import (
 // stripThinking drops reasoning a server left inline in the answer as a
 // <think>...</think> block, as Recursive Flint and other always-thinking
 // models do when the server has no reasoning parser for their template. A
-// lone </think> counts too, for templates that open the block in the prompt;
-// it must come before the first '{' so a finding that quotes the tag is kept.
+// lone </think> counts too, for templates that open the block in the prompt,
+// unless the reply already starts as JSON or fenced JSON: then the tag is
+// quoted inside a finding and the reply is kept.
 func stripThinking(text string) string {
 	text = strings.TrimSpace(text)
 	end := strings.Index(text, "</think>")
@@ -23,7 +24,7 @@ func stripThinking(text string) string {
 		}
 		return text
 	}
-	if brace := strings.IndexByte(text, '{'); !strings.HasPrefix(text, "<think>") && brace >= 0 && brace < end {
+	if strings.HasPrefix(text, "{") || strings.HasPrefix(text, "```") {
 		return text
 	}
 	return strings.TrimSpace(text[end+len("</think>"):])

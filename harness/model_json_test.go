@@ -14,6 +14,8 @@ func TestCleanModelJSON(t *testing.T) {
 		{"<think>plan</think>\n```json\n{\"summary\":\"ok\"}\n```", `{"summary":"ok"}`},
 		{"opened in the prompt</think>{\"summary\":\"ok\"}", `{"summary":"ok"}`},
 		{`{"summary":"quotes </think> in code"}`, `{"summary":"quotes </think> in code"}`},
+		{"Plan: {\"summary\":\"draft\"}</think>\n\n{\"summary\":\"ok\",\"findings\":[]}", `{"summary":"ok","findings":[]}`},
+		{"```json\n{\"summary\":\"quotes </think>\"}\n```", `{"summary":"quotes </think>"}`},
 		{"<think>cut off by the token limit", ""},
 	} {
 		if got := cleanModelJSON(test.input); got != test.want {
