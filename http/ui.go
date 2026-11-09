@@ -62,9 +62,9 @@ var disableUserPath = regexp.MustCompile(`^/users/[0-9]+/disable$`)
 func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
 	switch {
 	case strings.HasSuffix(path, "/delete"):
-		return pages.ConfirmPrompt{Eyebrow: "Confirm removal", Title: "Delete this resource?", Detail: "This cannot be undone. Resources with dependent configuration or history cannot be removed.", Button: "Confirm deletion"}, true
+		return pages.DeletePrompt, true
 	case disableUserPath.MatchString(path):
-		return pages.ConfirmPrompt{Eyebrow: "Confirm access change", Title: "Disable this person?", Detail: "They are signed out at once and cannot sign in until an administrator enables them again.", Button: "Disable"}, true
+		return pages.ConfirmPrompt{Eyebrow: "Confirm access change", Title: "Disable this person?", Impact: "They are signed out at once and cannot sign in until an administrator enables them again.", Button: "Disable", Cancel: "/users"}, true
 	}
 	return pages.ConfirmPrompt{}, false
 }

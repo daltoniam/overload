@@ -15,6 +15,9 @@ type Viewer struct {
 	Role string
 	// CSRF is the form token the sign-out form posts.
 	CSRF string
+	// BreakGlass marks the shared break-glass login, which has no session
+	// to sign out of.
+	BreakGlass bool
 }
 
 type viewerKey struct{}

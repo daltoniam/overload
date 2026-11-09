@@ -543,8 +543,8 @@ not together with OIDC.
 | `OVERLOAD_OIDC_SCOPES` | Extra scopes, if the provider needs one to include groups |
 | `OVERLOAD_SESSION_HOURS`, `OVERLOAD_SESSION_IDLE_HOURS` | Session length (default 12) and idle limit (default 2), in hours up to 720 |
 
-Register `<base>/auth/callback` as the client's redirect URI and `<base>/`
-as its post-logout redirect URI.
+Register `<base>/auth/callback` as the client's redirect URI and
+`<base>/auth/signed-out` as its post-logout redirect URI.
 
 - **Entra ID** puts group object IDs (GUIDs) in the `groups` claim, so map
   the GUIDs, or configure the app to emit group names (cloud-only groups)
@@ -561,8 +561,9 @@ How it works:
   `state` (bound to the browser by a cookie) and `nonce`. ID tokens are
   verified against the provider's discovery document and keys. A sign-in
   started at another address (such as `127.0.0.1`) is sent to the base URL
-  first, since its cookie must reach the callback. One address may start
-  30 sign-ins a minute.
+  first, since its cookie must reach the callback. At most 10,000
+  sign-ins can be in progress; past that the oldest are dropped, so
+  anonymous requests cannot fill the database.
 - The provider's discovery document is fetched once, when someone first
   signs in; if the provider is down, sign-ins fail at once for 30 seconds
   before it is tried again, and overload keeps serving signed-in people.
@@ -580,8 +581,8 @@ How it works:
   streams do not start sign-ins.
 - Break-glass: with `OVERLOAD_UI_USER` and `OVERLOAD_UI_PASSWORD` also set,
   open `/?break-glass=1` to sign in with that shared login as an admin
-  while the provider is down; changes made that way are logged with the
-  client address and browser.
+  while the provider is down (the sidebar says so and links Users);
+  changes made that way are logged with the client address and browser.
 - Signing out ends the overload session; the signed-out page links to the
   provider's own sign-out, with the session's ID token as `id_token_hint`
   (Okta requires it), when the provider advertises one.

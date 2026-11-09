@@ -33,6 +33,7 @@ type fakeSessionStore struct {
 	sessions map[string]fakeSession
 	logins   map[string]postgres.OIDCLogin
 	started  int
+	keep     int
 	reviews  []int
 }
 
@@ -85,10 +86,11 @@ func (store *fakeSessionStore) EndSession(_ context.Context, token string) (stri
 	delete(store.sessions, token)
 	return session.idToken, nil
 }
-func (store *fakeSessionStore) StartLogin(_ context.Context, state string, login postgres.OIDCLogin, _ time.Duration) error {
+func (store *fakeSessionStore) StartLogin(_ context.Context, state string, login postgres.OIDCLogin, _ time.Duration, keep int) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.started++
+	store.keep = keep
 	store.logins[state] = login
 	return nil
 }
@@ -434,11 +436,11 @@ func TestOIDCSignInRolesAndSessions(t *testing.T) {
 
 	sessions := store.sessionCount()
 	out := admin.do(http.MethodPost, "/auth/logout", url.Values{"csrf": {admin.formToken("/")}})
-	if out.Code != http.StatusOK || admin.session() != "" || store.sessionCount() != sessions-1 || strings.Contains(out.Body.String(), "Signed in as") {
+	if out.Code != http.StatusOK || admin.session() != "" || store.sessionCount() != sessions-1 || strings.Contains(out.Body.String(), "Signed in as") || strings.Contains(out.Body.String(), `href="/runs"`) || out.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("logout: %d %v", out.Code, out.Header())
 	}
 	hint := regexp.MustCompile(`href="([^"]*id_token_hint=[^"&]+[^"]*)"`).FindStringSubmatch(out.Body.String())
-	if hint == nil || !strings.Contains(hint[1], "post_logout_redirect_uri=https%3a%2f%2foverload.example.com%2f") && !strings.Contains(hint[1], "post_logout_redirect_uri=https%3A%2F%2Foverload.example.com%2F") {
+	if hint == nil || !strings.Contains(strings.ToLower(hint[1]), "post_logout_redirect_uri=https%3a%2f%2foverload.example.com%2fauth%2fsigned-out") {
 		t.Fatalf("signed-out page has no provider sign-out link with a hint: %s", out.Body.String())
 	}
 	if after := admin.do(http.MethodGet, "/settings", nil); after.Code != http.StatusSeeOther {
@@ -569,8 +571,19 @@ func TestOIDCSignedOutRequests(t *testing.T) {
 	post.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, post)
-	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "Sign in again") {
+	if response.Code != http.StatusUnauthorized || !strings.Contains(response.Body.String(), "Sign in again") || !strings.HasPrefix(response.Header().Get("Content-Type"), "text/html") {
 		t.Fatalf("signed-out form post: %d %s", response.Code, response.Body.String())
+	}
+
+	stale := httptest.NewRequest(http.MethodGet, "https://overload.example.com/runs", nil)
+	stale.AddCookie(&http.Cookie{Name: secureSessionCookie, Value: "ended"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, stale)
+	if cookies := response.Result().Cookies(); len(cookies) != 1 || cookies[0].Name != secureSessionCookie || cookies[0].MaxAge >= 0 {
+		t.Fatalf("a stale session cookie was kept: %v", cookies)
+	}
+	if page := request("overload.example.com", "/auth/signed-out", nil).Body.String(); strings.Contains(page, `href="/runs"`) {
+		t.Fatal("the signed-out page shows navigation")
 	}
 
 	// Sign-ins start on the base URL's host, where the callback is.
@@ -598,6 +611,9 @@ func TestOIDCBreakGlass(t *testing.T) {
 	}
 	operator.headers.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("admin:break-glass")))
 	operator.headers.Set("User-Agent", "incident-browser")
+	if page := operator.do(http.MethodGet, "/", nil).Body.String(); !strings.Contains(page, `href="/users"`) || !strings.Contains(page, "Break-glass access") || strings.Contains(page, `action="/auth/logout"`) {
+		t.Fatal("break-glass page lacks the Users link or offers a sign-out")
+	}
 	token := operator.formToken("/users")
 	if response := operator.do(http.MethodPost, "/users/1/disable", url.Values{"csrf": {token}, "confirmed": {"true"}}); response.Code != http.StatusSeeOther || !store.disabled(1) {
 		t.Fatalf("break-glass change: %d %s", response.Code, response.Body.String())
@@ -663,32 +679,19 @@ func TestOIDCDiscoveryAndLimits(t *testing.T) {
 		t.Fatalf("discovery was not retried after %s: %v", discoveryRetry, err)
 	}
 
-	limiter := newRateLimiter(2, time.Minute)
-	start := time.Now()
-	limiter.now = func() time.Time { return start }
-	var allowed []bool
-	for _, address := range []string{"a", "a", "a", "b"} {
-		allowed = append(allowed, limiter.allow(address))
-	}
-	if !slices.Equal(allowed, []bool{true, true, false, true}) {
-		t.Fatalf("the limit is not per address: %v", allowed)
-	}
-	start = start.Add(time.Minute)
-	if !limiter.allow("a") {
-		t.Fatal("the limit did not reset")
-	}
-
+	// Many sign-ins from one address (every user behind a proxy looks like
+	// one) are all allowed; the store bounds how many are kept.
 	provider := newFakeProvider(t)
 	oidcEnv(t, provider.server.URL)
-	b := newBrowser(t, Handler(newFakeSessionStore()))
-	for index := range loginsPerMinute + 1 {
-		want := http.StatusFound
-		if index == loginsPerMinute {
-			want = http.StatusTooManyRequests
-		}
-		if response := b.do(http.MethodGet, "/auth/login", nil); response.Code != want {
+	store := newFakeSessionStore()
+	b := newBrowser(t, Handler(store))
+	for index := range 50 {
+		if response := b.do(http.MethodGet, "/auth/login", nil); response.Code != http.StatusFound {
 			t.Fatalf("sign-in %d: %d", index+1, response.Code)
 		}
+	}
+	if store.keep != maxPendingLogins {
+		t.Fatalf("sign-ins kept = %d", store.keep)
 	}
 }
 

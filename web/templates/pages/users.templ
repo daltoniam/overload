@@ -41,7 +41,7 @@ templ Users(users []overload.User, self int64, nonce string) {
 }
 
 templ SignedOut(endSession string) {
-	@layouts.Base(layouts.PageData{Title: "Signed out"}) {
+	@layouts.Base(layouts.PageData{Title: "Signed out", SignedOut: true}) {
 		<div class="page-header"><div><h1>Signed out</h1><p class="muted">Your overload session has ended.</p></div></div>
 		<section class="panel">
 			<div class="actions"><a class="button" href="/auth/login">Sign in again</a>
@@ -55,7 +55,7 @@ templ SignedOut(endSession string) {
 
 // SignInProblem explains why signing in did not work and how to retry.
 templ SignInProblem(title, detail string) {
-	@layouts.Base(layouts.PageData{Title: title}) {
+	@layouts.Base(layouts.PageData{Title: title, SignedOut: true}) {
 		<div class="page-header"><div><h1>{ title }</h1><p class="muted">{ detail }</p></div></div>
 		<section class="panel">
 			<div class="actions"><a class="button" href="/auth/login">Sign in again</a></div>

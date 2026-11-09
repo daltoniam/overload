@@ -152,12 +152,17 @@ type OIDCLogin struct {
 	Next     string
 }
 
-// StartLogin records a sign-in's state for ttl.
-func (s *Store) StartLogin(ctx context.Context, state string, login OIDCLogin, ttl time.Duration) error {
+// StartLogin records a sign-in's state for ttl, keeping at most keep
+// sign-ins in progress: past that the oldest are dropped, so anonymous
+// requests cannot grow the table without bound.
+func (s *Store) StartLogin(ctx context.Context, state string, login OIDCLogin, ttl time.Duration, keep int) error {
 	if _, err := s.Pool.Exec(ctx, `DELETE FROM oidc_logins WHERE expires_at < now()`); err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO oidc_logins (state_hash, nonce, verifier, next, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`, sessionHash(state), login.Nonce, login.Verifier, login.Next, ttl.Seconds())
+	if _, err := s.Pool.Exec(ctx, `INSERT INTO oidc_logins (state_hash, nonce, verifier, next, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`, sessionHash(state), login.Nonce, login.Verifier, login.Next, ttl.Seconds()); err != nil {
+		return err
+	}
+	_, err := s.Pool.Exec(ctx, `DELETE FROM oidc_logins WHERE state_hash IN (SELECT state_hash FROM oidc_logins ORDER BY expires_at DESC OFFSET $1)`, keep)
 	return err
 }
 

@@ -345,6 +345,7 @@ func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.
 					slog.Warn("break-glass change", "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr, "user_agent", r.UserAgent())
 				}
 			} else {
+				auth.clearStaleSession(w, r)
 				denySignedOut(w, r, user != "" && password != "")
 				return
 			}
@@ -368,8 +369,11 @@ func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.
 		}
 		ctx, cancel := context.WithTimeout(withIdentity(r.Context(), who), 10*time.Second)
 		defer cancel()
-		if who.user != nil {
+		switch {
+		case who.user != nil:
 			ctx = layouts.WithViewer(ctx, layouts.Viewer{Name: displayName(*who.user), Role: who.role, CSRF: who.formToken})
+		case who.breakGlass:
+			ctx = layouts.WithViewer(ctx, layouts.Viewer{Role: who.role, BreakGlass: true})
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -391,8 +395,7 @@ func denySignedOut(w http.ResponseWriter, r *http.Request, breakGlass bool) {
 	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && isNavigation(r):
 		http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 	default:
-		w.WriteHeader(http.StatusUnauthorized)
-		_ = pages.SignInProblem("Your session ended", "Sign in again to continue; anything you were submitting was not saved.").Render(r.Context(), w)
+		signInProblem(w, r, http.StatusUnauthorized, "Your session ended", "Sign in again to continue; anything you were submitting was not saved.")
 	}
 }
 

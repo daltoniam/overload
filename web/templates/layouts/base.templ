@@ -3,6 +3,9 @@ package layouts
 type PageData struct {
 	Title string
 	CurrentPath string
+	// SignedOut hides the navigation, for sign-in and sign-out pages
+	// shown to someone without a session.
+	SignedOut bool
 }
 
 templ Base(data PageData) {
@@ -89,7 +92,9 @@ templ Base(data PageData) {
 		</head>
 		<body hx-history="false">
 			<a class="skip-link" href="#page-content">Skip to content</a>
-			<div class="app-shell"><aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">o</span> overload</a><details class="sidebar-details" open><summary>Navigation</summary><nav aria-label="Main navigation">
+			<div class="app-shell"><aside class="sidebar"><a class="brand" href="/"><span class="brand-mark" aria-hidden="true">o</span> overload</a>
+				if !data.SignedOut {
+				<details class="sidebar-details" open><summary>Navigation</summary><nav aria-label="Main navigation">
 				@NavigationLink("/", "Overview", data.CurrentPath)
 				@NavigationLink("/runs", "Runs", data.CurrentPath)
 				@NavigationLink("/settings", "Models", data.CurrentPath)
@@ -103,8 +108,12 @@ templ Base(data PageData) {
 				if viewer, ok := ViewerFrom(ctx); ok && viewer.IsAdmin() {
 					@NavigationLink("/users", "Users", data.CurrentPath)
 				}
-			</nav></details><div class="sidebar-footer">
-				if viewer, ok := ViewerFrom(ctx); ok {
+			</nav></details>
+				}
+				<div class="sidebar-footer">
+				if viewer, ok := ViewerFrom(ctx); ok && viewer.BreakGlass {
+					<p class="secondary-line">Break-glass access (admin)</p>
+				} else if ok && !data.SignedOut {
 					<form class="signed-in" method="post" action="/auth/logout"><input type="hidden" name="csrf" value={ viewer.CSRF }/><span class="secondary-line">Signed in as { viewer.Name } ({ viewer.Role })</span><button class="secondary" type="submit">Sign out</button></form>
 				}<label class="theme-control"><span>Appearance</span><select id="theme-select" aria-label="Color theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></aside>
 			<div class="content"><main class="shell" id="page-content" tabindex="-1"><p id="ui-status" class="notice error" role="status" hidden></p><div id="form-errors" tabindex="-1" role="alert"></div>{ children... }</main></div></div>

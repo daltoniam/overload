@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -101,7 +102,7 @@ func TestUsersAndSessions(t *testing.T) {
 	}
 
 	login := postgres.OIDCLogin{Nonce: "n", Verifier: "v", Next: "/runs"}
-	if err := store.StartLogin(ctx, "state", login, time.Minute); err != nil {
+	if err := store.StartLogin(ctx, "state", login, time.Minute, 10); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := store.TakeLogin(ctx, "state"); err != nil || got != login {
@@ -110,10 +111,25 @@ func TestUsersAndSessions(t *testing.T) {
 	if _, err := store.TakeLogin(ctx, "state"); !errors.Is(err, postgres.ErrNoSession) {
 		t.Fatal("a login was accepted twice")
 	}
-	if err := store.StartLogin(ctx, "old", login, -time.Minute); err != nil {
+	if err := store.StartLogin(ctx, "old", login, -time.Minute, 10); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.TakeLogin(ctx, "old"); !errors.Is(err, postgres.ErrNoSession) {
 		t.Fatal("an expired login was accepted")
+	}
+	for index := range 4 {
+		if err := store.StartLogin(ctx, fmt.Sprintf("flood-%d", index), login, time.Minute+time.Duration(index)*time.Second, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var pending int
+	if err := store.Pool.QueryRow(ctx, `SELECT count(*) FROM oidc_logins`).Scan(&pending); err != nil || pending != 2 {
+		t.Fatalf("sign-ins kept: %d %v", pending, err)
+	}
+	if _, err := store.TakeLogin(ctx, "flood-3"); err != nil {
+		t.Fatalf("the newest sign-in was dropped: %v", err)
+	}
+	if _, err := store.TakeLogin(ctx, "flood-0"); !errors.Is(err, postgres.ErrNoSession) {
+		t.Fatal("the oldest sign-in was kept")
 	}
 }

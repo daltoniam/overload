@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,7 +34,7 @@ type SessionStore interface {
 	CreateSession(ctx context.Context, userID int64, ttl time.Duration, idToken string) (string, error)
 	SessionUser(ctx context.Context, token string, idle time.Duration) (overload.User, error)
 	EndSession(ctx context.Context, token string) (idToken string, err error)
-	StartLogin(ctx context.Context, state string, login postgres.OIDCLogin, ttl time.Duration) error
+	StartLogin(ctx context.Context, state string, login postgres.OIDCLogin, ttl time.Duration, keep int) error
 	TakeLogin(ctx context.Context, state string) (postgres.OIDCLogin, error)
 	ListUsers(context.Context) ([]overload.User, error)
 	SetUserDisabled(ctx context.Context, id int64, disabled bool) error
@@ -52,9 +51,10 @@ const (
 	// discoveryRetry is how long a failed discovery is remembered, so a
 	// provider outage does not make every sign-in wait on a fetch.
 	discoveryRetry = 30 * time.Second
-	// loginsPerMinute caps sign-ins started from one address, since each
-	// stores state before the person has signed in.
-	loginsPerMinute = 30
+	// maxPendingLogins bounds the sign-ins in progress kept in the
+	// database, since each is stored before anyone has signed in; past it
+	// the oldest are dropped.
+	maxPendingLogins = 10000
 )
 
 // oidcSettings configures sign-in with an OpenID Connect provider.
@@ -143,7 +143,6 @@ type oidcAuth struct {
 	settings *oidcSettings
 	store    SessionStore
 	client   *http.Client
-	logins   *rateLimiter
 
 	mu       sync.Mutex
 	provider *oidc.Provider
@@ -154,7 +153,7 @@ type oidcAuth struct {
 }
 
 func newOIDCAuth(settings *oidcSettings, store SessionStore) *oidcAuth {
-	return &oidcAuth{settings: settings, store: store, client: &http.Client{Timeout: 10 * time.Second}, logins: newRateLimiter(loginsPerMinute, time.Minute), now: time.Now}
+	return &oidcAuth{settings: settings, store: store, client: &http.Client{Timeout: 10 * time.Second}, now: time.Now}
 }
 
 func (auth *oidcAuth) secureCookies() bool {
@@ -245,11 +244,6 @@ func (auth *oidcAuth) login(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, auth.settings.baseURL+r.URL.RequestURI(), http.StatusFound)
 		return
 	}
-	if !auth.logins.allow(clientAddress(r)) {
-		w.Header().Set("Retry-After", "60")
-		signInProblem(w, r, http.StatusTooManyRequests, "Too many sign-ins", "Too many sign-ins were started from this address. Wait a minute and sign in again.")
-		return
-	}
 	provider, err := auth.discover(r.Context())
 	if err != nil {
 		slog.Warn("OIDC discovery failed", "issuer", auth.settings.issuer, "error", err)
@@ -257,7 +251,7 @@ func (auth *oidcAuth) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state, nonce, verifier := randomString(), randomString(), oauth2.GenerateVerifier()
-	if err := auth.store.StartLogin(r.Context(), state, postgres.OIDCLogin{Nonce: nonce, Verifier: verifier, Next: localPath(r.URL.Query().Get("next"))}, loginTTL); err != nil {
+	if err := auth.store.StartLogin(r.Context(), state, postgres.OIDCLogin{Nonce: nonce, Verifier: verifier, Next: localPath(r.URL.Query().Get("next"))}, loginTTL, maxPendingLogins); err != nil {
 		signInProblem(w, r, http.StatusInternalServerError, "Unable to start sign-in", "Overload could not save the sign-in. Try again.")
 		return
 	}
@@ -354,7 +348,17 @@ func (auth *oidcAuth) logout(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.SetCookie(w, &http.Cookie{Name: auth.sessionCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	// The page links to the provider with the ID token as a hint.
+	w.Header().Set("Cache-Control", "no-store")
 	_ = pages.SignedOut(auth.endSessionURL(idToken)).Render(layouts.WithoutViewer(r.Context()), w)
+}
+
+// clearStaleSession expires a session cookie the request carried but that
+// no longer names a session, so later requests stop looking it up.
+func (auth *oidcAuth) clearStaleSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(auth.sessionCookieName()); err == nil && cookie.Value != "" {
+		http.SetCookie(w, &http.Cookie{Name: auth.sessionCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	}
 }
 
 // endSessionURL is the provider's RP-initiated logout address, if the
@@ -377,7 +381,7 @@ func (auth *oidcAuth) endSessionURL(idToken string) string {
 	}
 	query := parsed.Query()
 	query.Set("client_id", auth.settings.clientID)
-	query.Set("post_logout_redirect_uri", auth.settings.baseURL+"/")
+	query.Set("post_logout_redirect_uri", auth.settings.baseURL+"/auth/signed-out")
 	if idToken != "" {
 		query.Set("id_token_hint", idToken)
 	}
@@ -451,41 +455,4 @@ func groupsClaim(claims map[string]json.RawMessage, name string) []string {
 		return []string{single}
 	}
 	return nil
-}
-
-// clientAddress is the address a request came from, without its port.
-func clientAddress(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-// rateLimiter allows a number of events per address in each window.
-type rateLimiter struct {
-	limit  int
-	window time.Duration
-	now    func() time.Time
-
-	mu      sync.Mutex
-	started time.Time
-	counts  map[string]int
-}
-
-func newRateLimiter(limit int, window time.Duration) *rateLimiter {
-	return &rateLimiter{limit: limit, window: window, now: time.Now, counts: map[string]int{}}
-}
-
-func (limiter *rateLimiter) allow(address string) bool {
-	limiter.mu.Lock()
-	defer limiter.mu.Unlock()
-	if now := limiter.now(); now.Sub(limiter.started) >= limiter.window {
-		limiter.started, limiter.counts = now, map[string]int{}
-	}
-	if limiter.counts[address] >= limiter.limit {
-		return false
-	}
-	limiter.counts[address]++
-	return true
 }
