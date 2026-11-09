@@ -169,15 +169,23 @@ func parse(data []byte) ([]Model, error) {
 	if err := decoder.Decode(&loaded); err != nil {
 		return nil, err
 	}
-	seen := map[string]bool{}
+	// IDs and served names identify connections (see Identify), so each
+	// may belong to one entry only.
+	seen := map[string]string{}
 	for _, model := range loaded {
 		if err := model.validate(); err != nil {
 			return nil, fmt.Errorf("%s: %w", model.ID, err)
 		}
-		if seen[model.ID] {
-			return nil, fmt.Errorf("%s: duplicate id", model.ID)
+		names := []string{strings.ToLower(model.ID)}
+		if model.Runtime != nil && model.Runtime.ServedName != "" && !strings.EqualFold(model.Runtime.ServedName, model.ID) {
+			names = append(names, strings.ToLower(model.Runtime.ServedName))
 		}
-		seen[model.ID] = true
+		for _, name := range names {
+			if owner, ok := seen[name]; ok {
+				return nil, fmt.Errorf("%s: %q is already used by %s", model.ID, name, owner)
+			}
+			seen[name] = model.ID
+		}
 	}
 	return loaded, nil
 }

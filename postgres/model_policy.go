@@ -74,6 +74,25 @@ func (s *Store) CheckModelPolicy(ctx context.Context, workflow overload.Resolved
 	return checkWorkflowPolicy(policy, workflow)
 }
 
+// CheckRunPolicy checks a queued run's pinned models against the current
+// policy inside tx, the transaction that locked the run. A snapshot that
+// cannot be read is not refused here; the worker fails it as invalid.
+func CheckRunPolicy(ctx context.Context, tx pgx.Tx, runID int64) error {
+	var snapshot []byte
+	if err := tx.QueryRow(ctx, `SELECT config_snapshot FROM runs WHERE id=$1`, runID).Scan(&snapshot); err != nil {
+		return err
+	}
+	var workflow overload.ResolvedWorkflow
+	if json.Unmarshal(snapshot, &workflow) != nil {
+		return nil
+	}
+	policy, err := loadModelPolicy(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return checkWorkflowPolicy(policy, workflow)
+}
+
 func checkWorkflowPolicy(policy catalog.Policy, workflow overload.ResolvedWorkflow) error {
 	for _, agent := range workflow.Agents {
 		if err := policy.Check(agent.Model.Catalog, agent.Model.Model).Error(); err != nil {

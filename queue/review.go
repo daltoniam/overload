@@ -132,14 +132,9 @@ func appClient(ctx context.Context, store *postgres.Store) (*github.Client, erro
 }
 
 // refuseByPolicy fails a queued run, inside the transaction that locked it,
-// when the model policy now refuses one of its pinned models. A run whose
-// workflow cannot be loaded is left to the normal path, which fails it.
+// when the model policy now refuses one of its pinned models.
 func (w *ReviewWorker) refuseByPolicy(ctx context.Context, tx pgx.Tx, runID int64) (bool, error) {
-	_, pinned, _, err := w.Store.LoadRunWorkflow(ctx, runID)
-	if err != nil {
-		return false, nil
-	}
-	policyErr := w.Store.CheckModelPolicy(ctx, pinned)
+	policyErr := postgres.CheckRunPolicy(ctx, tx, runID)
 	if !errors.Is(policyErr, postgres.ErrModelPolicy) {
 		return false, policyErr
 	}

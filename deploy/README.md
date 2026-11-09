@@ -124,8 +124,9 @@ overload policy show    # the policy and any saved models it refuses
 
 A refused model cannot be saved. A workflow whose agents use one stops
 queueing runs: the webhook records why it was skipped, a due schedule
-records a failed run with the reason and moves to its next time (a paused
-schedule can still be saved), and `overload review` fails with the reason.
+records one failed run with the reason and is paused (it can be saved while
+paused, and enabled again once the policy allows its models), and
+`overload review` fails with the reason.
 A run queued before the policy changed fails with `model_policy` when it
 starts, rather than reviewing with the refused model; GitHub only sees
 "Review refused by the model policy".

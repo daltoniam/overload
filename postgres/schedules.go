@@ -170,13 +170,15 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 }
 
 // recordSkippedOccurrence stores a due occurrence that could not run as a
-// failed run, so the Runs page shows why, and moves the schedule on.
+// failed run, so the Runs page shows why, and pauses the schedule so a
+// frequent one does not add a failed run on every tick. Enabling it again
+// checks the workflow first.
 func recordSkippedOccurrence(ctx context.Context, tx pgx.Tx, scheduleID int64, at time.Time, input []byte, next time.Time, cause error) error {
 	code := "workflow_unavailable"
 	if errors.Is(cause, ErrModelPolicy) {
 		code = "model_policy"
 	}
-	message := overload.TruncateUTF8(cause.Error(), 1000)
+	message := overload.TruncateUTF8("Schedule paused: "+cause.Error(), 1000)
 	var runID int64
 	if err := tx.QueryRow(ctx, `INSERT INTO runs(kind,pr_number,trigger,status,dry_run,input_snapshot,schedule_id,scheduled_for,error_code,error_message,finished_at) VALUES ('scheduled_prompt',NULL,'cron','failed',true,$1,$2,$3,$4,$5,now()) RETURNING id`, input, scheduleID, at, code, message).Scan(&runID); err != nil {
 		return err
@@ -187,7 +189,7 @@ func recordSkippedOccurrence(ctx context.Context, tx pgx.Tx, scheduleID int64, a
 	if _, err := tx.Exec(ctx, `INSERT INTO schedule_occurrences(schedule_id,scheduled_for,run_id) VALUES ($1,$2,$3)`, scheduleID, at, runID); err != nil {
 		return err
 	}
-	_, err := tx.Exec(ctx, `UPDATE schedules SET next_run_at=$2 WHERE id=$1`, scheduleID, next)
+	_, err := tx.Exec(ctx, `UPDATE schedules SET enabled=false, next_run_at=$2, updated_at=now() WHERE id=$1`, scheduleID, next)
 	return err
 }
 

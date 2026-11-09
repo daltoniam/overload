@@ -168,7 +168,7 @@ templ PolicyForm(policy catalog.Policy, models []catalog.Model, refused []string
 			</fieldset>
 			<fieldset class="field"><legend>Lineage reviewed by an administrator</legend><small>When lineage is checked against allowed countries, open models whose base model the catalog does not record are refused until you confirm it. Hosted models are checked by their provider's country only.</small>
 				for _, model := range models {
-					if !model.TrainedFromScratch && model.BaseModel == "" {
+					if model.Kind == catalog.KindOpen && !model.TrainedFromScratch && model.BaseModel == "" {
 						<label class="check"><input type="checkbox" name="lineage_reviewed" value={ model.ID } checked?={ contains(policy.LineageReviewed, model.ID) }/> { model.Name }</label>
 					}
 				}

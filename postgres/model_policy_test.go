@@ -81,16 +81,26 @@ func TestModelPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	count, err := store.EnqueueDueSchedules(ctx, client)
-	if err != nil || count != 0 {
-		t.Fatalf("refused schedule: queued %d, %v", count, err)
+	for range 2 {
+		count, err := store.EnqueueDueSchedules(ctx, client)
+		if err != nil || count != 0 {
+			t.Fatalf("refused schedule: queued %d, %v", count, err)
+		}
+		if _, err := store.Pool.Exec(ctx, `UPDATE schedules SET next_run_at=now()-interval '1 minute' WHERE name='daily'`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var failed int
+	var enabled bool
+	if err := store.Pool.QueryRow(ctx, `SELECT (SELECT count(*) FROM runs WHERE schedule_id=s.id AND status='failed'), s.enabled FROM schedules s WHERE name='daily'`).Scan(&failed, &enabled); err != nil || failed != 1 || enabled {
+		t.Fatalf("refused schedule: %d failed runs, enabled %v, %v", failed, enabled, err)
 	}
 	var next time.Time
-	if err := store.Pool.QueryRow(ctx, `SELECT next_run_at FROM schedules WHERE name='daily'`).Scan(&next); err != nil || !next.After(time.Now()) {
+	if err := store.Pool.QueryRow(ctx, `SELECT next_run_at FROM schedules WHERE name='daily'`).Scan(&next); err != nil || next.IsZero() {
 		t.Fatalf("refused schedule was not moved to its next time: %v %v", next, err)
 	}
 	var code, message string
-	if err := store.Pool.QueryRow(ctx, `SELECT r.error_code, r.error_message FROM schedule_occurrences o JOIN runs r ON r.id=o.run_id WHERE o.schedule_id=(SELECT id FROM schedules WHERE name='daily') AND r.status='failed'`).Scan(&code, &message); err != nil || code != "model_policy" || !strings.Contains(message, "from CN") {
+	if err := store.Pool.QueryRow(ctx, `SELECT r.error_code, r.error_message FROM schedule_occurrences o JOIN runs r ON r.id=o.run_id WHERE o.schedule_id=(SELECT id FROM schedules WHERE name='daily') AND r.status='failed'`).Scan(&code, &message); err != nil || code != "model_policy" || !strings.Contains(message, "Schedule paused") || !strings.Contains(message, "from CN") {
 		t.Fatalf("skipped occurrence not recorded: %q %q %v", code, message, err)
 	}
 	schedule.Enabled = false

@@ -1098,7 +1098,7 @@ func PolicyForm(policy catalog.Policy, models []catalog.Model, refused []string,
 				return templ_7745c5c3_Err
 			}
 			for _, model := range models {
-				if !model.TrainedFromScratch && model.BaseModel == "" {
+				if model.Kind == catalog.KindOpen && !model.TrainedFromScratch && model.BaseModel == "" {
 					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 106, "<label class=\"check\"><input type=\"checkbox\" name=\"lineage_reviewed\" value=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err

@@ -47,6 +47,7 @@ func TestParseRejectsInvalidEntries(t *testing.T) {
 		"bad eval":             `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"evals":[{"setup":"x","found":6,"possible":5,"runs":1}]}]`,
 		"hosted weights":       `[{"id":"a","name":"A","publisher":"P","kind":"hosted","tier":"hosted","licence":{"commercial":"yes"},"weights":[{"quant":"Q8_0","format":"gguf"}]}]`,
 		"base without origins": `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"base_model":"B"}]`,
+		"served name taken":    `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}},{"id":"b","name":"B","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"runtime":{"engine":"llama.cpp","served_name":"A"}}]`,
 		"reserved id":          `[{"id":"policy","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
 		"lineage origin":       `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"base_origins":["China"]}]`,
 	} {
