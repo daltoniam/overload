@@ -301,6 +301,9 @@ type ReviewSpec struct {
 	// Incremental makes this a re-review of what changed since an earlier
 	// review.
 	Incremental *Incremental `json:"incremental,omitempty"`
+	// Tier is the size tier the workflow's tiers put the pull request in;
+	// a lighter tier has already narrowed Workflow to its agents.
+	Tier *TierDecision `json:"tier,omitempty"`
 }
 
 // Incremental describes a re-review: the files whose diff is the same as

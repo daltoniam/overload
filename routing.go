@@ -418,7 +418,10 @@ type Preview struct {
 	Minutes  int           `json:"estimate_minutes"`
 	// CostUSD is a rough cost when every model has prices: each call
 	// counted at PreviewInputTokens in and PreviewOutputTokens out.
-	CostUSD  *float64 `json:"estimate_cost_usd,omitempty"`
+	CostUSD *float64 `json:"estimate_cost_usd,omitempty"`
+	// Tier explains which tier the files fall in; line counts are not
+	// known from a file list, so it may depend on them.
+	Tier     string   `json:"tier,omitempty"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -465,6 +468,7 @@ func (workflow ResolvedWorkflow) Preview(paths []string) (Preview, error) {
 		preview.Warnings = append(preview.Warnings, "The verifier adds one model call per sub-agent finding.")
 	}
 	preview.CostUSD = workflow.estimateCost(routing, planner)
+	preview.Tier = workflow.previewTier(paths)
 	if preview.CostUSD != nil && workflow.MaxRunCostUSD > 0 && *preview.CostUSD > workflow.MaxRunCostUSD {
 		preview.Warnings = append(preview.Warnings, fmt.Sprintf("The rough cost (%s) is over the workflow's cap of %s per review; the review would stop early and be marked partial.", FormatUSD(*preview.CostUSD), FormatUSD(workflow.MaxRunCostUSD)))
 	}
@@ -727,4 +731,37 @@ func (workflow ResolvedWorkflow) estimateCost(routing Routing, planner bool) *fl
 		total += usd
 	}
 	return &total
+}
+
+// previewTier describes the tier for a list of changed files without line
+// counts: full when a file is sensitive or the files are too many, and
+// otherwise the line limits that decide it.
+func (workflow ResolvedWorkflow) previewTier(paths []string) string {
+	tiers := workflow.Tiers
+	if tiers == nil {
+		return ""
+	}
+	changes := make([]FileChange, len(paths))
+	for index, path := range paths {
+		changes[index] = FileChange{Path: path}
+	}
+	decision := workflow.ChooseTier(changes)
+	if decision.Tier == TierFull {
+		return "full workflow: " + decision.Reason
+	}
+	var limits []string
+	for _, tier := range []struct {
+		name string
+		tier *Tier
+	}{{TierTrivial, tiers.Trivial}, {TierLite, tiers.Lite}} {
+		if tier.tier == nil || len(paths) > tier.tier.MaxFiles {
+			continue
+		}
+		action := "reviewed by " + strings.Join(workflow.tierAgents(tier.tier.Agents), ", ")
+		if tier.tier.Action == TierSkip {
+			action = "skipped"
+		}
+		limits = append(limits, fmt.Sprintf("%s (%s) at %d changed lines or fewer", tier.name, action, tier.tier.MaxLines))
+	}
+	return "depends on changed lines: " + strings.Join(limits, "; ") + "; full workflow above that"
 }

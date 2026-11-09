@@ -152,7 +152,7 @@ func (workflow Workflow) Validate() error {
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
 	}
-	if err := workflow.checkPolicy(workflow.Kind); err != nil {
+	if err := workflow.checkPolicy(workflow.Kind, workflow.Agents); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -254,7 +254,11 @@ func (workflow ResolvedWorkflow) Verify() error {
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
 	}
-	if err := workflow.checkPolicy(workflow.Kind); err != nil {
+	names := make([]string, len(workflow.Agents))
+	for index, agent := range workflow.Agents {
+		names[index] = agent.Name
+	}
+	if err := workflow.checkPolicy(workflow.Kind, names); err != nil {
 		return err
 	}
 	if workflow.Version < 4 && workflow.ReviewPolicy != (ReviewPolicy{}) {

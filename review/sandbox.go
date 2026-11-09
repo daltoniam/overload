@@ -78,6 +78,9 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}
+	if spec.Tier != nil && spec.Tier.Skip {
+		return spec, skippedReview(*spec.Tier), sha, nil
+	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -120,6 +123,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 		return spec, result, sha, nil
 	}
 	result, err = CheckResult(result, spec.Diff, spec.Workflow.FindingLimit())
+	result = recordTier(spec, result)
 	if result.Metrics == nil {
 		result.Metrics = map[string]any{}
 	}

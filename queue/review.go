@@ -218,6 +218,11 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	plan := planPosting(run.DryRun, PostingEnabled())
+	tierSkipped, _ := result.Metrics["tier_skipped"].(bool)
+	if tierSkipped {
+		reason, _ := result.Metrics["tier_reason"].(string)
+		plan = postingPlan{findingStatus: "dry_run", postStatus: "tier_skipped", message: "Trivial change; not reviewed (" + reason + ")"}
+	}
 	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, append(result.Findings, result.Dropped...)); err != nil {
 		return err
 	}
@@ -244,6 +249,10 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	}
 	if err := finalTx.Commit(ctx); err != nil {
 		return err
+	}
+	if tierSkipped {
+		reportStatus(ctx, w.Store, w.Status, runID, statusSuccess, "Overload skipped: trivial change")
+		return nil
 	}
 	if !plan.enqueue {
 		degraded, _ := result.Metrics["degraded"].(bool)

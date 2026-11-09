@@ -27,7 +27,9 @@ type Runner interface {
 const maxDescription = 8000
 
 // fetchPR loads an open pull request, its diff and head archive and builds
-// the spec both runners review.
+// the spec both runners review. The workflow's tiers are applied here,
+// before any archive, sandbox or model: a skipped tier returns no archive,
+// and a lighter tier narrows the spec's workflow to its agents.
 func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.ResolvedWorkflow, repo string, prNumber int, rereview *Rereview) (overload.ReviewSpec, *bytes.Buffer, string, error) {
 	pr, patch, err := source.PullRequestWithDiff(ctx, repo, prNumber)
 	if err != nil {
@@ -38,11 +40,36 @@ func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.Re
 	}
 	sha := pr.GetHead().GetSHA()
 	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: repo}, PRNumber: prNumber, Diff: patch, Workflow: workflow, PullRequest: &overload.PullRequestInfo{Title: Sanitize(pr.GetTitle(), 300), Body: Sanitize(pr.GetBody(), maxDescription)}, Incremental: rereview.incremental(patch)}
+	if decision := spec.Workflow.ChooseTier(overload.DiffChanges(patch)); decision.Skip {
+		spec.Tier = &decision
+		return spec, nil, sha, nil
+	} else if spec.Workflow.Tiers != nil {
+		spec.Workflow = spec.Workflow.WithAgents(decision.Agents)
+		spec.Tier = &decision
+	}
 	archive := &bytes.Buffer{}
 	if err := source.DownloadHead(ctx, repo, sha, archive); err != nil {
 		return spec, nil, sha, fmt.Errorf("download head: %w", err)
 	}
 	return spec, archive, sha, nil
+}
+
+// skippedReview is the result of a review its tier skipped: no model was
+// called.
+func skippedReview(decision overload.TierDecision) overload.ReviewResult {
+	return overload.ReviewResult{Findings: []overload.Finding{}, Summary: "Trivial change (" + decision.Reason + "); not reviewed.", Metrics: map[string]any{"tier": decision.Tier, "tier_reason": decision.Reason, "tier_skipped": true, "model_calls": int64(0), "cost_usd": 0.0, "cost_unpriced_calls": int64(0)}}
+}
+
+// recordTier puts the tier on a finished review's metrics.
+func recordTier(spec overload.ReviewSpec, result overload.ReviewResult) overload.ReviewResult {
+	if spec.Tier == nil {
+		return result
+	}
+	if result.Metrics == nil {
+		result.Metrics = map[string]any{}
+	}
+	result.Metrics["tier"], result.Metrics["tier_reason"] = spec.Tier.Tier, spec.Tier.Reason
+	return result
 }
 
 func checkPR(pr *gh.PullRequest, prNumber int, patch string) error {
@@ -76,6 +103,9 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}
+	if spec.Tier != nil && spec.Tier.Skip {
+		return spec, skippedReview(*spec.Tier), sha, nil
+	}
 	workspace, err := os.MkdirTemp("", "overload-pr-")
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -90,6 +120,7 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	}
 	defer func() { _ = root.Close() }()
 	result, err := runner.Reviewer.Review(ctx, spec, root.FS())
+	result = recordTier(spec, result)
 	if err != nil {
 		return spec, result, sha, err
 	}

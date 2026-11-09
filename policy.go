@@ -20,6 +20,9 @@ type ReviewPolicy struct {
 	// Rereview makes reviews of new pushes incremental, debounced and
 	// limited; nil reviews every push in full.
 	Rereview *RereviewSettings `json:"rereview,omitempty"`
+	// Tiers skip trivial pull requests and give small ones a lighter
+	// review; nil reviews every pull request with the full workflow.
+	Tiers *Tiers `json:"tiers,omitempty"`
 }
 
 // RereviewSettings shape reviews of pull requests overload has reviewed
@@ -177,7 +180,7 @@ func (settings *ContextSettings) validate() error {
 // MaxRunCostLimit bounds the per-run cost cap.
 const MaxRunCostLimit = 1000
 
-func (policy ReviewPolicy) checkPolicy(kind string) error {
+func (policy ReviewPolicy) checkPolicy(kind string, agents []string) error {
 	if policy == (ReviewPolicy{}) {
 		return nil
 	}
@@ -188,6 +191,9 @@ func (policy ReviewPolicy) checkPolicy(kind string) error {
 		return fmt.Errorf("max_run_cost_usd must be between 0 and %d", MaxRunCostLimit)
 	}
 	if err := policy.Rereview.validate(); err != nil {
+		return err
+	}
+	if err := policy.Tiers.validate(agents); err != nil {
 		return err
 	}
 	return policy.Context.validate()
