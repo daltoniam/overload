@@ -718,14 +718,17 @@ func TestRemoveKeepsSharedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	files := []File{{Path: "model.gguf", Size: 1}}
-	if err := store.writeManifest([]Installed{{ID: "a", Quant: "Q8_0", Repository: "test/shared", Files: files}, {ID: "b", Quant: "Q8_0", Repository: "test/shared", Files: files}}); err != nil {
+	if err := store.writeManifest([]Installed{{ID: "a", Quant: "Q8_0", Repository: "test/shared", Revision: testRevision, Files: files}, {ID: "b", Quant: "Q8_0", Repository: "test/shared", Revision: testRevision, Files: files}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Remove("a", ""); err != nil {
-		t.Fatal(err)
+	if removed, err := store.Remove("a", ""); err != nil || removed.Freed != 0 {
+		t.Fatalf("remove = %+v, %v", removed, err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("a file another entry uses was deleted")
+	}
+	if removed, err := store.Remove("b", ""); err != nil || removed.Freed != 1 {
+		t.Fatalf("remove of the last user = %+v, %v", removed, err)
 	}
 }
 

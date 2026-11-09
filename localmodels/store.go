@@ -653,7 +653,7 @@ func (store Store) Remove(id, quant string) (Installed, error) {
 		return Installed{}, err
 	}
 	defer unlock()
-	unlockServices, err := store.lock(".services.lock")
+	unlockServices, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -706,7 +706,7 @@ func (store Store) Clean() (int64, error) {
 		return 0, err
 	}
 	defer unlock()
-	unlockServices, err := store.lock(".services.lock")
+	unlockServices, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
 	if err != nil {
 		return 0, err
 	}

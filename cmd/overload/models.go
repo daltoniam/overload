@@ -205,7 +205,7 @@ func (command modelsCommand) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(command.out, "Removed %s %s, freeing up to %s\n", removed.ID, removed.Quant, gigabytes(removed.Size()))
+		_, err = fmt.Fprintf(command.out, "Removed %s %s, freeing %s\n", removed.ID, removed.Quant, gigabytes(removed.Freed))
 		return err
 	case "clean":
 		flags := newModelFlags("clean")
