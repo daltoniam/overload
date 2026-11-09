@@ -13,6 +13,7 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/web/templates/pages"
 )
 
 type fakePolicyStore struct {
@@ -102,4 +103,28 @@ func TestCatalogAndPolicyPages(t *testing.T) {
 	}
 	post("/settings", url.Values{"csrf": {csrf}, "name": {"flint"}, "connection_kind": {"local"}, "model": {"flint"}, "base_url": {"http://127.0.0.1:8080/v1"}, "catalog": {"recursive-flint"}}, http.StatusSeeOther)
 	post("/settings", url.Values{"csrf": {csrf}, "name": {"bogus"}, "connection_kind": {"local"}, "model": {"x"}, "base_url": {"http://127.0.0.1:8080/v1"}, "catalog": {"not-in-catalog"}}, http.StatusBadRequest)
+}
+
+type fakeLocalStore struct {
+	fakePolicyStore
+	local *pages.LocalModel
+}
+
+func (store *fakeLocalStore) LocalModel(string) (*pages.LocalModel, error) { return store.local, nil }
+
+func TestCatalogEntryShowsLocalModel(t *testing.T) {
+	t.Setenv("OVERLOAD_UI_INSECURE", "1")
+	store := &fakeLocalStore{local: &pages.LocalModel{Quants: []string{"Q4_K_M"}, Size: "24.0 GB", Endpoint: "http://127.0.0.1:8080/v1", Service: "running"}}
+	response := httptest.NewRecorder()
+	Handler(store).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/catalog/recursive-flint", nil))
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, "On this machine") || !strings.Contains(body, "Q4_K_M (24.0 GB)") || !strings.Contains(body, "http://127.0.0.1:8080/v1") {
+		t.Fatalf("entry page = %d %s", response.Code, body)
+	}
+	store.local = &pages.LocalModel{}
+	response = httptest.NewRecorder()
+	Handler(store).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/catalog/recursive-flint", nil))
+	if !strings.Contains(response.Body.String(), "overload models pull recursive-flint") {
+		t.Fatal("missing download hint")
+	}
 }

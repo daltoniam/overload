@@ -137,6 +137,41 @@ The policy trusts the catalog entry a connection names unless its model ID
 is a different entry's. It keeps reviews on approved models; it is not a
 control against someone who can edit model connections and the policy.
 
+### Downloading and serving models
+
+`overload models` manages llama.cpp models from the catalog on a Mac, so
+nothing needs to be run by hand:
+
+```sh
+overload models pull recursive-flint --quant Q4_K_M   # resumable, SHA-256 verified
+overload models check recursive-flint                 # is llama-server new enough?
+overload models serve recursive-flint --port 8080 --connect flint
+overload models status                                # services and /health
+overload models list                                  # downloads, disk used and free
+overload models stop recursive-flint
+overload models rm recursive-flint                    # delete the weights
+overload models clean                                 # delete partial downloads
+```
+
+- `pull` downloads from the catalog's Hugging Face repository (or
+  `--repository`), into `models` next to the install's configuration
+  (`--dir` or `OVERLOAD_MODELS_DIR` changes it). An interrupted download
+  resumes where it stopped. Every file is checked against the SHA-256
+  Hugging Face publishes for it; a mismatch deletes the partial file. Gated
+  models need `HF_TOKEN`.
+- `check` and `serve` compare `llama-server --version` with the catalog's
+  minimum build (Flint needs b11801) and say how to upgrade. They use
+  `--llama-server`, `OVERLOAD_LLAMA_SERVER` or `llama-server` on PATH.
+- `serve` registers a launchd agent (`dev.overload.model.<id>`) that runs
+  llama-server on 127.0.0.1 with the catalog's arguments, starts at login
+  and restarts if it exits, then waits until `/health` reports the model
+  loaded. `--parallel N` gives N request slots, each with the catalog's full
+  context. `--connect NAME` also saves a model connection with the catalog
+  entry and settings; without it the command to add one is printed. Logs
+  are in `logs/model-<id>.log`.
+- The catalog page for a model shows what this machine has downloaded and
+  serves.
+
 ### DwarfStar on Metal
 
 [DwarfStar](https://dwarfstar.sh/) (`github.com/antirez/ds4`, MIT) serves a

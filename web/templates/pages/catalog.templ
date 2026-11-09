@@ -46,7 +46,16 @@ templ policyBadge(decision catalog.Decision) {
 	}
 }
 
-templ CatalogEntry(model catalog.Model, decision catalog.Decision) {
+// LocalModel is what this machine has of a catalog entry: downloaded
+// quantizations and the model service started with overload models serve.
+type LocalModel struct {
+	Quants   []string
+	Size     string
+	Endpoint string
+	Service  string
+}
+
+templ CatalogEntry(model catalog.Model, decision catalog.Decision, local *LocalModel) {
 	@layouts.Base(layouts.PageData{Title: model.Name, CurrentPath: "/settings"}) {
 		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / <a href="/catalog">Catalog</a></p><h1>{ model.Name }</h1><p class="muted">{ model.Publisher } · <span class="mono">{ model.ID }</span></p></div><a href="/catalog">All catalog models</a></div>
 		<section class="panel"><h2>Provenance and licence</h2>
@@ -107,6 +116,22 @@ templ CatalogEntry(model catalog.Model, decision catalog.Decision) {
 							<tr><td>{ weights.Quant }</td><td>{ weights.Format }</td><td>{ sizeText(weights.SizeGB) }</td><td class="mono">{ weights.Repository }</td></tr>
 						}
 					</tbody></table></div>
+				}
+			</section>
+		}
+		if local != nil {
+			<section class="panel"><h2>On this machine</h2>
+				if len(local.Quants) == 0 {
+					<div class="empty">Not downloaded. Run <code>overload models pull { model.ID } --quant QUANT</code>.</div>
+				} else {
+					<dl>
+						<dt>Downloaded</dt><dd>{ strings.Join(local.Quants, ", ") } ({ local.Size })</dd>
+						if local.Endpoint != "" {
+							<dt>Model service</dt><dd><code>{ local.Endpoint }</code><span class="secondary-line">launchd: { local.Service }. Check readiness with <code>overload models status</code>.</span></dd>
+						} else {
+							<dt>Model service</dt><dd>Not started. Run <code>overload models serve { model.ID }</code>.</dd>
+						}
+					</dl>
 				}
 			</section>
 		}
