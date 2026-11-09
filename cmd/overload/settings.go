@@ -52,14 +52,15 @@ func manageSettings(args []string) error {
 	case "set":
 		flags := flag.NewFlagSet("settings set", flag.ContinueOnError)
 		name := flags.String("name", "", "profile name")
-		baseURL := flags.String("url", "", "OpenAI-compatible base URL")
+		baseURL := flags.String("url", "", "base URL: OpenAI-compatible ending in /v1, or Anthropic's without /v1 (https://api.anthropic.com)")
+		provider := flags.String("provider", overload.ProviderOpenAICompat, "API: openaicompat, or anthropic for the Messages API (Claude models need it to think)")
 		model := flags.String("model", "", "model ID")
 		keyEnv := flags.String("api-key-env", "", "environment variable name containing API key")
 		connectionKind := flags.String("connection-kind", "local", "local or hosted OpenAI-compatible connection")
 		prompt := flags.String("prompt", "context", "context or switchboard-go")
 		asDefault := flags.Bool("default", false, "make default")
 		reasoningParam := flags.String("reasoning-param", "", "how thinking is requested: empty (auto), none, chat_template or reasoning_effort")
-		reasoningEffort := flags.String("reasoning-effort", "", "thinking level for --reasoning-param (none, minimal, low, medium, high, xhigh, max)")
+		reasoningEffort := flags.String("reasoning-effort", "", "thinking level for --reasoning-param (none, minimal, low, medium, high, xhigh, max; Anthropic: low to max)")
 		maxOutputTokens := flags.Int("max-output-tokens", 0, "output token limit per review call, thinking included (0 = default)")
 		concurrency := flags.Int("concurrency", 1, "changed files reviewed at once (match the model server's parallel slots)")
 		catalogID := flags.String("catalog", "", "catalog entry for the model (see overload catalog list); fills settings you do not pass")
@@ -70,7 +71,7 @@ func manageSettings(args []string) error {
 		if flags.NArg() != 0 {
 			return errors.New("unexpected setting arguments")
 		}
-		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api, Catalog: *catalogID}
+		setting := overload.ReviewSettings{Name: *name, Provider: *provider, ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api, Catalog: *catalogID}
 		given := map[string]bool{}
 		flags.Visit(func(f *flag.Flag) { given[f.Name] = true })
 		if err := applyCatalogDefaults(&setting, given); err != nil {

@@ -1000,8 +1000,9 @@ After:
   connection's URL cannot send an existing key elsewhere; refuse metadata
   and link-local addresses for hosted connections.
 
-- **Cloud model providers**: Fantasy already supports Anthropic, OpenAI,
-  Bedrock, Google and OpenRouter; add them to model profiles. Prefer an
+- **Cloud model providers**: Anthropic's Messages API is supported
+  (`--provider anthropic`); Fantasy also supports Bedrock, Google and
+  OpenRouter natively; add them to model profiles as needed. Prefer an
   overload-hosted model gateway (OpenAI-compatible proxy in the control plane)
   so API keys never enter sandboxes and token usage is metered centrally.
   Native Anthropic support matters for quality, not just choice: through an
@@ -1438,7 +1439,7 @@ plan and deploy/README.md.
    downloads; disk accounting and cleanup; the minimum llama.cpp build per
    catalog entry checked against the installed server; llama-server launchd
    services with the catalog's settings, with start, stop and health.
-3. **Native Anthropic connections** (13, 16.10 Models): an `anthropic`
+3. **Native Anthropic connections** (13, 16.10 Models; done): an `anthropic`
    provider through Fantasy, with adaptive thinking and effort, so Claude
    models can think.
 4. **OIDC sign-in, sessions and roles** (16.7 People): authorization code

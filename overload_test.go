@@ -128,3 +128,30 @@ func TestReviewSettingsCatalogLabel(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewSettingsAnthropic(t *testing.T) {
+	base := ReviewSettings{Name: "claude", Provider: ProviderAnthropic, ConnectionKind: "hosted", BaseURL: "https://api.anthropic.com", Model: "claude-opus-5-5", APIKeyEnv: "OVERLOAD_MODEL_ANTHROPIC", PromptProfile: "context"}
+	for name, test := range map[string]struct {
+		change func(*ReviewSettings)
+		valid  bool
+	}{
+		"plain":            {func(*ReviewSettings) {}, true},
+		"effort":           {func(s *ReviewSettings) { s.ReasoningParam, s.ReasoningEffort = ReasoningEffortField, "max" }, true},
+		"no thinking":      {func(s *ReviewSettings) { s.ReasoningParam = ReasoningNone }, true},
+		"minimal effort":   {func(s *ReviewSettings) { s.ReasoningParam, s.ReasoningEffort = ReasoningEffortField, "minimal" }, false},
+		"chat template":    {func(s *ReviewSettings) { s.ReasoningParam, s.ReasoningEffort = ReasoningChatTemplate, "high" }, false},
+		"responses API":    {func(s *ReviewSettings) { s.API = APIResponses }, false},
+		"unknown":          {func(s *ReviewSettings) { s.Provider = "bedrock" }, false},
+		"hosted needs key": {func(s *ReviewSettings) { s.APIKeyEnv = "" }, false},
+	} {
+		settings := base
+		test.change(&settings)
+		if err := settings.Validate(); (err == nil) != test.valid {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	workflow := ResolvedWorkflow{Version: SnapshotVersion, Name: "w", Kind: "pr_review", Agents: []ResolvedAgent{{Name: "a", Model: base.Profile(), EntryPrompt: PromptTemplate{Kind: "entry", Body: "x", SHA256: PromptDigest("x")}}}}
+	if err := workflow.Verify(); err != nil {
+		t.Fatalf("an Anthropic agent does not verify: %v", err)
+	}
+}

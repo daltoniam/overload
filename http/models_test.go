@@ -56,6 +56,14 @@ func TestModelCRUD(t *testing.T) {
 	post("/settings", url.Values{"csrf": {csrf}, "existing": {"legacy"}, "name": {"legacy"}, "connection_kind": {"hosted"}, "model": {"new"}, "base_url": {"https://example.com/v1"}, "api_key_env": {"MODEL_KEY"}, "concurrency": {"40"}}, http.StatusBadRequest)
 	post("/settings", url.Values{"csrf": {csrf}, "existing": {"legacy"}, "name": {"legacy"}, "connection_kind": {"hosted"}, "model": {"new"}, "base_url": {"https://example.com/v1"}, "api_key_env": {"MODEL_KEY"}, "concurrency": {"6"}, "reasoning_param": {"reasoning_effort"}, "reasoning_effort": {"turbo"}}, http.StatusBadRequest)
 	post("/settings", url.Values{"csrf": {csrf}, "existing": {"legacy"}, "name": {"legacy"}, "connection_kind": {"hosted"}, "model": {"new"}, "base_url": {"https://example.com/v1"}, "api_key_env": {"MODEL_KEY"}, "concurrency": {"6"}, "reasoning_param": {"reasoning_effort"}, "reasoning_effort": {"high"}, "max_output_tokens": {"8192"}}, http.StatusSeeOther)
+	post("/settings", url.Values{"csrf": {csrf}, "name": {"claude"}, "provider": {"anthropic"}, "connection_kind": {"hosted"}, "model": {"claude-opus-5-5"}, "base_url": {"https://api.anthropic.com"}, "api_key_env": {"OVERLOAD_MODEL_ANTHROPIC"}, "reasoning_param": {"reasoning_effort"}, "reasoning_effort": {"minimal"}}, http.StatusBadRequest)
+	post("/settings", url.Values{"csrf": {csrf}, "name": {"claude"}, "provider": {"anthropic"}, "connection_kind": {"hosted"}, "model": {"claude-opus-5-5"}, "base_url": {"https://api.anthropic.com"}, "api_key_env": {"OVERLOAD_MODEL_ANTHROPIC"}, "reasoning_param": {"reasoning_effort"}, "reasoning_effort": {"high"}}, http.StatusSeeOther)
+	if claude := store.settings[len(store.settings)-1]; claude.Provider != overload.ProviderAnthropic || claude.ReasoningEffort != "high" {
+		t.Fatalf("anthropic model = %+v", claude)
+	}
+	if form := page("/settings/claude", http.StatusOK); !strings.Contains(form, `<option value="anthropic" selected`) {
+		t.Fatal("form does not show the Anthropic API")
+	}
 	if store.settings[0].Concurrency != 6 || store.settings[0].ReasoningEffort != "high" || store.settings[0].MaxOutputTokens != 8192 {
 		t.Fatalf("concurrency not saved: %+v", store.settings[0])
 	}
@@ -64,7 +72,7 @@ func TestModelCRUD(t *testing.T) {
 	}
 	post("/settings/legacy/delete", url.Values{}, http.StatusForbidden)
 	post("/settings/legacy/delete", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
-	if len(store.settings) != 0 {
+	if len(store.settings) != 1 || store.settings[0].Name != "claude" {
 		t.Fatal("model deletion failed")
 	}
 }

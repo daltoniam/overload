@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/charmbracelet/openai-go/option"
@@ -24,6 +25,10 @@ var modelHTTPClient = func() *http.Client {
 }()
 
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
+	if model.Provider == overload.ProviderAnthropic {
+		client := &http.Client{Transport: anthropicAuth{base: modelHTTPClient.Transport, key: os.Getenv(model.APIKeyEnv)}}
+		return anthropic.New(anthropic.WithBaseURL(model.BaseURL), anthropic.WithHeaders(model.Headers), anthropic.WithHTTPClient(client))
+	}
 	if model.API == overload.APIResponses {
 		options := []openai.Option{openai.WithBaseURL(model.BaseURL), openai.WithAPIKey(os.Getenv(model.APIKeyEnv)), openai.WithHeaders(model.Headers), openai.WithUseResponsesAPI(), openai.WithResponsesAPIFunc(func(string) bool { return true })}
 		options = append(options, openai.WithHTTPClient(modelHTTPClient))
@@ -71,4 +76,23 @@ func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 		return "", err
 	}
 	return response.Response.Content.Text(), nil
+}
+
+// anthropicAuth sets the Messages API key on every request and removes any
+// other credentials. The Anthropic SDK otherwise adds ANTHROPIC_API_KEY or
+// ANTHROPIC_AUTH_TOKEN from overload's own environment, which would send
+// them to whatever URL a model connection names.
+type anthropicAuth struct {
+	base http.RoundTripper
+	key  string
+}
+
+func (auth anthropicAuth) RoundTrip(request *http.Request) (*http.Response, error) {
+	request = request.Clone(request.Context())
+	request.Header.Del("Authorization")
+	request.Header.Del("X-Api-Key")
+	if auth.key != "" {
+		request.Header.Set("X-Api-Key", auth.key)
+	}
+	return auth.base.RoundTrip(request)
 }

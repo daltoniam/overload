@@ -96,3 +96,37 @@ func TestProxyGrantsExpire(t *testing.T) {
 		t.Fatalf("GET allowed: %d", recorder.Code)
 	}
 }
+
+func TestProxyForwardsAnthropicMessages(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_CLAUDE", "claude-key")
+	var gotKey, gotAuth, gotPath, gotVersion string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotAuth, gotPath, gotVersion = r.Header.Get("X-Api-Key"), r.Header.Get("Authorization"), r.URL.Path, r.Header.Get("Anthropic-Version")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	base, revoke := proxy.Grant(overload.ModelProfile{Provider: overload.ProviderAnthropic, BaseURL: upstream.URL, Model: "claude-opus-5-5", APIKeyEnv: "OVERLOAD_MODEL_CLAUDE"}, time.Minute)
+	defer revoke()
+	path := strings.TrimPrefix(base, "http://overload:8083")
+	send := func(suffix string) int {
+		t.Helper()
+		request, _ := http.NewRequest(http.MethodPost, server.URL+path+suffix, strings.NewReader(`{"model":"claude-opus-5-5"}`))
+		request.Header.Set("Anthropic-Version", "2023-06-01")
+		request.Header.Set("X-Api-Key", "sandbox-supplied")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	if status := send("/v1/messages"); status != http.StatusOK || gotKey != "claude-key" || gotAuth != "" || gotPath != "/v1/messages" || gotVersion != "2023-06-01" {
+		t.Fatalf("status=%d key=%q auth=%q path=%q version=%q", status, gotKey, gotAuth, gotPath, gotVersion)
+	}
+	if status := send("/chat/completions"); status != http.StatusNotFound {
+		t.Fatalf("OpenAI path on an Anthropic grant: %d", status)
+	}
+}

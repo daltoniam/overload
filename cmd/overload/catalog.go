@@ -194,6 +194,9 @@ func applyCatalogDefaults(setting *overload.ReviewSettings, given map[string]boo
 	if !given["max-output-tokens"] && model.Settings.MaxOutputTokens != 0 {
 		setting.MaxOutputTokens = model.Settings.MaxOutputTokens
 	}
+	if !given["provider"] && model.Settings.Provider != "" {
+		setting.Provider = model.Settings.Provider
+	}
 	if !given["connection-kind"] && model.Kind == catalog.KindHosted {
 		setting.ConnectionKind = "hosted"
 	}

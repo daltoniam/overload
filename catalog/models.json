@@ -337,6 +337,7 @@
     "origin": "US",
     "kind": "hosted",
     "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {"provider": "anthropic", "reasoning_param": "reasoning_effort", "reasoning_effort": "high"},
     "evals": [
       {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 20, "possible": 20, "runs": 4},
       {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 20, "possible": 20, "runs": 4}
@@ -350,6 +351,7 @@
     "origin": "US",
     "kind": "hosted",
     "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {"provider": "anthropic", "reasoning_param": "reasoning_effort", "reasoning_effort": "high"},
     "evals": [
       {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 9, "possible": 20, "runs": 4, "notes": "Cited lines one or two off."},
       {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 14, "possible": 20, "runs": 4}
@@ -364,6 +366,7 @@
     "origin": "US",
     "kind": "hosted",
     "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {"provider": "anthropic", "reasoning_param": "reasoning_effort", "reasoning_effort": "high"},
     "evals": [
       {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 19, "possible": 20, "runs": 4},
       {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 20, "possible": 20, "runs": 4}

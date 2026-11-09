@@ -79,6 +79,29 @@ of an API key's environment variable is stored, never the key, and names of
 overload's own secrets (`DATABASE_URL`, `OVERLOAD_*`, `GITHUB_*`, `PG*`) are
 refused.
 
+### Anthropic models
+
+Claude models think only through Anthropic's Messages API; through an
+OpenAI-compatible endpoint (including Cloudflare AI Gateway's) they run
+without thinking, and Sonnet 5.5 found 9 of 20 planted bugs that way
+against 14 with effort high and adaptive thinking. Add them with the
+Anthropic provider:
+
+```sh
+overload settings set --name opus --provider anthropic --connection-kind hosted \
+  --url https://api.anthropic.com --model claude-opus-5-5 \
+  --api-key-env OVERLOAD_MODEL_ANTHROPIC \
+  --reasoning-param reasoning_effort --reasoning-effort high
+```
+
+The URL has no `/v1`; a gateway's Anthropic endpoint works too. The effort
+(low, medium, high, xhigh or max) is sent as `output_config.effort` with
+adaptive thinking; `--reasoning-param none` leaves both to the model's
+defaults. `--catalog claude-opus-5.5` fills the provider and effort. The key
+is sent as `x-api-key`; overload never sends `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN` from its own environment. In sandbox mode the model
+proxy adds the key, as for OpenAI-compatible models.
+
 ### Catalog and model policy
 
 Overload ships a catalog of most of the models measured in this file and
@@ -423,9 +446,9 @@ only the SQL injection); Sonnet 5.5 14. Sonnet was bimodal: the two runs
 where it used about 2k tokens (adaptive thinking engaged) found all five,
 and the two at about 1k tokens repeated its line-number misses. With five
 bugs the eval is near its ceiling for frontier models, so one-bug
-differences between them are noise. Overload itself reaches Claude only
-through OpenAI-compatible endpoints today, so Claude reviews in overload
-run without thinking until native Anthropic support is added.
+differences between them are noise. Overload now calls Claude through the
+native Messages API (`--provider anthropic`, see Anthropic models above),
+so Claude reviews can think.
 
 This is one
 synthetic file; treat it as

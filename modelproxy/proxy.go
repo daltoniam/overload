@@ -21,8 +21,12 @@ import (
 // maxRequestBytes bounds one model request (prompt plus repository context).
 const maxRequestBytes = 16 << 20
 
-// allowedPaths are the model endpoints a sandbox may call.
-var allowedPaths = map[string]bool{"chat/completions": true, "responses": true}
+// allowedPaths are the model endpoints a sandbox may call, by provider:
+// OpenAI-compatible base URLs end in /v1, Anthropic's do not.
+var allowedPaths = map[string]map[string]bool{
+	overload.ProviderOpenAICompat: {"chat/completions": true, "responses": true},
+	overload.ProviderAnthropic:    {"v1/messages": true},
+}
 
 type grant struct {
 	model   overload.ModelProfile
@@ -83,13 +87,21 @@ func (proxy *Proxy) lookup(token string) (overload.ModelProfile, bool) {
 func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest, ok := strings.CutPrefix(r.URL.Path, "/v1/m/")
 	token, path, found := strings.Cut(rest, "/")
-	if !ok || !found || r.Method != http.MethodPost || !allowedPaths[path] || r.URL.RawQuery != "" {
+	if !ok || !found || r.Method != http.MethodPost || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
 		return
 	}
 	model, ok := proxy.lookup(token)
 	if !ok {
 		http.Error(w, "unknown or expired model grant", http.StatusUnauthorized)
+		return
+	}
+	provider := model.Provider
+	if provider == "" {
+		provider = overload.ProviderOpenAICompat
+	}
+	if !allowedPaths[provider][path] {
+		http.NotFound(w, r)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
@@ -117,7 +129,17 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for name, value := range model.Headers {
 		upstream.Header.Set(name, value)
 	}
-	if model.APIKeyEnv != "" {
+	switch {
+	case provider == overload.ProviderAnthropic:
+		for _, name := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+			if value := r.Header.Get(name); value != "" {
+				upstream.Header.Set(name, value)
+			}
+		}
+		if model.APIKeyEnv != "" {
+			upstream.Header.Set("X-Api-Key", os.Getenv(model.APIKeyEnv))
+		}
+	case model.APIKeyEnv != "":
 		upstream.Header.Set("Authorization", "Bearer "+os.Getenv(model.APIKeyEnv))
 	}
 	response, err := proxy.client.Do(upstream)
