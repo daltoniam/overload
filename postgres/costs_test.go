@@ -72,7 +72,9 @@ func TestRunCostsAndSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(spend.Month-4.50) > 1e-9 || math.Abs(spend.Today-2.50) > 1e-9 || spend.MonthRuns != 5 || spend.Unpriced != 1 {
+	// Four priced runs; the run with only unpriced calls is counted as
+	// unpriced and left out of the average.
+	if math.Abs(spend.Month-4.50) > 1e-9 || math.Abs(spend.Today-2.50) > 1e-9 || spend.MonthRuns != 4 || math.Abs(spend.AverageRun-4.50/4) > 1e-9 || spend.Unpriced != 1 {
 		t.Fatalf("spend = %+v", spend)
 	}
 	if err := store.SetRunCost(ctx, 1, overload.Spend{USD: math.NaN()}); err == nil {

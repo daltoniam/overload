@@ -117,6 +117,15 @@ func TestFindingsFollowTheirOwnComment(t *testing.T) {
 	if matched := MatchComments(posted, comments); len(matched) != 1 || matched[5] != 21 {
 		t.Fatalf("matched = %v", matched)
 	}
+	// Without a recorded comment the two threads cannot be told apart:
+	// neither is resolved and no replies are attached.
+	legacy, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map"}})
+	if err != nil || len(legacy) != 0 {
+		t.Fatalf("ambiguous replies = %+v %v", legacy, err)
+	}
+	if count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map"}}); err != nil || count != 0 || len(resolved) != 0 {
+		t.Fatalf("ambiguous match resolved %d %v: %v", count, resolved, err)
+	}
 	replies, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map", CommentID: 21}})
 	if err != nil || len(replies[5]) != 1 || replies[5][0] != "dev: about the new one" {
 		t.Fatalf("replies = %+v %v", replies, err)

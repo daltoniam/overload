@@ -146,7 +146,10 @@ func dayStart(now time.Time) time.Time {
 // Spend summarizes spend for the dashboard.
 func (s *Store) Spend(ctx context.Context, now time.Time) (SpendSummary, error) {
 	var summary SpendSummary
-	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(usd) FILTER (WHERE at >= $2),0), COALESCE(sum(usd),0), count(DISTINCT run_id), count(DISTINCT run_id) FILTER (WHERE unpriced_calls > 0) FROM run_costs WHERE at >= $1 AND at <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
+	// A run that made only unpriced calls has no known cost, so it is left
+	// out of the priced runs the average is taken over.
+	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(today), 0), COALESCE(sum(usd), 0), count(*) FILTER (WHERE usd > 0 OR unpriced = 0), count(*) FILTER (WHERE unpriced > 0)
+FROM (SELECT run_id, sum(usd) AS usd, sum(usd) FILTER (WHERE at >= $2) AS today, sum(unpriced_calls) AS unpriced FROM run_costs WHERE at >= $1 AND at <= $3 GROUP BY run_id) per_run`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
 	if err != nil {
 		return summary, fmt.Errorf("spend: %w", err)
 	}

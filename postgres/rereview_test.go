@@ -158,9 +158,19 @@ func TestResolvedFindingsStayResolvedAcrossCopies(t *testing.T) {
 	current := newRun("running")
 	// The latest copy is the one shown, with the comment the issue was
 	// posted as.
+	// A review that finished later and posted the issue again does not
+	// lend its comment to this run's earlier findings.
+	afterwards := newRun("completed")
+	later := finding(afterwards, "posted")
+	if err := store.SetFindingComments(ctx, map[int64]int64{later: 9999}); err != nil {
+		t.Fatal(err)
+	}
 	_, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: current, RepositoryID: repoID, PRNumber: 4}, workflow)
 	if err != nil || len(prior) != 1 || prior[0].ID != newer || prior[0].CommentID != 4242 {
 		t.Fatalf("prior = %+v %v", prior, err)
+	}
+	if _, err := store.Pool.Exec(ctx, `DELETE FROM findings WHERE id=$1`, later); err != nil {
+		t.Fatal(err)
 	}
 	tx, err := store.Pool.Begin(ctx)
 	if err != nil {
@@ -173,8 +183,8 @@ func TestResolvedFindingsStayResolvedAcrossCopies(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	later := newRun("running")
-	if _, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: later, RepositoryID: repoID, PRNumber: 4}, workflow); err != nil || len(prior) != 0 {
+	next := newRun("running")
+	if _, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: next, RepositoryID: repoID, PRNumber: 4}, workflow); err != nil || len(prior) != 0 {
 		t.Fatalf("fixed finding resurfaced: %+v %v", prior, err)
 	}
 }

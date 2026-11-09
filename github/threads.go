@@ -24,8 +24,8 @@ func commentTitle(title string) string {
 // PriorReplies returns, for each earlier finding, the replies people left
 // on overload's review comment for it, oldest first. A finding is matched
 // to its comment by the comment's ID when it was recorded at posting, and
-// otherwise by author, path, the line it was posted on and title; replies
-// by overload are left out.
+// otherwise by author, path, the line it was posted on and title when
+// exactly one comment fits; replies by overload are left out.
 func (client *Client) PriorReplies(ctx context.Context, installationID int64, repository string, number int, prior []overload.PriorFinding) (map[int64][]string, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
@@ -60,18 +60,26 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 			findingOf[finding.CommentID] = finding.ID
 		}
 	}
-	for _, comment := range comments {
-		if !strings.EqualFold(comment.GetUser().GetLogin(), login) || comment.GetInReplyTo() != 0 {
+	// Older findings are matched only when exactly one of overload's
+	// comments fits, so replies about another issue are never attached.
+	for _, finding := range prior {
+		if finding.CommentID != 0 {
 			continue
 		}
-		if _, known := findingOf[comment.GetID()]; known {
-			continue
-		}
-		for _, finding := range prior {
-			if finding.CommentID == 0 && comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
-				findingOf[comment.GetID()] = finding.ID
-				break
+		var candidates []int64
+		for _, comment := range comments {
+			if !strings.EqualFold(comment.GetUser().GetLogin(), login) || comment.GetInReplyTo() != 0 {
+				continue
 			}
+			if _, known := findingOf[comment.GetID()]; known {
+				continue
+			}
+			if comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
+				candidates = append(candidates, comment.GetID())
+			}
+		}
+		if len(candidates) == 1 {
+			findingOf[candidates[0]] = finding.ID
 		}
 	}
 	replies := map[int64][]string{}
@@ -156,7 +164,7 @@ func (client *Client) graphQL(ctx context.Context, installationID int64, query s
 // re-review found fixed, and returns how many it resolved. A thread is
 // matched by its first comment's ID when the finding recorded it at
 // posting, and otherwise by author, path, the line the comment was posted
-// on, and title.
+// on, and title, only when that match is unambiguous.
 func (client *Client) ResolveThreads(ctx context.Context, installationID int64, repository string, number int, fixed []overload.Finding) (int, error) {
 	if len(fixed) == 0 {
 		return 0, nil
@@ -169,10 +177,14 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 	if err != nil {
 		return 0, err
 	}
-	var threads []string
-	// Each fixed finding resolves at most one thread: its own, so a
-	// still-open finding with the same title keeps its thread.
-	claimed := make([]bool, len(fixed))
+	type openThread struct {
+		id           string
+		commentID    int64
+		path         string
+		originalLine int
+		body         string
+	}
+	var open []openThread
 	var after *string
 	for page := 0; page < 10; page++ {
 		var data struct {
@@ -215,26 +227,38 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 			if !strings.EqualFold(first.Author.Login, strings.TrimSuffix(login, "[bot]")) && !strings.EqualFold(first.Author.Login, login) {
 				continue
 			}
-			for index, finding := range fixed {
-				if claimed[index] {
-					continue
-				}
-				matches := first.DatabaseID != 0 && first.DatabaseID == finding.CommentID
-				if finding.CommentID == 0 {
-					matches = first.Path == finding.Path && first.OriginalLine == finding.Line && strings.HasPrefix(first.Body, commentTitle(finding.Title))
-				}
-				if matches {
-					claimed[index] = true
-					threads = append(threads, thread.ID)
-					break
-				}
-			}
+			open = append(open, openThread{id: thread.ID, commentID: first.DatabaseID, path: first.Path, originalLine: first.OriginalLine, body: first.Body})
 		}
 		if !page.PageInfo.HasNextPage {
 			break
 		}
 		cursor := page.PageInfo.EndCursor
 		after = &cursor
+	}
+	// A finding that recorded its comment resolves that thread. One
+	// without (posted before comment IDs were kept) resolves a thread
+	// only when exactly one open thread has its path, posted line and
+	// title: with several, the thread may belong to a still-open finding.
+	var threads []string
+	taken := map[string]bool{}
+	for _, finding := range fixed {
+		var candidates []string
+		for _, thread := range open {
+			if taken[thread.id] {
+				continue
+			}
+			if finding.CommentID != 0 {
+				if thread.commentID == finding.CommentID {
+					candidates = append(candidates, thread.id)
+				}
+			} else if thread.path == finding.Path && thread.originalLine == finding.Line && strings.HasPrefix(thread.body, commentTitle(finding.Title)) {
+				candidates = append(candidates, thread.id)
+			}
+		}
+		if len(candidates) == 1 {
+			taken[candidates[0]] = true
+			threads = append(threads, candidates[0])
+		}
 	}
 	resolved := 0
 	for _, thread := range threads {

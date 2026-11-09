@@ -33,9 +33,9 @@ func (s *Store) RereviewBase(ctx context.Context, run overload.Run, workflow ove
 	// The latest finding per fingerprint decides whether an issue is
 	// open, so a fixed issue does not come back through an older copy.
 	// The comment is the one the issue was posted as, which may be an
-	// older copy than the latest.
+	// older copy than the latest, from the same earlier runs only.
 	rows, err := s.Pool.Query(ctx, `SELECT id, path, line, severity, title, body,
-COALESCE((SELECT p.github_comment_id FROM findings p JOIN runs pr ON pr.id=p.run_id WHERE pr.repository_id=$1 AND pr.pr_number=$2 AND p.fingerprint=latest.fingerprint AND p.github_comment_id IS NOT NULL ORDER BY p.id DESC LIMIT 1), 0)
+COALESCE((SELECT p.github_comment_id FROM findings p JOIN runs pr ON pr.id=p.run_id WHERE pr.repository_id=$1 AND pr.pr_number=$2 AND pr.id<$3 AND pr.trigger<>$4 AND p.fingerprint=latest.fingerprint AND p.github_comment_id IS NOT NULL ORDER BY p.id DESC LIMIT 1), 0)
 FROM (SELECT DISTINCT ON (f.fingerprint) f.id, f.fingerprint, f.path, f.line, f.severity, f.title, f.body, f.resolved_by_run_id FROM findings f JOIN runs r ON r.id=f.run_id WHERE r.repository_id=$1 AND r.pr_number=$2 AND r.id<$3 AND r.trigger<>$4 AND f.status IN ('posted', 'dry_run', 'suppressed') ORDER BY f.fingerprint, f.id DESC) latest WHERE resolved_by_run_id IS NULL ORDER BY id DESC LIMIT $5`, run.RepositoryID, run.PRNumber, run.ID, EvalTrigger, maxPriorFindings)
 	if err != nil {
 		return 0, "", nil, err
