@@ -78,6 +78,16 @@ type Repository struct {
 	DryRun    bool
 }
 
+// Ref names the repository unambiguously across hosts: owner/name on
+// GitHub, connection:path on a GitLab or Forgejo connection. Repository
+// paths never contain a colon.
+func (repo Repository) Ref() string {
+	if repo.Forge == "" {
+		return repo.FullName
+	}
+	return repo.Forge + ":" + repo.FullName
+}
+
 // Host is the kind of git host the repository is on.
 func (repo Repository) Host() string {
 	if repo.ForgeKind == "" {

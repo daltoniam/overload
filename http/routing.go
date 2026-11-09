@@ -38,7 +38,7 @@ func registerWorkflowPreview(mux *http.ServeMux, store ConfigurationStore) {
 		}
 		if repos, err := store.ListRepositories(r.Context()); err == nil {
 			for _, repo := range repos {
-				form.Repositories = append(form.Repositories, repo.FullName)
+				form.Repositories = append(form.Repositories, repo.Ref())
 			}
 		}
 		var preview *overload.Preview

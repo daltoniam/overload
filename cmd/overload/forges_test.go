@@ -78,6 +78,13 @@ func TestForgeCommands(t *testing.T) {
 	if err != nil || len(strings.TrimSpace(secret)) != 64 {
 		t.Fatalf("secret: %q %v", secret, err)
 	}
+	moved := `{"name":"` + name + `","kind":"gitlab","base_url":"https://elsewhere.example"}`
+	if _, err := run(moved, "apply", "-"); err == nil || !strings.Contains(err.Error(), "new access token") {
+		t.Fatalf("stored token sent to another host: %v (calls with token %q)", err, stub.token)
+	}
+	if stub.token != "glpat-good" {
+		t.Fatalf("token checked against the new host: %q", stub.token)
+	}
 	t.Setenv("OVERLOAD_BASE_URL", "https://overload.example/")
 	if _, err := run("", "webhook", name, "group/sub/api"); err != nil {
 		t.Fatal(err)

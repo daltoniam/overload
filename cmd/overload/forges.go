@@ -93,7 +93,9 @@ func runForgeCommand(ctx context.Context, store *postgres.Store, args []string, 
 			}
 			check.Token = connection.Token
 		} else if existing, err := store.LoadForgeByName(ctx, input.Name); err == nil {
-			check.Token = existing.Token
+			if check.Token, err = overload.ReusableToken(existing, check); err != nil {
+				return fmt.Errorf(`%w: set "token_env"`, err)
+			}
 		} else {
 			return errors.New(`set "token_env" to the environment variable holding the access token`)
 		}

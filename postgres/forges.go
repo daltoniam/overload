@@ -15,7 +15,8 @@ import (
 var ErrUnknownForge = errors.New("unknown git host")
 
 // SaveForge adds a GitLab or Forgejo connection, or updates the one with
-// the same name. An update without a token keeps the stored token; the
+// the same name. An update without a token keeps the stored token only
+// when the server address is unchanged (ErrTokenRequired otherwise); the
 // webhook secret is generated once and kept. A new connection gets the
 // same catch-all pull request bindings GitHub has, so its repositories are
 // reviewed by the same workflows until changed.
@@ -31,7 +32,7 @@ func (s *Store) SaveForge(ctx context.Context, connection overload.ForgeConnecti
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	var existing overload.ForgeConnection
-	err = tx.QueryRow(ctx, `SELECT id, kind, token, webhook_secret FROM forge_connections WHERE name=$1 FOR UPDATE`, connection.Name).Scan(&existing.ID, &existing.Kind, &existing.Token, &existing.WebhookSecret)
+	err = tx.QueryRow(ctx, `SELECT id, kind, base_url, token, webhook_secret FROM forge_connections WHERE name=$1 FOR UPDATE`, connection.Name).Scan(&existing.ID, &existing.Kind, &existing.BaseURL, &existing.Token, &existing.WebhookSecret)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return connection, err
 	}
@@ -40,7 +41,9 @@ func (s *Store) SaveForge(ctx context.Context, connection overload.ForgeConnecti
 			return connection, errors.New("a connection's kind cannot be changed; add a new connection instead")
 		}
 		if connection.Token == "" {
-			connection.Token = existing.Token
+			if connection.Token, err = overload.ReusableToken(existing, connection); err != nil {
+				return connection, err
+			}
 		}
 		connection.ID, connection.WebhookSecret = existing.ID, existing.WebhookSecret
 	}

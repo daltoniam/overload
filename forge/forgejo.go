@@ -127,21 +127,23 @@ func (forgejo *Forgejo) ownReviews(ctx context.Context, repository string, numbe
 		return nil, err
 	}
 	var own []forgejoReview
-	for page := 1; page <= 20; page++ {
+	// Servers may cap page sizes below the limit asked for, so the list
+	// ends at the first empty page.
+	for page := 1; page <= maxPages; page++ {
 		var reviews []forgejoReview
 		if _, err := forgejo.api.do(ctx, http.MethodGet, fmt.Sprintf("%s/pulls/%d/reviews?limit=50&page=%d", repo, number, page), nil, &reviews); err != nil {
 			return nil, err
+		}
+		if len(reviews) == 0 {
+			return own, nil
 		}
 		for _, review := range reviews {
 			if strings.EqualFold(review.User.Login, login) {
 				own = append(own, review)
 			}
 		}
-		if len(reviews) < 50 {
-			break
-		}
 	}
-	return own, nil
+	return nil, fmt.Errorf("pull request reviews: %w", errTooManyPages)
 }
 
 func (forgejo *Forgejo) FindReview(ctx context.Context, repository string, number int, marker string) (int64, error) {
@@ -253,14 +255,22 @@ func (forgejo *Forgejo) CreateWebhook(ctx context.Context, repository, hookURL, 
 	}
 	config := map[string]string{"url": hookURL, "content_type": "json", "secret": secret}
 	events := []string{"pull_request", "pull_request_sync"}
-	var hooks []forgejoHook
-	if _, err := forgejo.api.do(ctx, http.MethodGet, repo+"/hooks?limit=50", nil, &hooks); err != nil {
-		return err
-	}
-	for _, hook := range hooks {
-		if hook.Config["url"] == hookURL {
-			_, err := forgejo.api.do(ctx, http.MethodPatch, fmt.Sprintf("%s/hooks/%d", repo, hook.ID), map[string]any{"config": config, "events": events, "active": true}, nil)
+	for page := 1; ; page++ {
+		if page > maxPages {
+			return fmt.Errorf("repository hooks: %w", errTooManyPages)
+		}
+		var hooks []forgejoHook
+		if _, err := forgejo.api.do(ctx, http.MethodGet, fmt.Sprintf("%s/hooks?limit=50&page=%d", repo, page), nil, &hooks); err != nil {
 			return err
+		}
+		if len(hooks) == 0 {
+			break
+		}
+		for _, hook := range hooks {
+			if hook.Config["url"] == hookURL {
+				_, err := forgejo.api.do(ctx, http.MethodPatch, fmt.Sprintf("%s/hooks/%d", repo, hook.ID), map[string]any{"config": config, "events": events, "active": true}, nil)
+				return err
+			}
 		}
 	}
 	_, err = forgejo.api.do(ctx, http.MethodPost, repo+"/hooks", map[string]any{"type": "gitea", "config": config, "events": events, "active": true}, nil)

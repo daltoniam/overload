@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,10 +70,18 @@ func (host *fakeHost) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	route(w, r)
 }
 
+// json answers key with value; a list route answers an empty list for
+// pages after the first, as real servers do.
 func (host *fakeHost) json(key string, status int, value any) {
-	host.routes[key] = func(w http.ResponseWriter, _ *http.Request) {
+	host.routes[key] = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
+		if page := r.URL.Query().Get("page"); page != "" && page != "1" {
+			if _, isList := value.([]map[string]any); isList {
+				_, _ = w.Write([]byte("[]"))
+				return
+			}
+		}
 		_ = json.NewEncoder(w).Encode(value)
 	}
 }
@@ -453,5 +462,107 @@ func TestParseForgejo(t *testing.T) {
 	id, event := Delivery(overload.ForgeForgejo, http.Header{"X-Gitea-Delivery": {"d1"}, "X-Gitea-Event": {"pull_request"}})
 	if id != "d1" || event != "pull_request" {
 		t.Fatalf("Delivery = %q %q", id, event)
+	}
+}
+
+func TestGitLabApprovesOnlyTheReviewedCommit(t *testing.T) {
+	host, server := newFakeHost(t, "PRIVATE-TOKEN", "glpat-test")
+	mr := gitlabProjectPath + "/merge_requests/7"
+	newer := strings.Repeat("c", 40)
+	host.json("GET "+mr, 200, map[string]any{"iid": 7, "state": "opened", "sha": newer, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": newer, "start_sha": baseSHA}})
+	host.json("GET "+mr+"/versions", 200, []map[string]any{{"head_commit_sha": headSHA, "base_commit_sha": baseSHA, "start_commit_sha": baseSHA}})
+	host.json("POST "+mr+"/notes", 201, map[string]any{"id": 1})
+	host.json("POST "+mr+"/approve", 201, map[string]any{})
+	client := gitlabClient(t, server)
+	if _, err := client.PostReview(context.Background(), "group/sub/api", 7, headSHA, overload.ReviewApprove, "s", nil); err != nil {
+		t.Fatal(err)
+	}
+	if approvals := host.find("POST", mr+"/approve"); len(approvals) != 0 {
+		t.Fatalf("approved a head that was not reviewed: %+v", approvals)
+	}
+	host.json("GET "+mr, 200, map[string]any{"iid": 7, "state": "opened", "sha": headSHA, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": headSHA, "start_sha": baseSHA}})
+	if _, err := client.PostReview(context.Background(), "group/sub/api", 7, headSHA, overload.ReviewApprove, "s", nil); err != nil {
+		t.Fatal(err)
+	}
+	if approvals := host.find("POST", mr+"/approve"); len(approvals) != 1 || approvals[0].body["sha"] != headSHA {
+		t.Fatalf("approvals = %+v", approvals)
+	}
+}
+
+func TestGitLabDiffMatchesItsHead(t *testing.T) {
+	host, server := newFakeHost(t, "PRIVATE-TOKEN", "glpat-test")
+	mr := gitlabProjectPath + "/merge_requests/7"
+	newer := strings.Repeat("c", 40)
+	reads := 0
+	host.routes["GET "+mr] = func(w http.ResponseWriter, _ *http.Request) {
+		reads++
+		sha := headSHA
+		if reads > 1 {
+			// A push lands while the first diff is read.
+			sha = newer
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"iid": 7, "state": "opened", "sha": sha, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": sha}})
+	}
+	diffs := 0
+	host.routes["GET "+mr+"/diffs"] = func(w http.ResponseWriter, _ *http.Request) {
+		diffs++
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"old_path": "a.go", "new_path": "a.go", "diff": fmt.Sprintf("@@ -1 +1 @@\n-x\n+read%d\n", diffs)}})
+	}
+	pr, patch, err := gitlabClient(t, server).PullRequestWithDiff(context.Background(), "group/sub/api", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pr.HeadSHA != newer || !strings.Contains(patch, "+read2") || diffs != 2 {
+		t.Fatalf("head %s with diff %q after %d reads", pr.HeadSHA, patch, diffs)
+	}
+}
+
+func TestWebhooksFoundOnLaterPages(t *testing.T) {
+	gitlabHost, gitlabServer := newFakeHost(t, "PRIVATE-TOKEN", "glpat-test")
+	url := "https://overload.example/webhooks/gitlab/1"
+	gitlabHost.routes["GET "+gitlabProjectPath+"/hooks"] = func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "1" {
+			w.Header().Set("X-Next-Page", "2")
+			_, _ = w.Write([]byte(`[{"id":1,"url":"https://other.example"}]`))
+			return
+		}
+		_, _ = w.Write([]byte(`[{"id":9,"url":"` + url + `"}]`))
+	}
+	gitlabHost.json("PUT "+gitlabProjectPath+"/hooks/9", 200, map[string]any{})
+	if err := gitlabClient(t, gitlabServer).CreateWebhook(context.Background(), "group/sub/api", url, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if len(gitlabHost.find("PUT", gitlabProjectPath+"/hooks/9")) != 1 || len(gitlabHost.find("POST", gitlabProjectPath+"/hooks")) != 0 {
+		t.Fatal("GitLab hook on page 2 not updated")
+	}
+	forgejoHost, forgejoServer := newFakeHost(t, "Authorization", "token fj-test")
+	forgejoURL := "https://overload.example/webhooks/forgejo/2"
+	forgejoHost.routes["GET "+forgejoRepoPath+"/hooks"] = func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("page") {
+		case "1":
+			_, _ = w.Write([]byte(`[{"id":1,"config":{"url":"https://other.example"}}]`))
+		case "2":
+			_, _ = w.Write([]byte(`[{"id":5,"config":{"url":"` + forgejoURL + `"}}]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}
+	forgejoHost.json("PATCH "+forgejoRepoPath+"/hooks/5", 200, map[string]any{})
+	if err := forgejoClient(t, forgejoServer).CreateWebhook(context.Background(), "acme/api", forgejoURL, "s"); err != nil {
+		t.Fatal(err)
+	}
+	if len(forgejoHost.find("PATCH", forgejoRepoPath+"/hooks/5")) != 1 || len(forgejoHost.find("POST", forgejoRepoPath+"/hooks")) != 0 {
+		t.Fatal("Forgejo hook on page 2 not updated")
+	}
+}
+
+func TestForgejoEndlessReviewHistoryIsAnError(t *testing.T) {
+	host, server := newFakeHost(t, "Authorization", "token fj-test")
+	host.json("GET /api/v1/user", 200, map[string]any{"login": "overload"})
+	host.routes["GET "+forgejoRepoPath+"/pulls/3/reviews"] = func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id":1,"state":"COMMENT","user":{"login":"someone"}}]`))
+	}
+	if _, err := forgejoClient(t, server).FindReview(context.Background(), "acme/api", 3, "<!-- overload-run:1 -->"); !errors.Is(err, errTooManyPages) {
+		t.Fatalf("truncated history treated as complete: %v", err)
 	}
 }

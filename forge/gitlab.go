@@ -88,11 +88,36 @@ func (gitlab *GitLab) mergeRequest(ctx context.Context, repository string, numbe
 	return path, mr, err
 }
 
+// diffAttempts bounds how often a diff is fetched again when a push lands
+// while it is read.
+const diffAttempts = 3
+
+// PullRequestWithDiff returns a merge request and its diff for the same
+// head: the diff is read in pages, so the merge request is read again
+// afterwards and the diff fetched again if a push moved the head.
 func (gitlab *GitLab) PullRequestWithDiff(ctx context.Context, repository string, number int) (overload.PullRequest, string, error) {
 	path, mr, err := gitlab.mergeRequest(ctx, repository, number)
 	if err != nil {
 		return overload.PullRequest{}, "", err
 	}
+	for range diffAttempts {
+		patch, err := gitlab.diff(ctx, path)
+		if err != nil {
+			return overload.PullRequest{}, "", err
+		}
+		_, after, err := gitlab.mergeRequest(ctx, repository, number)
+		if err != nil {
+			return overload.PullRequest{}, "", err
+		}
+		if after.SHA == mr.SHA && after.DiffRefs == mr.DiffRefs {
+			return gitlabPullRequest(mr), patch, nil
+		}
+		mr = after
+	}
+	return overload.PullRequest{}, "", fmt.Errorf("merge request !%d kept changing while its diff was read", number)
+}
+
+func gitlabPullRequest(mr gitlabMergeRequest) overload.PullRequest {
 	state := mr.State
 	if state == "opened" {
 		state = "open"
@@ -101,8 +126,7 @@ func (gitlab *GitLab) PullRequestWithDiff(ctx context.Context, repository string
 	if pr.HeadSHA == "" {
 		pr.HeadSHA = mr.DiffRefs.HeadSHA
 	}
-	patch, err := gitlab.diff(ctx, path)
-	return pr, patch, err
+	return pr
 }
 
 type gitlabDiff struct {
@@ -190,7 +214,7 @@ func (gitlab *GitLab) FindReview(ctx context.Context, repository string, number 
 	if err != nil {
 		return 0, err
 	}
-	for page := 1; page <= 20; page++ {
+	for page := 1; page <= maxPages; page++ {
 		var notes []gitlabNote
 		header, err := gitlab.api.do(ctx, http.MethodGet, fmt.Sprintf("%s/merge_requests/%d/notes?sort=desc&order_by=created_at&per_page=100&page=%d", project, number, page), nil, &notes)
 		if err != nil {
@@ -202,10 +226,10 @@ func (gitlab *GitLab) FindReview(ctx context.Context, repository string, number 
 			}
 		}
 		if header.Get("X-Next-Page") == "" || len(notes) == 0 {
-			break
+			return 0, nil
 		}
 	}
-	return 0, nil
+	return 0, fmt.Errorf("merge request notes: %w", errTooManyPages)
 }
 
 type gitlabVersion struct {
@@ -285,7 +309,13 @@ func (gitlab *GitLab) PostReview(ctx context.Context, repository string, number 
 	}
 	switch event {
 	case overload.ReviewApprove:
-		if _, err := gitlab.api.do(ctx, http.MethodPost, path+"/approve", map[string]string{"sha": mr.SHA}, nil); err != nil && statusOf(err) != http.StatusUnauthorized {
+		// Approve only the reviewed commit: GitLab refuses the approval when
+		// the head has moved past sha, and a newer head is never approved.
+		if !strings.EqualFold(mr.SHA, sha) {
+			slog.Info("GitLab approval skipped: the merge request has a newer head than the review", "repository", repository, "merge_request", number)
+			break
+		}
+		if _, err := gitlab.api.do(ctx, http.MethodPost, path+"/approve", map[string]string{"sha": sha}, nil); err != nil && statusOf(err) != http.StatusUnauthorized {
 			slog.Warn("GitLab approval not given", "repository", repository, "merge_request", number, "error", err)
 		}
 	case overload.ReviewRequestChanges:
@@ -347,14 +377,23 @@ func (gitlab *GitLab) CreateWebhook(ctx context.Context, repository, hookURL, se
 		return err
 	}
 	body := map[string]any{"url": hookURL, "token": secret, "merge_requests_events": true, "push_events": false, "enable_ssl_verification": strings.HasPrefix(hookURL, "https://")}
-	var hooks []gitlabHook
-	if _, err := gitlab.api.do(ctx, http.MethodGet, project+"/hooks?per_page=100", nil, &hooks); err != nil {
-		return err
-	}
-	for _, hook := range hooks {
-		if hook.URL == hookURL {
-			_, err := gitlab.api.do(ctx, http.MethodPut, fmt.Sprintf("%s/hooks/%d", project, hook.ID), body, nil)
+	for page := 1; ; page++ {
+		if page > maxPages {
+			return fmt.Errorf("project hooks: %w", errTooManyPages)
+		}
+		var hooks []gitlabHook
+		header, err := gitlab.api.do(ctx, http.MethodGet, fmt.Sprintf("%s/hooks?per_page=100&page=%d", project, page), nil, &hooks)
+		if err != nil {
 			return err
+		}
+		for _, hook := range hooks {
+			if hook.URL == hookURL {
+				_, err := gitlab.api.do(ctx, http.MethodPut, fmt.Sprintf("%s/hooks/%d", project, hook.ID), body, nil)
+				return err
+			}
+		}
+		if header.Get("X-Next-Page") == "" || len(hooks) == 0 {
+			break
 		}
 	}
 	_, err = gitlab.api.do(ctx, http.MethodPost, project+"/hooks", body, nil)

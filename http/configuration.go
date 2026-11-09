@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -369,16 +370,9 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			destination = "/configure/repositories"
 		}
 		if resource == "bindings" || resource == "repositories" {
-			repos, listErr := store.ListRepositories(r.Context())
-			if listErr == nil {
-				name := r.PostForm.Get("repository")
-				if resource == "repositories" {
-					name = r.PostForm.Get("name")
-				}
-				for _, repo := range repos {
-					if repo.FullName == name && (resource != "repositories" || r.PostForm.Get("id") != "" || repo.Forge == r.PostForm.Get("forge")) {
-						destination = "/configure/repositories/" + strconv.FormatInt(repo.ID, 10)
-					}
+			if repos, listErr := store.ListRepositories(r.Context()); listErr == nil {
+				if id := savedRepository(resource, r.PostForm, repos); id != 0 {
+					destination = "/configure/repositories/" + strconv.FormatInt(id, 10)
 				}
 			}
 		}
@@ -389,4 +383,28 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 // conflictMessage explains a save refused because someone else saved first.
 func conflictMessage(resource, what string) string {
 	return resource + " not saved: someone else changed " + what + " after you opened it. Copy your changes, reload the page, and apply them again."
+}
+
+// savedRepository finds the repository a repository or binding form saved:
+// by its ID when the form carries one (edits and bindings), otherwise by
+// host and name (a new repository). Names alone are ambiguous across
+// hosts.
+func savedRepository(resource string, form url.Values, repos []overload.Repository) int64 {
+	id := form.Get("id")
+	name := form.Get("name")
+	if resource == "bindings" {
+		id, name = form.Get("repository_id"), form.Get("repository")
+	}
+	for _, repo := range repos {
+		if id != "" {
+			if strconv.FormatInt(repo.ID, 10) == id && repo.FullName == name {
+				return repo.ID
+			}
+			continue
+		}
+		if repo.FullName == name && repo.Forge == form.Get("forge") {
+			return repo.ID
+		}
+	}
+	return 0
 }

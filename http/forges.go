@@ -118,7 +118,11 @@ func registerForges(mux *http.ServeMux, store ForgeStore, ingester ForgeIngester
 		check := connection
 		if check.Token == "" {
 			if existing, err := store.LoadForgeByName(r.Context(), connection.Name); err == nil {
-				check.Token = existing.Token
+				if check.Token, err = overload.ReusableToken(existing, check); err != nil {
+					form.Error = err.Error()
+					render(w, r, http.StatusUnprocessableEntity, form)
+					return
+				}
 			}
 		}
 		if err := check.Validate(); err != nil {

@@ -177,3 +177,27 @@ func TestForgeSetupPage(t *testing.T) {
 		t.Fatalf("hooks = %v", stub.hooks)
 	}
 }
+
+func TestSavedRepositoryIsScopedToItsHost(t *testing.T) {
+	repos := []overload.Repository{{ID: 1, FullName: "acme/api"}, {ID: 2, FullName: "acme/api", Forge: "codeberg", ForgeKind: overload.ForgeForgejo}}
+	for _, test := range []struct {
+		name     string
+		resource string
+		form     url.Values
+		want     int64
+	}{
+		{"edit GitHub", "repositories", url.Values{"id": {"1"}, "name": {"acme/api"}}, 1},
+		{"edit Forgejo", "repositories", url.Values{"id": {"2"}, "name": {"acme/api"}}, 2},
+		{"new Forgejo", "repositories", url.Values{"name": {"acme/api"}, "forge": {"codeberg"}}, 2},
+		{"new GitHub", "repositories", url.Values{"name": {"acme/api"}}, 1},
+		{"binding on GitHub", "bindings", url.Values{"repository": {"acme/api"}, "repository_id": {"1"}}, 1},
+		{"binding on Forgejo", "bindings", url.Values{"repository": {"acme/api"}, "repository_id": {"2"}}, 2},
+	} {
+		if got := savedRepository(test.resource, test.form, repos); got != test.want {
+			t.Errorf("%s: %d, want %d", test.name, got, test.want)
+		}
+	}
+	if repos[1].Ref() != "codeberg:acme/api" || repos[0].Ref() != "acme/api" {
+		t.Fatalf("refs = %q %q", repos[0].Ref(), repos[1].Ref())
+	}
+}

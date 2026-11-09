@@ -77,6 +77,24 @@ func (connection ForgeConnection) Validate() error {
 	return nil
 }
 
+// ErrTokenRequired is returned when a connection's token would be reused
+// for a different server.
+var ErrTokenRequired = errors.New("a new access token is required when the server address or kind changes")
+
+// ReusableToken returns the token of existing for an update to
+// connection that gives none: only for the same kind and server, so a
+// stored token is never sent to another host.
+func ReusableToken(existing, connection ForgeConnection) (string, error) {
+	base, err := ForgeBaseURL(connection.BaseURL)
+	if err != nil {
+		return "", err
+	}
+	if existing.Kind != connection.Kind || existing.BaseURL != base {
+		return "", ErrTokenRequired
+	}
+	return existing.Token, nil
+}
+
 // ForgeBaseURL normalizes a git host's web address: https (http only for
 // localhost), no credentials, query or fragment, no trailing slash.
 func ForgeBaseURL(raw string) (string, error) {

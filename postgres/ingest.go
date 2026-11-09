@@ -128,7 +128,11 @@ func lookupForgeRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDeliver
 			return *facts, err
 		}
 		if facts.found && facts.name != delivery.RepoName && delivery.RepoName != "" {
-			if _, err := tx.Exec(ctx, `UPDATE repositories SET full_name = $1, updated_at = now() WHERE id = $2 AND NOT EXISTS (SELECT 1 FROM repositories WHERE forge_id = $3 AND full_name = $1)`, delivery.RepoName, facts.id, delivery.ForgeID); err != nil {
+			// The name changes only when no other row holds the new one;
+			// facts keep whichever name the row ends up with, so bindings
+			// are matched against it.
+			err := tx.QueryRow(ctx, `UPDATE repositories SET full_name = $1, updated_at = now() WHERE id = $2 AND NOT EXISTS (SELECT 1 FROM repositories WHERE forge_id = $3 AND full_name = $1) RETURNING full_name`, delivery.RepoName, facts.id, delivery.ForgeID).Scan(&facts.name)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 				return *facts, err
 			}
 		}

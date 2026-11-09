@@ -45,6 +45,14 @@ const (
 	maxArchiveBytes = 256 << 20
 )
 
+// maxPages bounds how many pages of a list are read. A list longer than
+// that is an error, never treated as complete: a missed review or hook
+// would post twice or leave a request for changes behind.
+const maxPages = 50
+
+// errTooManyPages is returned when a list does not end within maxPages.
+var errTooManyPages = fmt.Errorf("list has more than %d pages", maxPages)
+
 var commitSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}([a-fA-F0-9]{24})?$`)
 
 // New returns the client for a connection.
