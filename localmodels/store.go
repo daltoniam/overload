@@ -121,12 +121,15 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	present := store.presentFiles(manifest, installed, progress)
+	store.reuseFiles(manifest, installed, present)
 	if err := store.checkSpace(installed, present); err != nil {
 		return Installed{}, err
 	}
 	// Each revision has its own directory, so a new revision never
-	// overwrites the files an installed entry or a running service uses;
-	// the manifest switches to it only after every file is in place.
+	// overwrites the files an installed entry or a running service uses.
+	// Files are moved into place only after all of them verified, and the
+	// manifest switches to the revision after that.
+	var staged [][2]string
 	for _, file := range selected {
 		if present[file.Path] {
 			continue
@@ -135,11 +138,16 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		if err != nil {
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
-		if err := os.Rename(partial, store.FilePath(installed, file)); err != nil {
+		staged = append(staged, [2]string{partial, store.FilePath(installed, file)})
+	}
+	for _, step := range staged {
+		if err := os.Rename(step[0], step[1]); err != nil {
 			return Installed{}, err
 		}
 	}
-	unlockServices, err := store.lock(".services.lock")
+	// Model services hold this lock only briefly; wait for it rather than
+	// fail a finished download.
+	unlockServices, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -197,6 +205,44 @@ func (store Store) presentFiles(manifest []Installed, installed Installed, progr
 		}
 	}
 	return present
+}
+
+// reuseFiles links files an installed revision of the same repository
+// already has with the same digest, and moves unfinished downloads of the
+// same file from older revision directories, so updating to a revision
+// that changed one file downloads only that file.
+func (store Store) reuseFiles(manifest []Installed, installed Installed, present map[string]bool) {
+	byDigest := map[string]string{}
+	for _, entry := range manifest {
+		if entry.Repository != installed.Repository {
+			continue
+		}
+		for _, file := range entry.Files {
+			byDigest[file.SHA256] = store.FilePath(entry, file)
+		}
+	}
+	for _, file := range installed.Files {
+		if present[file.Path] {
+			continue
+		}
+		destination := store.FilePath(installed, file)
+		if source, ok := byDigest[file.SHA256]; ok && source != destination {
+			if info, err := os.Stat(source); err == nil && info.Size() == file.Size && os.MkdirAll(filepath.Dir(destination), 0o755) == nil && os.Link(source, destination) == nil {
+				present[file.Path] = true
+				continue
+			}
+		}
+		partial := store.partialPath(installed, file)
+		if _, err := os.Stat(partial); err == nil {
+			continue
+		}
+		matches, _ := filepath.Glob(filepath.Join(store.Dir, filepath.FromSlash(installed.Repository), "*", filepath.FromSlash(file.Path)+"."+file.SHA256[:16]+partialSuffix))
+		for _, match := range matches {
+			if match != partial && os.MkdirAll(filepath.Dir(partial), 0o755) == nil && os.Rename(match, partial) == nil {
+				break
+			}
+		}
+	}
 }
 
 // release deals with the files of replaced entries that no installed entry
@@ -744,6 +790,26 @@ func writeFileAtomic(path string, data []byte) error {
 	return os.Rename(temporary.Name(), path)
 }
 
+// lockWait takes lock name, retrying until timeout while another command
+// holds it.
+func (store Store) lockWait(ctx context.Context, name string, timeout time.Duration) (func(), error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		unlock, err := store.lock(name)
+		if err == nil || !errors.Is(err, errLocked) || time.Now().After(deadline) {
+			return unlock, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+}
+
+// errLocked means another command holds a store lock.
+var errLocked = errors.New("another overload models command is using the model directory")
+
 // lock takes an exclusive lock on a file in the store's directory, so two
 // commands do not write the same files.
 func (store Store) lock(name string) (func(), error) {
@@ -757,7 +823,7 @@ func (store Store) lock(name string) (func(), error) {
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, errors.New("another overload models command is using the model directory")
+			return nil, errLocked
 		}
 		return nil, fmt.Errorf("lock the model directory: %w", err)
 	}

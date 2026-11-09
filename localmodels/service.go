@@ -244,6 +244,9 @@ func (store Store) StopService(manager ServiceManager, id string) error {
 // prefix (one install's), keeping other installs' services that share the
 // directory, and returns the labels it removed.
 func (store Store) RemoveServices(manager ServiceManager, prefix string) ([]string, error) {
+	if _, err := os.Stat(store.Dir); err != nil {
+		return nil, err
+	}
 	unlock, err := store.lock(".services.lock")
 	if err != nil {
 		return nil, err

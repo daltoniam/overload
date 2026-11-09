@@ -897,3 +897,67 @@ func TestServeRefusesAnAgentBuiltForOldFiles(t *testing.T) {
 		t.Fatalf("served an agent built for replaced files: %v", err)
 	}
 }
+
+func TestUpdateDownloadsOnlyChangedFiles(t *testing.T) {
+	first, second := []byte(strings.Repeat("1", 4096)), []byte(strings.Repeat("2", 4096))
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M-00001-of-00002.gguf": first, "flint-Q4_K_M-00002-of-00002.gguf": second})
+	var downloads atomic.Int64
+	base := hub.Client.Transport
+	hub.Client = &http.Client{Transport: roundTripper(func(request *http.Request) (*http.Response, error) {
+		if strings.Contains(request.URL.Path, "/resolve/") {
+			downloads.Add(1)
+		}
+		return base.RoundTrip(request)
+	})}
+	store := NewStore(t.TempDir())
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.files["flint-Q4_K_M-00002-of-00002.gguf"] = []byte(strings.Repeat("3", 4096))
+	fake.revision = strings.Repeat("e", 40)
+	fake.mu.Unlock()
+	before := downloads.Load()
+	installed, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+	if err != nil || downloads.Load()-before != 1 {
+		t.Fatalf("update downloaded %d files: %v", downloads.Load()-before, err)
+	}
+	if data, _ := os.ReadFile(store.FilePath(installed, installed.Files[0])); string(data) != string(first) {
+		t.Fatal("the unchanged part was not carried over")
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "test/flint-GGUF", testRevision)); !os.IsNotExist(err) {
+		t.Fatal("the old revision directory was left behind")
+	}
+}
+
+func TestPartialCarriesOverToANewRevision(t *testing.T) {
+	content := []byte(strings.Repeat("p", 8192))
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	store := NewStore(t.TempDir())
+	fake.failAfter.Store(4096)
+	_, _ = store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+	fake.mu.Lock()
+	fake.revision = strings.Repeat("e", 40)
+	fake.mu.Unlock()
+	ranges := fake.ranges.Load()
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if fake.ranges.Load() != ranges+1 {
+		t.Fatal("a partial download of the same file was not resumed after the revision changed")
+	}
+}
+
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (fn roundTripper) RoundTrip(request *http.Request) (*http.Response, error) { return fn(request) }
+
+func TestRemoveServicesWithoutADirectory(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "missing"))
+	if _, err := store.RemoveServices(&fakeManager{written: map[string]launchd.Agent{}}, "dev.overload.model."); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing directory: %v", err)
+	}
+	if _, err := os.Stat(store.Dir); !os.IsNotExist(err) {
+		t.Fatal("uninstall created the model directory")
+	}
+}
