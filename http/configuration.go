@@ -28,7 +28,7 @@ type ConfigurationStore interface {
 	SaveBinding(context.Context, overload.TriggerBinding) error
 	DeleteBinding(context.Context, int64, string) error
 	ListRepositories(context.Context) ([]overload.Repository, error)
-	SaveRepository(context.Context, string, bool, bool) error
+	SaveRepository(context.Context, string, string, bool, bool) error
 	DeleteRepository(context.Context, int64) error
 	ListSchedules(context.Context) ([]overload.Schedule, error)
 	SaveSchedule(context.Context, overload.Schedule) error
@@ -131,7 +131,14 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 		}
-		_ = pages.RepositoryForm(selected, bindings, workflows, csrf).Render(r.Context(), w)
+		var forges []overload.ForgeConnection
+		if forgeStore, ok := store.(ForgeStore); ok {
+			if forges, err = forgeStore.ListForges(r.Context()); err != nil {
+				http.Error(w, "Unable to load git hosts", http.StatusInternalServerError)
+				return
+			}
+		}
+		_ = pages.RepositoryForm(selected, bindings, workflows, forges, csrf).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/agents/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
@@ -268,6 +275,10 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			}
 		case "bindings":
 			repository := r.PostForm.Get("repository")
+			source := overload.ForgeGitHub
+			if host := r.PostForm.Get("source"); host != "" {
+				source = host
+			}
 			if repository != "" {
 				repos, listErr := store.ListRepositories(r.Context())
 				if listErr != nil {
@@ -276,8 +287,8 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				}
 				found := false
 				for _, repo := range repos {
-					if repo.FullName == repository {
-						found = true
+					if repo.FullName == repository && (r.PostForm.Get("repository_id") == "" || r.PostForm.Get("repository_id") == strconv.FormatInt(repo.ID, 10)) {
+						found, source = true, repo.Host()
 						break
 					}
 				}
@@ -286,8 +297,9 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 					return
 				}
 			}
-			err = store.SaveBinding(r.Context(), overload.TriggerBinding{Source: "github", Event: "pull_request", Action: r.PostForm.Get("action"), Repository: repository, Workflow: r.PostForm.Get("workflow"), Enabled: r.PostForm.Get("enabled") == "true"})
+			err = store.SaveBinding(r.Context(), overload.TriggerBinding{Source: source, Event: "pull_request", Action: r.PostForm.Get("action"), Repository: repository, Workflow: r.PostForm.Get("workflow"), Enabled: r.PostForm.Get("enabled") == "true"})
 		case "repositories":
+			forgeName := r.PostForm.Get("forge")
 			if r.PostForm.Get("id") != "" {
 				id, parseErr := strconv.ParseInt(r.PostForm.Get("id"), 10, 64)
 				repos, listErr := store.ListRepositories(r.Context())
@@ -298,7 +310,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				found := false
 				for _, repo := range repos {
 					if repo.ID == id && repo.FullName == r.PostForm.Get("name") {
-						found = true
+						found, forgeName = true, repo.Forge
 						break
 					}
 				}
@@ -307,7 +319,19 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 					return
 				}
 			}
-			err = store.SaveRepository(r.Context(), r.PostForm.Get("name"), r.PostForm.Get("enabled") == "true", r.PostForm.Get("post") != "true")
+			err = store.SaveRepository(r.Context(), forgeName, r.PostForm.Get("name"), r.PostForm.Get("enabled") == "true", r.PostForm.Get("post") != "true")
+			if err != nil {
+				http.Error(w, "Repository not saved: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			if forgeName != "" && r.PostForm.Get("id") == "" && r.PostForm.Get("webhook") == "true" {
+				if forges, ok := store.(ForgeStore); ok {
+					if hookErr := createForgeWebhook(r.Context(), forges, forgeName, r.PostForm.Get("name"), webhookBase(r, store)); hookErr != nil {
+						http.Error(w, "Repository saved, but the webhook was not created: "+hookErr.Error()+". Add it by hand from the Git hosts page.", http.StatusBadGateway)
+						return
+					}
+				}
+			}
 		case "schedules":
 			schedules, listErr := store.ListSchedules(r.Context())
 			if listErr != nil {
@@ -352,7 +376,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 					name = r.PostForm.Get("name")
 				}
 				for _, repo := range repos {
-					if repo.FullName == name {
+					if repo.FullName == name && (resource != "repositories" || r.PostForm.Get("id") != "" || repo.Forge == r.PostForm.Get("forge")) {
 						destination = "/configure/repositories/" + strconv.FormatInt(repo.ID, 10)
 					}
 				}

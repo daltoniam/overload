@@ -169,6 +169,7 @@ overload/
   postgres/            Store implementations (pgx), migrations (embed), tx helpers
   queue/               River client setup, job args, workers (ReviewPRJob, ReapSandboxesJob, EvalCaseJob)
   github/              App auth, installation tokens, webhook verification/parsing, PR fetch, review posting
+  forge/               GitLab and Forgejo/Gitea clients (token): PR fetch, diff, archive, reviews, statuses, webhooks (see 7.11)
   diff/                unified diff parsing, hunk/line mapping, commentable-line checks
   review/              pipeline orchestration: build spec, validate, dedupe, filter, render comments
   harness/             Fantasy-based reviewer: prompts, modes, tools, output parsing
@@ -239,6 +240,8 @@ converts output into the same `ReviewResult`.
 - GitHub `pull_request` actions: `opened`, `synchronize`, `reopened`,
   `ready_for_review`. Skip drafts (configurable per repo), skip bot authors,
   skip repositories that are not enabled.
+- GitLab merge request and Forgejo/Gitea pull request webhooks, with their
+  actions translated to the GitHub names above (see 7.11).
 - GitHub `issue_comment` with `/overload review` on a PR from a user with
   write access: force a run.
 - `overload review` CLI and a "Re-run" button in the UI.
@@ -694,6 +697,50 @@ step through it under overload's limits.
   may reach overload only on 8083. The agent image is published to
   `ghcr.io/daltoniam/overload-agent` with each release.
 
+### 7.11 Git hosts: GitLab and Forgejo
+
+**Decision (2026-10-16):** GitLab and Forgejo (which covers Gitea) are
+reviewed through a **git host connection** (`forge_connections`: name,
+kind, base URL, access token, generated webhook secret) rather than an
+App. GitHub keeps its App and token paths unchanged; a repository or run
+with no `forge_id` is on GitHub.
+
+- The root package has a host-neutral `PullRequest`; the review source,
+  manual reviews and the workflow preview no longer use go-github types.
+  `overload.ErrReviewRejected` and `ErrStatusForbidden` are shared, and
+  the GitHub errors wrap them.
+- `forge.Client` mirrors the GitHub token client (PR with diff, head
+  archive, find/post review, standing requests for changes, dismiss,
+  status) plus `CreateWebhook` and `Identity`. The queue adapts it to the
+  existing `ReviewPoster`/`StatusSetter` interfaces, which carry an
+  installation ID forges ignore.
+- Repository names are unique per host (`(COALESCE(forge_id, 0),
+  full_name)`); forge repositories are linked to the host's repository ID
+  on the first delivery (`forge_repo_id`) and follow renames. GitLab paths
+  may have subgroups.
+- Bindings: `trigger_bindings.source` is the host kind (`github`,
+  `gitlab`, `forgejo`) and actions use GitHub's names. A new connection
+  copies GitHub's catch-all pull request bindings.
+- Webhooks: `POST /webhooks/{gitlab|forgejo}/{connection id}`. GitLab
+  sends the secret in `X-Gitlab-Token`; Forgejo signs with HMAC-SHA256
+  (`X-Forgejo-Signature`, `X-Gitea-Signature`). GitLab merge request hooks
+  have no base commit, so forge deliveries may arrive without one.
+- GitLab has no REST "request changes": a blocking review is a failed
+  `overload` status and withdraws overload's approval. Inline comments are
+  discussions on the version the review read (`/versions`), after a
+  summary note that carries the run marker; comments GitLab cannot place
+  are listed in a follow-up note.
+- Credentials: tokens and webhook secrets live in Postgres like the GitHub
+  App key and are never rendered; `overload forges secret NAME` prints the
+  secret for a hand-made webhook, and `overload forges apply` reads the
+  token from the environment variable `token_env` names.
+- The Cloudflare Tunnel and the cloud Ingress forward the forge webhook
+  paths next to `/webhooks/github`.
+
+Not done yet: webhook catch-up (GitLab and Forgejo have no redelivery API
+like GitHub's), `/overload review` comments, and a run against real
+servers.
+
 ## 8. Data model (initial)
 
 ```
@@ -965,6 +1012,9 @@ After:
 5. A reaper for sandbox claims left by a crashed worker; backup, restore and
    upgrade tests.
 6. Sentry and other signed webhook sources for generic jobs.
+6a. GitLab and Forgejo (7.11): implemented and tested against fake
+   servers; next, run both against real servers (gitlab.com and
+   codeberg.org) with a bot account, then a self-hosted GitLab.
 7. Remote management: today the CLI configures overload by connecting to
    Postgres (`DATABASE_URL`), so an agent must run next to the database
    (`kubectl exec`). Add a token-authenticated JSON API for the same

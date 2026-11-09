@@ -22,8 +22,12 @@ import (
 	"github.com/daltoniam/overload/launchd"
 )
 
-// WebhookPath is the only path the tunnel forwards.
+// WebhookPath is the GitHub App's webhook path.
 const WebhookPath = "/webhooks/github"
+
+// forwardedPaths are the only paths the tunnel forwards: the GitHub App's
+// webhook and each GitLab or Forgejo connection's webhook.
+const forwardedPaths = `^/webhooks/(github|gitlab/[0-9]+|forgejo/[0-9]+)$`
 
 var (
 	hostnamePattern = regexp.MustCompile(`^(?i)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -111,6 +115,14 @@ type Config struct {
 	Name     string `json:"name"`
 	ID       string `json:"id"`
 	Hostname string `json:"hostname"`
+}
+
+// BaseURL is the tunnel's public https address, or "" without one.
+func (config Config) BaseURL() string {
+	if config.Hostname == "" {
+		return ""
+	}
+	return "https://" + config.Hostname
 }
 
 // WebhookURL is the public URL GitHub should call.
@@ -299,7 +311,7 @@ func (manager *Manager) setup(ctx context.Context, cloudflared, name, hostname s
 	if err := manager.writeConfig(config); err != nil {
 		return err
 	}
-	manager.step("Wrote %s; only %s is forwarded.", manager.configFile(), WebhookPath)
+	manager.step("Wrote %s; only webhook paths are forwarded.", manager.configFile())
 	agent := launchd.Agent{
 		Label: manager.serviceLabel(),
 		Args:  []string{cloudflared, "--no-autoupdate", "--config", manager.configFile(), "tunnel", "run", id},
@@ -365,16 +377,17 @@ func (manager *Manager) findCredentials(id string) error {
 }
 
 func (manager *Manager) writeConfig(config Config) error {
-	yaml := fmt.Sprintf(`# Written by overload. Only the GitHub webhook is forwarded; every other
-# path gets a 404 from Cloudflare and never reaches this Mac.
+	yaml := fmt.Sprintf(`# Written by overload. Only webhooks (GitHub, GitLab, Forgejo) are
+# forwarded; every other path gets a 404 from Cloudflare and never reaches
+# this Mac.
 tunnel: %s
 credentials-file: %s
 ingress:
   - hostname: %s
-    path: ^%s$
+    path: %s
     service: %s
   - service: http_status:404
-`, config.ID, manager.credentials(config.ID), config.Hostname, regexp.QuoteMeta(WebhookPath), manager.LocalURL)
+`, config.ID, manager.credentials(config.ID), config.Hostname, forwardedPaths, manager.LocalURL)
 	if err := os.WriteFile(manager.configFile(), []byte(yaml), 0o600); err != nil {
 		return err
 	}

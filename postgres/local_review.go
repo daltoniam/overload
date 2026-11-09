@@ -10,7 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) StartLocalReview(ctx context.Context, repo string, pr int, workflow overload.ResolvedWorkflow) (int64, error) {
+// StartLocalReview records a CLI review of a pull request on GitHub or,
+// when forge names a connection, on that GitLab or Forgejo server.
+func (s *Store) StartLocalReview(ctx context.Context, forge, repo string, pr int, workflow overload.ResolvedWorkflow) (int64, error) {
 	if repo == "" || pr <= 0 {
 		return 0, errors.New("repository and positive PR number required")
 	}
@@ -30,8 +32,16 @@ func (s *Store) StartLocalReview(ctx context.Context, repo string, pr int, workf
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	var forgeID *int64
+	if forge != "" {
+		var id int64
+		if err := tx.QueryRow(ctx, `SELECT id FROM forge_connections WHERE name = $1`, forge).Scan(&id); err != nil {
+			return 0, fmt.Errorf("git host %q: %w", forge, err)
+		}
+		forgeID = &id
+	}
 	var repoID int64
-	if err := tx.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) ON CONFLICT (full_name) DO UPDATE SET full_name = EXCLUDED.full_name RETURNING id`, repo).Scan(&repoID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO repositories (full_name, forge_id) VALUES ($1, $2) ON CONFLICT ((COALESCE(forge_id, 0)), full_name) DO UPDATE SET full_name = EXCLUDED.full_name RETURNING id`, repo, forgeID).Scan(&repoID); err != nil {
 		return 0, err
 	}
 	var runID int64

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/forge"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/harness"
 	"github.com/daltoniam/overload/postgres"
@@ -21,16 +22,17 @@ import (
 )
 
 type reviewOptions struct {
-	repo, workflow, profile, model, modelURL, promptProfile string
-	pr, concurrency                                         int
-	timeout                                                 time.Duration
-	queue, again                                            bool
+	repo, forge, workflow, profile, model, modelURL, promptProfile string
+	pr, concurrency                                                int
+	timeout                                                        time.Duration
+	queue, again                                                   bool
 }
 
 func parseReviewOptions(args []string) (reviewOptions, error) {
 	var options reviewOptions
 	flags := flag.NewFlagSet("review", flag.ContinueOnError)
-	flags.StringVar(&options.repo, "repo", "", "GitHub owner/name")
+	flags.StringVar(&options.repo, "repo", "", "repository: owner/name, or group/subgroup/project on GitLab")
+	flags.StringVar(&options.forge, "forge", "", "GitLab or Forgejo connection the repository is on (overload forges list); empty is GitHub")
 	flags.IntVar(&options.pr, "pr", 0, "pull request number")
 	flags.StringVar(&options.workflow, "workflow", "", "saved PR workflow")
 	flags.StringVar(&options.profile, "profile", "", "saved model (default model if omitted)")
@@ -46,7 +48,7 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 	}
 	switch {
 	case flags.NArg() != 0 || options.repo == "" || options.pr < 1:
-		return options, errors.New("usage: overload review --repo owner/name --pr N [--workflow NAME | --profile NAME | --model MODEL --model-url URL]")
+		return options, errors.New("usage: overload review --repo owner/name --pr N [--forge NAME] [--workflow NAME | --profile NAME | --model MODEL --model-url URL]")
 	case options.timeout < time.Second || options.timeout > 5*time.Hour:
 		return options, errors.New("review timeout must be between 1 second and 5 hours")
 	case options.concurrency < 0 || options.concurrency > overload.MaxReviewConcurrency:
@@ -106,16 +108,6 @@ func inlineReview(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
-	token := github.TokenFromEnvironment()
-	if token == "" {
-		if token, err = github.TokenFromGH(ctx); err != nil {
-			return err
-		}
-	}
-	source, err := github.NewTokenClient(token)
-	if err != nil {
-		return err
-	}
 	var store *postgres.Store
 	if os.Getenv("DATABASE_URL") != "" {
 		if store, err = database(ctx); err != nil {
@@ -125,6 +117,10 @@ func inlineReview(args []string) error {
 		if err := store.Migrate(ctx); err != nil {
 			return err
 		}
+	}
+	source, err := reviewSource(ctx, store, options.forge)
+	if err != nil {
+		return err
 	}
 	workflow, err := reviewWorkflow(ctx, store, options)
 	if err != nil {
@@ -137,7 +133,7 @@ func inlineReview(args []string) error {
 	}
 	var runID int64
 	if store != nil {
-		if runID, err = store.StartLocalReview(ctx, options.repo, options.pr, workflow); err != nil {
+		if runID, err = store.StartLocalReview(ctx, options.forge, options.repo, options.pr, workflow); err != nil {
 			return err
 		}
 	}
@@ -195,18 +191,37 @@ func queueReview(options reviewOptions) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
-	reader, err := queue.AppClient(ctx, store)
-	if err != nil {
-		return fmt.Errorf("GitHub App unavailable: %w", err)
-	}
 	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
 	if err != nil {
 		return err
 	}
-	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr, options.again)
+	runID, err := queue.QueueManualReviewOn(ctx, store, client, queue.HostReader(store), options.forge, options.repo, options.pr, options.again)
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Printf("Queued run %d: /runs/%d (the overload server runs it)\n", runID, runID)
 	return err
+}
+
+// reviewSource reads the pull request from a GitLab or Forgejo connection
+// (which needs the database) or from GitHub with GITHUB_TOKEN or gh.
+func reviewSource(ctx context.Context, store *postgres.Store, forgeName string) (reviewpkg.PullRequestSource, error) {
+	if forgeName != "" {
+		if store == nil {
+			return nil, errors.New("--forge needs DATABASE_URL to read the connection")
+		}
+		connection, err := store.LoadForgeByName(ctx, forgeName)
+		if err != nil {
+			return nil, fmt.Errorf("git host %q: %w", forgeName, err)
+		}
+		return forge.New(connection)
+	}
+	token := github.TokenFromEnvironment()
+	if token == "" {
+		var err error
+		if token, err = github.TokenFromGH(ctx); err != nil {
+			return nil, err
+		}
+	}
+	return github.NewTokenClient(token)
 }

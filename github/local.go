@@ -12,12 +12,12 @@ import (
 	"regexp"
 	"strings"
 
-	gh "github.com/google/go-github/v75/github"
+	"github.com/daltoniam/overload"
 )
 
 var commitSHA = regexp.MustCompile(`^[a-fA-F0-9]{40}$`)
 
-func (client *Client) PullRequestWithDiff(ctx context.Context, repository string, number int) (*gh.PullRequest, string, error) {
+func (client *Client) PullRequestWithDiff(ctx context.Context, repository string, number int) (overload.PullRequest, string, error) {
 	return client.PullRequest(ctx, 0, repository, number)
 }
 

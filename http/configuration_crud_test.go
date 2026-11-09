@@ -44,7 +44,7 @@ func (store *crudStore) DeleteAgent(_ context.Context, name string) error {
 func (store *crudStore) ListRepositories(context.Context) ([]overload.Repository, error) {
 	return store.repos, nil
 }
-func (store *crudStore) SaveRepository(_ context.Context, name string, enabled, dryRun bool) error {
+func (store *crudStore) SaveRepository(_ context.Context, _ string, name string, enabled, dryRun bool) error {
 	for index := range store.repos {
 		if store.repos[index].FullName == name {
 			store.repos[index].Enabled = enabled

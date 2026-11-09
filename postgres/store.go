@@ -124,7 +124,7 @@ func (s *Store) LoadRunWorkflow(ctx context.Context, runID int64) (overload.Run,
 	var run overload.Run
 	var repoName string
 	var snapshot []byte
-	err := s.Pool.QueryRow(ctx, `SELECT r.id,r.repository_id,r.pr_number,r.head_sha,r.base_sha,r.status,r.dry_run,r.config_snapshot,COALESCE(r.installation_id,0),repo.full_name FROM runs r JOIN repositories repo ON repo.id=r.repository_id WHERE r.id=$1`, runID).Scan(&run.ID, &run.RepositoryID, &run.PRNumber, &run.HeadSHA, &run.BaseSHA, &run.Status, &run.DryRun, &snapshot, &run.InstallationID, &repoName)
+	err := s.Pool.QueryRow(ctx, `SELECT r.id,r.repository_id,r.pr_number,r.head_sha,r.base_sha,r.status,r.dry_run,r.config_snapshot,COALESCE(r.installation_id,0),COALESCE(r.forge_id,0),repo.full_name FROM runs r JOIN repositories repo ON repo.id=r.repository_id WHERE r.id=$1`, runID).Scan(&run.ID, &run.RepositoryID, &run.PRNumber, &run.HeadSHA, &run.BaseSHA, &run.Status, &run.DryRun, &snapshot, &run.InstallationID, &run.ForgeID, &repoName)
 	if err != nil {
 		return run, overload.ResolvedWorkflow{}, "", err
 	}

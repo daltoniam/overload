@@ -12,7 +12,6 @@ import (
 	"testing"
 
 	"github.com/daltoniam/overload"
-	gh "github.com/google/go-github/v75/github"
 )
 
 type fakePRSource struct {
@@ -21,8 +20,8 @@ type fakePRSource struct {
 	sha     string
 }
 
-func (source fakePRSource) PullRequestWithDiff(_ context.Context, _ string, number int) (*gh.PullRequest, string, error) {
-	return &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(source.sha)}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}, source.patch, nil
+func (source fakePRSource) PullRequestWithDiff(_ context.Context, _ string, number int) (overload.PullRequest, string, error) {
+	return overload.PullRequest{Number: number, State: "open", HeadSHA: source.sha, BaseSHA: strings.Repeat("a", 40)}, source.patch, nil
 }
 
 func (source fakePRSource) DownloadHead(_ context.Context, _ string, sha string, writer io.Writer) error {

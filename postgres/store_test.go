@@ -37,7 +37,7 @@ func TestIngestPRTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRepository(ctx, "test/transaction", false, true); err != nil {
+	if err := store.SaveRepository(ctx, "", "test/transaction", false, true); err != nil {
 		t.Fatal(err)
 	}
 	var repoID int64

@@ -17,15 +17,14 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 type webhookSource struct{ archive []byte }
 
-func (source webhookSource) PullRequestWithDiff(_ context.Context, _ string, number int) (*gh.PullRequest, string, error) {
-	pr := &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("b", 40))}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}
+func (source webhookSource) PullRequestWithDiff(_ context.Context, _ string, number int) (overload.PullRequest, string, error) {
+	pr := overload.PullRequest{Number: number, State: "open", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40)}
 	return pr, "diff --git a/file.go b/file.go\n--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old()\n+dangerous()\n", nil
 }
 
@@ -94,7 +93,7 @@ func TestBoundWebhookWorkerDryRun(t *testing.T) {
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRepository(ctx, repo, true, true); err != nil {
+	if err := store.SaveRepository(ctx, "", repo, true, true); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveBinding(ctx, overload.TriggerBinding{Source: "github", Event: "pull_request", Action: "opened", Repository: repo, Workflow: name, Enabled: true}); err != nil {

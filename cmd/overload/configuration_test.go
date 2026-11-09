@@ -24,8 +24,10 @@ func (*fakeConfigurationStore) SaveWorkflow(context.Context, overload.Workflow) 
 func (*fakeConfigurationStore) SaveBinding(context.Context, overload.TriggerBinding) error {
 	return nil
 }
-func (*fakeConfigurationStore) SaveRepository(context.Context, string, bool, bool) error { return nil }
-func (*fakeConfigurationStore) SaveSchedule(context.Context, overload.Schedule) error    { return nil }
+func (*fakeConfigurationStore) SaveRepository(context.Context, string, string, bool, bool) error {
+	return nil
+}
+func (*fakeConfigurationStore) SaveSchedule(context.Context, overload.Schedule) error { return nil }
 func (store *fakeConfigurationStore) SaveToolServer(_ context.Context, server overload.ToolServer) error {
 	if err := server.Validate(); err != nil {
 		return err

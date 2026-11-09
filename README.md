@@ -1,15 +1,18 @@
 # overload
 
-Overload reviews GitHub pull requests with AI models you control: a local
-model on your own Mac (served on Metal by [DwarfStar](https://dwarfstar.sh/)
-or llama.cpp) or any hosted OpenAI-compatible model. You decide which agents
-review which files, every finding is checked against the diff before it is
-shown, and reviews are posted back to the pull request as inline comments.
+Overload reviews pull requests on GitHub, GitLab and Forgejo (or Gitea)
+with AI models you control: a local model on your own Mac (served on Metal
+by [DwarfStar](https://dwarfstar.sh/) or llama.cpp) or any hosted
+OpenAI-compatible model. You decide which agents review which files, every
+finding is checked against the diff before it is shown, and reviews are
+posted back to the pull request as inline comments.
 
 ![Walkthrough: a workflow, its routing preview, a finished run and the comment posted on GitHub](docs/images/walkthrough.gif)
 
 Status: pre-release. Local and webhook reviews, scheduled prompts, the
 GitHub App and posting reviews to real pull requests work and are tested.
+GitLab and Forgejo support is new and tested against fake servers; see
+[docs/git-hosts.md](docs/git-hosts.md).
 
 ## Get started
 
@@ -86,7 +89,7 @@ measurements.
 ## Configuration
 
 Everything in the UI is also available from the CLI as JSON
-(`overload agents|workflows|bindings|repositories|schedules list|apply`), so
+(`overload agents|workflows|bindings|repositories|schedules|forges list|apply`), so
 a coding agent can configure overload too. [docs/workflows.md](docs/workflows.md)
 describes every workflow setting.
 

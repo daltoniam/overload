@@ -129,7 +129,7 @@ func TestSetupCreatesTunnelThatForwardsOnlyTheWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tunnel: new-id", "hostname: overload.example.com", `path: ^/webhooks/github$`, "service: http://127.0.0.1:8082", "service: http_status:404", filepath.Join(manager.Home, "cloudflared", "new-id.json")} {
+	for _, want := range []string{"tunnel: new-id", "hostname: overload.example.com", "path: ^/webhooks/(github|gitlab/[0-9]+|forgejo/[0-9]+)$", "service: http://127.0.0.1:8082", "service: http_status:404", filepath.Join(manager.Home, "cloudflared", "new-id.json")} {
 		if !strings.Contains(string(config), want) {
 			t.Fatalf("config missing %q:\n%s", want, config)
 		}
