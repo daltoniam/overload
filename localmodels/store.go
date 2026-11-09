@@ -152,6 +152,11 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	defer unlockServices()
+	for _, file := range selected {
+		if info, err := os.Stat(store.FilePath(installed, file)); err != nil || info.Size() != file.Size {
+			return Installed{}, fmt.Errorf("%s disappeared before the download was recorded; run the pull again", file.Path)
+		}
+	}
 	if manifest, err = store.readManifest(); err != nil {
 		return Installed{}, err
 	}
@@ -226,11 +231,9 @@ func (store Store) reuseFiles(manifest []Installed, installed Installed, present
 			continue
 		}
 		destination := store.FilePath(installed, file)
-		if source, ok := byDigest[file.SHA256]; ok && source != destination {
-			if info, err := os.Stat(source); err == nil && info.Size() == file.Size && os.MkdirAll(filepath.Dir(destination), 0o755) == nil && os.Link(source, destination) == nil {
-				present[file.Path] = true
-				continue
-			}
+		if source, ok := byDigest[file.SHA256]; ok && source != destination && linkInto(source, destination, file.Size) {
+			present[file.Path] = true
+			continue
 		}
 		partial := store.partialPath(installed, file)
 		if _, err := os.Stat(partial); err == nil {
@@ -243,6 +246,26 @@ func (store Store) reuseFiles(manifest []Installed, installed Installed, present
 			}
 		}
 	}
+}
+
+// linkInto hard-links source to destination through a temporary name and a
+// rename, so a stale or corrupt destination is replaced and a destination
+// is never half-written. A hard link survives the source being deleted.
+func linkInto(source, destination string, size int64) bool {
+	info, err := os.Stat(source)
+	if err != nil || info.Size() != size || os.MkdirAll(filepath.Dir(destination), 0o755) != nil {
+		return false
+	}
+	temporary := destination + ".link"
+	_ = os.Remove(temporary)
+	if os.Link(source, temporary) != nil {
+		return false
+	}
+	if os.Rename(temporary, destination) != nil {
+		_ = os.Remove(temporary)
+		return false
+	}
+	return true
 }
 
 // release deals with the files of replaced entries that no installed entry

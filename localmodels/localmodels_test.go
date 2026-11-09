@@ -930,6 +930,28 @@ func TestUpdateDownloadsOnlyChangedFiles(t *testing.T) {
 	}
 }
 
+func TestReuseReplacesAStaleDestination(t *testing.T) {
+	store := NewStore(t.TempDir())
+	content := []byte("good weights")
+	file := File{Path: "m-Q8_0.gguf", Size: int64(len(content)), SHA256: digestOf(content)}
+	old := Installed{ID: "m", Quant: "Q8_0", Repository: "a/m", Revision: testRevision, Files: []File{file}}
+	current := Installed{ID: "m", Quant: "Q8_0", Repository: "a/m", Revision: strings.Repeat("e", 40), Files: []File{file}}
+	for path, data := range map[string][]byte{store.FilePath(old, file): content, store.FilePath(current, file): []byte("stale bytes!")} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	present := map[string]bool{}
+	store.reuseFiles([]Installed{old}, current, present)
+	data, _ := os.ReadFile(store.FilePath(current, file))
+	if !present[file.Path] || string(data) != string(content) {
+		t.Fatalf("stale destination kept: present=%v data=%q", present[file.Path], data)
+	}
+}
+
 func TestPartialCarriesOverToANewRevision(t *testing.T) {
 	content := []byte(strings.Repeat("p", 8192))
 	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
