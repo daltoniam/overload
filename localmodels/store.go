@@ -107,34 +107,54 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	for _, file := range selected {
 		store.removeStalePartials(repository, file)
 	}
-	if err := store.checkSpace(repository, selected); err != nil {
-		return Installed{}, err
-	}
-	for _, file := range selected {
-		if err := store.download(ctx, hub, repository, revision, file, progress); err != nil {
-			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
-		}
-	}
-	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected, DownloadedAt: store.now().UTC()}
 	manifest, err := store.readManifest()
 	if err != nil {
 		return Installed{}, err
 	}
+	if err := store.checkSpace(manifest, repository, selected); err != nil {
+		return Installed{}, err
+	}
+	// Every file is downloaded and verified before any installed file is
+	// replaced, so a failed update leaves the previous revision usable.
+	staged := map[string]string{}
+	for _, file := range selected {
+		partial, err := store.download(ctx, hub, repository, revision, file, progress)
+		if err != nil {
+			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
+		}
+		if partial != "" {
+			staged[partial] = store.Path(repository, file.Path)
+		}
+	}
+	for partial, destination := range staged {
+		if err := os.Rename(partial, destination); err != nil {
+			return Installed{}, err
+		}
+	}
+	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected, DownloadedAt: store.now().UTC()}
 	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool { return entry.ID == installed.ID && strings.EqualFold(entry.Quant, quant) })
 	manifest = append(manifest, installed)
 	return installed, store.writeManifest(manifest)
 }
 
 // checkSpace refuses a download that would leave less than freeMargin.
-func (store Store) checkSpace(repository string, files []File) error {
+// Installed files count as already downloaded only when the manifest
+// records them with the same digest, since only then were they verified.
+func (store Store) checkSpace(manifest []Installed, repository string, files []File) error {
+	verified := map[string]string{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			verified[store.Path(entry.Repository, file.Path)] = file.SHA256
+		}
+	}
 	var needed int64
 	for _, file := range files {
+		if verified[store.Path(repository, file.Path)] == file.SHA256 {
+			continue
+		}
 		needed += file.Size
 		if info, err := os.Stat(store.partialPath(repository, file)); err == nil {
-			needed -= info.Size()
-		}
-		if info, err := os.Stat(store.Path(repository, file.Path)); err == nil && info.Size() == file.Size {
-			needed -= file.Size
+			needed -= min(info.Size(), file.Size)
 		}
 	}
 	free, err := freeBytes(store.Dir)
@@ -181,9 +201,12 @@ func (store Store) partialPath(repository string, file File) string {
 	return store.Path(repository, file.Path) + "." + file.SHA256[:16] + partialSuffix
 }
 
-func (store Store) download(ctx context.Context, hub Hub, repository, revision string, file File, progress Progress) error {
+// download fetches and verifies one file into its partial file and
+// returns that file's path, for Pull to move into place once every file
+// verified; it returns "" when the installed file already matches.
+func (store Store) download(ctx context.Context, hub Hub, repository, revision string, file File, progress Progress) (string, error) {
 	if !safeRelative(file.Path) || !digestPattern.MatchString(file.SHA256) {
-		return errors.New("invalid file entry")
+		return "", errors.New("invalid file entry")
 	}
 	destination := store.Path(repository, file.Path)
 	if info, err := os.Stat(destination); err == nil && info.Size() == file.Size {
@@ -191,11 +214,11 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 			progress(file.Path, 0, file.Size, true)
 		}
 		if sum, err := fileDigest(destination); err == nil && sum == file.SHA256 {
-			return nil
+			return "", nil
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return err
+		return "", err
 	}
 	partial := store.partialPath(repository, file)
 	if info, err := os.Stat(partial); err == nil && info.Size() > 0 && progress != nil {
@@ -203,41 +226,38 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 	}
 	output, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer func() { _ = output.Close() }()
 	digest := sha256.New()
 	offset, err := io.Copy(digest, output)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if offset > file.Size {
 		if err := restart(output, digest); err != nil {
-			return err
+			return "", err
 		}
 		offset = 0
 	}
 	if offset < file.Size {
 		offset, err = fetch(ctx, hub, hub.fileURL(repository, revision, file.Path), file, output, digest, offset, progress)
 		if err != nil {
-			return err
+			return "", err
 		}
 	}
 	if offset != file.Size {
-		return fmt.Errorf("download stopped at %d of %d bytes; run the command again to resume", offset, file.Size)
+		return "", fmt.Errorf("download stopped at %d of %d bytes; run the command again to resume", offset, file.Size)
 	}
 	if hex.EncodeToString(digest.Sum(nil)) != file.SHA256 {
 		_ = output.Close()
 		_ = os.Remove(partial)
-		return errors.New("downloaded file does not match its published SHA-256; the partial file was removed")
+		return "", errors.New("downloaded file does not match its published SHA-256; the partial file was removed")
 	}
 	if err := output.Sync(); err != nil {
-		return err
+		return "", err
 	}
-	if err := output.Close(); err != nil {
-		return err
-	}
-	return os.Rename(partial, destination)
+	return partial, output.Close()
 }
 
 // fetch downloads file from offset into output and digest and returns the

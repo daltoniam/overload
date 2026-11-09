@@ -225,6 +225,48 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	}
 }
 
+func TestFailedUpdateKeepsTheInstalledRevision(t *testing.T) {
+	first, second := []byte(strings.Repeat("1", 4096)), []byte(strings.Repeat("2", 4096))
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M-00001-of-00002.gguf": first, "flint-Q4_K_M-00002-of-00002.gguf": second})
+	store := NewStore(t.TempDir())
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	fake.files["flint-Q4_K_M-00001-of-00002.gguf"] = []byte(strings.Repeat("3", 4096))
+	fake.digests["flint-Q4_K_M-00002-of-00002.gguf"] = strings.Repeat("0", 64)
+	fake.files["flint-Q4_K_M-00002-of-00002.gguf"] = []byte(strings.Repeat("4", 4096))
+	fake.revision = strings.Repeat("e", 40)
+	fake.mu.Unlock()
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err == nil {
+		t.Fatal("an update with a corrupt part succeeded")
+	}
+	if data, _ := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M-00001-of-00002.gguf")); string(data) != string(first) {
+		t.Fatal("a failed update replaced an installed part")
+	}
+	if installed, err := store.Find(testModel().ID, ""); err != nil || installed.Revision != testRevision {
+		t.Fatalf("installed = %+v, %v", installed, err)
+	}
+}
+
+func TestPaginationStaysOnTheHub(t *testing.T) {
+	hub := Hub{BaseURL: "https://huggingface.co"}
+	for link, want := range map[string]string{
+		`</api/models/a/b/tree/x?cursor=2>; rel="next"`:                       "/api/models/a/b/tree/x?cursor=2",
+		`<https://huggingface.co/api/models/a/b/tree/x?cursor=3>; rel="next"`: "/api/models/a/b/tree/x?cursor=3",
+		`<https://huggingface.co/api/x>; rel="prev"`:                          "",
+	} {
+		if got, err := hub.nextPage(link); err != nil || got != want {
+			t.Errorf("%s: %q %v", link, got, err)
+		}
+	}
+	for _, link := range []string{`<.attacker.example/page>; rel="next"`, `<https://attacker.example/api/x>; rel="next"`, `<//attacker.example/api/x>; rel="next"`, `<http://huggingface.co/api/x>; rel="next"`, `</models/a>; rel="next"`} {
+		if _, err := hub.nextPage(link); err == nil {
+			t.Errorf("%s accepted", link)
+		}
+	}
+}
+
 func TestPartialFromAnotherRevisionIsNotResumed(t *testing.T) {
 	old, current := []byte(strings.Repeat("a", 4096)), []byte(strings.Repeat("b", 4096))
 	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": old})
@@ -328,6 +370,12 @@ func TestSelectQuant(t *testing.T) {
 	if _, err := SelectQuant([]File{{Path: "flint-IQ4_XS.gguf"}}, "XS"); err == nil {
 		t.Error("a quantization matched the tail of another")
 	}
+	if _, err := SelectQuant([]File{{Path: "model-Q4_K_M-00001-of-00002.gguf"}}, "Q4_K_M"); err == nil {
+		t.Error("a lone part of a split model was selected")
+	}
+	if selected, err := SelectQuant([]File{{Path: "model-Q4_K_M-00001-of-00001.gguf"}}, "Q4_K_M"); err != nil || len(selected) != 1 {
+		t.Errorf("a one-part split model: %v", err)
+	}
 	if selected, err := SelectQuant([]File{{Path: "model_Q4_K_M.gguf"}}, "Q4_K_M"); err != nil || len(selected) != 1 {
 		t.Errorf("an underscore-separated name: %v", err)
 	}
@@ -410,9 +458,13 @@ type fakeManager struct {
 	stopped  []string
 	removed  []string
 	startErr error
+	writeErr error
 }
 
 func (manager *fakeManager) Write(agent launchd.Agent) error {
+	if manager.writeErr != nil {
+		return manager.writeErr
+	}
 	manager.written[agent.Label] = agent
 	return nil
 }
@@ -496,6 +548,15 @@ func TestServices(t *testing.T) {
 	if _, err := store.Remove(model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
 		t.Fatalf("removed a served model: %v", err)
 	}
+	manager.writeErr = errors.New("disk full")
+	manager.started = nil
+	if err := store.Serve(manager, agent, service); err == nil || len(manager.started) != 1 {
+		t.Fatalf("a failed rewrite did not restart the previous service: %v %v", err, manager.started)
+	}
+	if services, _ := store.Services(); len(services) != 1 || services[0].Port != service.Port {
+		t.Fatalf("a failed rewrite changed the service list: %+v", services)
+	}
+	manager.writeErr = nil
 	manager.startErr = errors.New("boom")
 	if err := store.Serve(manager, agent, service); err == nil || manager.removed[len(manager.removed)-1] != agent.Label {
 		t.Fatalf("a service that failed to start was not removed: %v %v", err, manager.removed)

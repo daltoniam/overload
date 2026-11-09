@@ -155,22 +155,39 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 	if err := store.filesPresent(service); err != nil {
 		return err
 	}
+	previous := slices.Clone(services)
+	hadService := slices.ContainsFunc(services, func(existing Service) bool { return existing.ID == service.ID })
+	services = slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
+	// Record the service before starting it, so a running agent is never
+	// missing from the registry; undo the record if it cannot start.
+	if err := store.writeServices(append(services, service)); err != nil {
+		return err
+	}
+	restore := func(cause error) error {
+		if err := store.writeServices(previous); err != nil {
+			return fmt.Errorf("%w; restoring the service list also failed: %v", cause, err)
+		}
+		return cause
+	}
 	manager.Stop(agent.Label)
 	if err := manager.Write(agent); err != nil {
-		return err
+		// The agent file is written atomically, so a previous service's
+		// file is intact; start it again.
+		if hadService {
+			_ = manager.Start(agent.Label)
+		}
+		return restore(fmt.Errorf("write the %s service: %w", service.ID, err))
 	}
 	if err := manager.Start(agent.Label); err != nil {
 		if removeErr := manager.Remove(agent.Label); removeErr != nil {
 			return fmt.Errorf("start %s: %w; removing its service also failed: %v", service.ID, err, removeErr)
 		}
-		remaining := slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
-		if writeErr := store.writeServices(remaining); writeErr != nil {
-			return writeErr
+		if writeErr := store.writeServices(services); writeErr != nil {
+			return fmt.Errorf("start %s: %w; its service was removed but the service list could not be updated: %v", service.ID, err, writeErr)
 		}
 		return fmt.Errorf("start %s: %w; its service was removed", service.ID, err)
 	}
-	services = slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
-	return store.writeServices(append(services, service))
+	return nil
 }
 
 // filesPresent checks, under the services lock that rm also takes, that

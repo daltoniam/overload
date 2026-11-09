@@ -145,7 +145,8 @@ func (hub Hub) ListFiles(ctx context.Context, repository, revision string) ([]Fi
 	return files, nil
 }
 
-// nextPage reads a Link header's rel="next" URL, which must stay on the hub.
+// nextPage reads a Link header's rel="next" URL, resolved against the hub,
+// and returns its path; it must stay on the hub's origin.
 func (hub Hub) nextPage(link string) (string, error) {
 	for _, part := range strings.Split(link, ",") {
 		target, params, ok := strings.Cut(strings.TrimSpace(part), ";")
@@ -153,12 +154,19 @@ func (hub Hub) nextPage(link string) (string, error) {
 			continue
 		}
 		target = strings.Trim(strings.TrimSpace(target), "<>")
+		base, err := url.Parse(strings.TrimRight(hub.BaseURL, "/") + "/")
+		if err != nil {
+			return "", err
+		}
 		parsed, err := url.Parse(target)
-		base, baseErr := url.Parse(hub.BaseURL)
-		if err != nil || baseErr != nil || (parsed.IsAbs() && parsed.Host != base.Host) {
+		if err != nil {
 			return "", errors.New("unexpected pagination link")
 		}
-		return parsed.RequestURI(), nil
+		resolved := base.ResolveReference(parsed)
+		if resolved.Scheme != base.Scheme || resolved.Host != base.Host || !strings.HasPrefix(resolved.Path, "/api/") {
+			return "", errors.New("unexpected pagination link")
+		}
+		return resolved.RequestURI(), nil
 	}
 	return "", nil
 }
@@ -231,7 +239,7 @@ func SelectQuant(files []File, quant string) ([]File, error) {
 		return nil, fmt.Errorf("no %s GGUF file in the repository", quant)
 	}
 	slices.SortFunc(selected, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
-	if len(selected) == 1 {
+	if len(selected) == 1 && !splitPart.MatchString(selected[0].Path) {
 		return selected, nil
 	}
 	for index, file := range selected {
@@ -247,6 +255,9 @@ func SelectQuant(files []File, quant string) ([]File, error) {
 }
 
 func (hub Hub) request(ctx context.Context, path string) (*http.Request, error) {
+	if !strings.HasPrefix(path, "/") {
+		return nil, errors.New("invalid request path")
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hub.BaseURL, "/")+path, nil)
 	if err != nil {
 		return nil, err
