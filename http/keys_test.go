@@ -42,7 +42,7 @@ func (store *fakeKeyStore) UsageTotals(context.Context, time.Time, int64, bool) 
 }
 func (store *fakeKeyStore) AuthenticateAPIKey(_ context.Context, secret string) (overload.APIKey, *overload.User, error) {
 	if secret != "ovl_test_secret" || store.keys[0].RevokedAt != nil {
-		return overload.APIKey{}, nil, pgx.ErrNoRows
+		return overload.APIKey{}, nil, overload.ErrInvalidAPIKey
 	}
 	return store.keys[0], nil, nil
 }
@@ -87,9 +87,20 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 	if !strings.Contains(page, "No API keys yet") || !strings.Contains(page, `action="/keys"`) {
 		t.Fatal("keys page wrong")
 	}
+	if strings.Contains(page, `value="reviews"`) {
+		t.Fatal("offered the reviews scope, which nothing accepts yet")
+	}
 	csrf := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(page)[1]
-	post("/keys", url.Values{"csrf": {csrf}, "name": {"laptop"}, "scopes": {"models"}, "days": {"400"}}, http.StatusUnprocessableEntity)
-	post("/keys", url.Values{"csrf": {csrf}, "name": {"laptop"}, "days": {"30"}}, http.StatusUnprocessableEntity)
+	for _, form := range []url.Values{
+		{"csrf": {csrf}, "name": {"my laptop"}, "scopes": {"models"}, "days": {"400"}},
+		{"csrf": {csrf}, "name": {"my laptop"}, "days": {"30"}},
+		{"csrf": {csrf}, "name": {"my laptop"}, "scopes": {"reviews"}, "days": {"30"}},
+	} {
+		retained := post("/keys", form, http.StatusUnprocessableEntity).Body.String()
+		if !strings.Contains(retained, `value="my laptop"`) || !strings.Contains(retained, `value="`+form.Get("days")+`"`) || !strings.Contains(retained, "Key not created") || !strings.Contains(retained, `id="form-errors"`) {
+			t.Fatalf("validation lost the form: %s", retained)
+		}
+	}
 	created := post("/keys", url.Values{"csrf": {csrf}, "name": {"laptop"}, "scopes": {"models"}, "days": {"30"}}, http.StatusOK)
 	if !strings.Contains(created.Body.String(), "ovl_test_secret") || created.Header().Get("Cache-Control") != "no-store" || !strings.Contains(created.Body.String(), "http://example.com/v1") {
 		t.Fatalf("created page: %v %s", created.Header(), created.Body.String())
@@ -106,22 +117,60 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 		t.Fatalf("gateway through the server: %d %s", response.Code, response.Body.String())
 	}
 	request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	request.Host = "attacker.test"
+	request.Host = "overload.overload.svc:8082"
+	request.Header.Set("Authorization", "Bearer ovl_test_secret")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusMisdirectedRequest {
-		t.Fatalf("gateway on an unknown host: %d", response.Code)
+	if response.Code != http.StatusOK {
+		t.Fatalf("gateway by its in-cluster name: %d", response.Code)
+	}
+	if page := get("/keys"); !strings.Contains(page, `data-confirm="Revoke &#34;laptop&#34; (ovl_test)?`) || strings.Contains(page, `action="/keys/1/revoke" data-enhance`) {
+		t.Fatalf("revoke form has no confirmation: %s", page)
 	}
 
-	post("/keys/1/revoke", url.Values{"csrf": {csrf}}, http.StatusSeeOther)
+	confirm := post("/keys/1/revoke", url.Values{"csrf": {csrf}}, http.StatusOK).Body.String()
+	if store.keys[0].RevokedAt != nil || !strings.Contains(confirm, "Revoke API key laptop?") || !strings.Contains(confirm, "stop working at once") || !strings.Contains(confirm, `name="confirmed" value="true"`) || !strings.Contains(confirm, `href="/keys"`) {
+		t.Fatalf("unconfirmed revoke: %v %s", store.keys[0].RevokedAt, confirm)
+	}
 	post("/keys/9/revoke", url.Values{"csrf": {csrf}}, http.StatusNotFound)
+	post("/keys/1/revoke", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusSeeOther)
+	post("/keys/9/revoke", url.Values{"csrf": {csrf}, "confirmed": {"true"}}, http.StatusNotFound)
+	post("/keys/1/revoke", url.Values{"csrf": {csrf}}, http.StatusNotFound)
 	if !strings.Contains(get("/keys"), "Revoked") {
 		t.Fatal("revoked key not shown as revoked")
+	}
+	store.keys = append(store.keys, overload.APIKey{ID: 2, Name: "old", Prefix: "ovl_old", Scopes: []string{overload.ScopeModels}, ExpiresAt: time.Now().Add(-time.Hour)})
+	if page := get("/keys"); !strings.Contains(page, `<span class="badge disabled">Expired</span>`) || strings.Contains(page, "/keys/2/revoke") || strings.Contains(page, "newest keys") {
+		t.Fatalf("expired key: %s", page)
+	}
+	post("/keys/2/revoke", url.Values{"csrf": {csrf}}, http.StatusNotFound)
+	for len(store.keys) < overload.APIKeyListLimit {
+		store.keys = append(store.keys, overload.APIKey{ID: int64(len(store.keys) + 1), Name: "bulk", ExpiresAt: time.Now().Add(time.Hour)})
+	}
+	if !strings.Contains(get("/keys"), "Showing the 500 newest keys.") {
+		t.Fatal("capped list not marked")
 	}
 	if usage := get("/usage"); !strings.Contains(usage, "a@example.com") || !strings.Contains(usage, "1.5") {
 		t.Fatal("usage page wrong")
 	}
 	if allowed(overload.RoleViewer, httptest.NewRequest(http.MethodPost, "/keys", nil)) || !allowed(overload.RoleMember, httptest.NewRequest(http.MethodPost, "/keys/3/revoke", nil)) {
 		t.Fatal("key roles are wrong")
+	}
+}
+
+func TestGatewayBase(t *testing.T) {
+	for _, test := range []struct{ base, addr, want string }{
+		{"https://overload.example.com/", "", "https://overload.example.com"},
+		{"", "", "http://127.0.0.1:8082"},
+		{"", "0.0.0.0:9000", "http://127.0.0.1:9000"},
+		{"", "[::]:9000", "http://127.0.0.1:9000"},
+		{"", "192.168.1.5:9000", "http://192.168.1.5:9000"},
+		{"", "nonsense", "http://127.0.0.1:8082"},
+	} {
+		t.Setenv("OVERLOAD_BASE_URL", test.base)
+		t.Setenv("OVERLOAD_ADDR", test.addr)
+		if got := gatewayBase(); got != test.want {
+			t.Errorf("%q %q: %s", test.base, test.addr, got)
+		}
 	}
 }

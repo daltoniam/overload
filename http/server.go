@@ -294,17 +294,15 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		return ui
 	}
 	api := gateway.New(store)
-	hosts := newHostPolicy(os.Getenv("OVERLOAD_BASE_URL"))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/v1/") {
 			ui.ServeHTTP(w, r)
 			return
 		}
+		// The gateway skips the UI's host check: it reads no cookies, only
+		// bearer keys, so a rebound or unexpected host gains nothing, and
+		// in-cluster agents call it by the service name.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if !hosts.allows(r.Host) {
-			http.Error(w, "Unknown host; set OVERLOAD_BASE_URL to the address you use", http.StatusMisdirectedRequest)
-			return
-		}
 		api.ServeHTTP(w, r)
 	})
 }

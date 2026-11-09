@@ -23,16 +23,30 @@ var ErrUserNotFound = errors.New("user not found")
 var ErrNoSession = errors.New("no session")
 
 // SignInUser records a sign-in: it creates the user or refreshes their
-// email, name and role, and refuses disabled users.
+// email, name and role, and refuses disabled users. A role below member
+// revokes the user's API keys, since only members and admins call models.
 func (s *Store) SignInUser(ctx context.Context, user overload.User) (overload.User, error) {
 	if !overload.ValidRole(user.Role) || user.Issuer == "" || user.Subject == "" {
 		return overload.User{}, errors.New("invalid user")
 	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return overload.User{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	var disabled bool
-	err := s.Pool.QueryRow(ctx, `INSERT INTO users (issuer, subject, email, name, role, last_login_at) VALUES ($1, $2, $3, $4, $5, now())
+	err = tx.QueryRow(ctx, `INSERT INTO users (issuer, subject, email, name, role, last_login_at) VALUES ($1, $2, $3, $4, $5, now())
 		ON CONFLICT (issuer, subject) DO UPDATE SET email = EXCLUDED.email, name = EXCLUDED.name, role = EXCLUDED.role, last_login_at = CASE WHEN users.disabled THEN users.last_login_at ELSE now() END
 		RETURNING id, disabled, last_login_at`, user.Issuer, user.Subject, user.Email, user.Name, user.Role).Scan(&user.ID, &disabled, &user.LastLoginAt)
 	if err != nil {
+		return overload.User{}, err
+	}
+	if !overload.RoleAtLeast(user.Role, overload.RoleMember) {
+		if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, user.ID); err != nil {
+			return overload.User{}, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return overload.User{}, err
 	}
 	if disabled {

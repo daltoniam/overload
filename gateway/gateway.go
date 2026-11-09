@@ -1,12 +1,11 @@
 // Package gateway serves saved models to agents and CLIs through OpenAI and
 // Anthropic compatible endpoints. Callers authenticate with per-person API
 // keys; the model's own API key never leaves overload. Requests for one
-// model share its parallel slots fairly, and every call is recorded in
-// tokens and minutes.
+// model share its parallel slots fairly, and every forwarded call is
+// recorded in tokens and minutes.
 package gateway
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -15,7 +14,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +21,7 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
+	"github.com/daltoniam/overload/modelproxy"
 )
 
 // Store is what the gateway needs from the database.
@@ -41,43 +40,40 @@ type Caller struct {
 	Name string
 }
 
-// Authenticator turns a request's credentials into a caller allowed to
-// call models; ok is false when the request carries none it recognizes.
-type Authenticator func(r *http.Request) (caller Caller, ok bool, err error)
-
 const (
 	maxRequestBytes = 16 << 20
-	// maxWaiting bounds the requests waiting for one model.
-	maxWaiting = 64
+	// maxWaiting bounds the requests waiting for one model, and
+	// maxWaitingPerCaller the share of them one caller may hold, so one
+	// agent cannot fill the queue and turn everyone else away.
+	maxWaiting          = 64
+	maxWaitingPerCaller = 16
 	// Calls are bounded like review calls: local models can think for a
 	// long time.
 	localCallLimit  = 90 * time.Minute
 	hostedCallLimit = 15 * time.Minute
+	// defaultAnthropicVersion is sent when an Anthropic client names none.
+	defaultAnthropicVersion = "2023-06-01"
 )
 
 // Gateway is an http.Handler for /v1/models, /v1/chat/completions and
 // /v1/messages.
 type Gateway struct {
-	store  Store
-	client *http.Client
-	extra  []Authenticator
+	store    Store
+	upstream *modelproxy.Upstream
 
 	mu     sync.Mutex
 	queues map[string]*fairQueue
 }
 
-// New returns a gateway over store. extra authenticators are tried before
-// API keys.
-func New(store Store, extra ...Authenticator) *Gateway {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 0
-	return &Gateway{store: store, client: &http.Client{Transport: transport}, extra: extra, queues: map[string]*fairQueue{}}
+// New returns a gateway over store.
+func New(store Store) *Gateway {
+	return &Gateway{store: store, upstream: modelproxy.NewUpstream("overload-gateway"), queues: map[string]*fairQueue{}}
 }
 
 func (gateway *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	caller, err := gateway.authenticate(r)
-	if err != nil {
-		writeError(w, http.StatusUnauthorized, "authentication_error", err.Error())
+	caller, denied := gateway.authenticate(r)
+	if denied != nil {
+		writeError(w, denied.status, denied.kind, denied.message)
 		return
 	}
 	switch {
@@ -93,33 +89,38 @@ func (gateway *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // bearer returns the credential from Authorization: Bearer or x-api-key.
+// The scheme is case-insensitive, as HTTP requires.
 func bearer(r *http.Request) string {
-	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+	if scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " "); ok && strings.EqualFold(scheme, "Bearer") {
 		return strings.TrimSpace(token)
 	}
 	return strings.TrimSpace(r.Header.Get("X-Api-Key"))
 }
 
-func (gateway *Gateway) authenticate(r *http.Request) (Caller, error) {
-	for _, authenticator := range gateway.extra {
-		caller, ok, err := authenticator(r)
-		if err != nil {
-			return Caller{}, err
-		}
-		if ok {
-			return caller, nil
-		}
-	}
+// denial is a request the gateway refuses before calling a model.
+type denial struct {
+	status        int
+	kind, message string
+}
+
+func (gateway *Gateway) authenticate(r *http.Request) (Caller, *denial) {
 	secret := bearer(r)
 	if secret == "" {
-		return Caller{}, errors.New("send an overload API key as a bearer token or x-api-key")
+		return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", "send an overload API key as a bearer token or x-api-key"}
 	}
 	key, user, err := gateway.store.AuthenticateAPIKey(r.Context(), secret)
+	if errors.Is(err, overload.ErrInvalidAPIKey) {
+		return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", "invalid, expired or revoked API key"}
+	}
 	if err != nil {
-		return Caller{}, errors.New("invalid, expired or revoked API key")
+		slog.Warn("gateway key check failed", "error", err)
+		return Caller{}, &denial{http.StatusServiceUnavailable, "api_error", "unable to check the API key; retry later"}
 	}
 	if !key.HasScope(overload.ScopeModels) {
-		return Caller{}, errors.New("this API key cannot call models")
+		return Caller{}, &denial{http.StatusForbidden, "permission_error", "this API key cannot call models"}
+	}
+	if user != nil && !overload.RoleAtLeast(user.Role, overload.RoleMember) {
+		return Caller{}, &denial{http.StatusForbidden, "permission_error", "the owner of this API key is not allowed to use models"}
 	}
 	caller := Caller{KeyID: key.ID, Name: "key:" + key.Prefix}
 	if user != nil {
@@ -167,6 +168,8 @@ func (gateway *Gateway) listModels(w http.ResponseWriter, r *http.Request) {
 		Data   []entry `json:"data"`
 	}{Object: "list", Data: []entry{}}
 	for name, setting := range models {
+		// The gateway serves Chat Completions for every OpenAI-compatible
+		// model, including those reviews call through the Responses API.
 		api := "chat_completions"
 		if setting.Provider == overload.ProviderAnthropic {
 			api = "messages"
@@ -183,11 +186,23 @@ func (gateway *Gateway) queue(setting overload.ReviewSettings) *fairQueue {
 	defer gateway.mu.Unlock()
 	queue, ok := gateway.queues[setting.Name]
 	if !ok {
-		queue = newFairQueue(setting.Concurrency, maxWaiting)
+		queue = newFairQueue(setting.Concurrency, maxWaiting, maxWaitingPerCaller)
 		gateway.queues[setting.Name] = queue
 	}
 	queue.setSlots(setting.Concurrency)
 	return queue
+}
+
+// dropIdleQueues forgets the queues of models no longer available once no
+// request holds or waits for them.
+func (gateway *Gateway) dropIdleQueues(models map[string]overload.ReviewSettings) {
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	for name, queue := range gateway.queues {
+		if _, ok := models[name]; !ok && queue.idle() {
+			delete(gateway.queues, name)
+		}
+	}
 }
 
 func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller Caller, provider string) {
@@ -208,6 +223,7 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 		writeError(w, http.StatusInternalServerError, "api_error", "unable to load models")
 		return
 	}
+	gateway.dropIdleQueues(models)
 	setting, ok := models[name]
 	if !ok {
 		writeError(w, http.StatusNotFound, "not_found_error", fmt.Sprintf("no model named %q is available; see GET /v1/models", name))
@@ -218,14 +234,15 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 		return
 	}
 	request["model"], _ = json.Marshal(setting.Model)
-	var stream bool
+	var stream, clientWantsUsage bool
 	_ = json.Unmarshal(request["stream"], &stream)
 	if stream && provider == overload.ProviderOpenAICompat {
+		// Usage is always requested so every call is counted; the extra
+		// chunk is dropped again for clients that did not ask for it.
 		options := map[string]json.RawMessage{}
 		_ = json.Unmarshal(request["stream_options"], &options)
-		if _, set := options["include_usage"]; !set {
-			options["include_usage"] = json.RawMessage("true")
-		}
+		_ = json.Unmarshal(options["include_usage"], &clientWantsUsage)
+		options["include_usage"] = json.RawMessage("true")
 		request["stream_options"], _ = json.Marshal(options)
 	}
 	body, err = json.Marshal(request)
@@ -237,6 +254,9 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 	if setting.ConnectionKind == "hosted" {
 		limit = hostedCallLimit
 	}
+	// The server's write timeout is shorter than a wait for a busy model,
+	// so extend it before queueing, not after.
+	_ = http.NewResponseController(w).SetWriteDeadline(started.Add(limit))
 	ctx, cancel := context.WithTimeout(r.Context(), limit)
 	defer cancel()
 	release, err := gateway.queue(setting).acquire(ctx, caller.Name)
@@ -251,10 +271,8 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 	}
 	defer release()
 	queued := time.Since(started)
-	controller := http.NewResponseController(w)
-	_ = controller.SetWriteDeadline(time.Now().Add(limit))
 	usage := overload.Usage{KeyID: caller.KeyID, UserID: caller.UserID, Model: name, Endpoint: r.URL.Path, QueueTime: queued}
-	status, counted := gateway.call(ctx, w, r, setting, body)
+	status, counted := gateway.call(ctx, w, r, setting, body, stream && provider == overload.ProviderOpenAICompat && !clientWantsUsage)
 	usage.Status, usage.InputTokens, usage.OutputTokens, usage.Duration = status, counted.input, counted.output, time.Since(started)-queued
 	if err := gateway.store.RecordUsage(context.WithoutCancel(r.Context()), usage); err != nil {
 		slog.Warn("gateway usage not recorded", "model", name, "error", err)
@@ -262,74 +280,37 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 }
 
 // call sends the request upstream with the model's credentials and copies
-// the answer back, counting tokens on the way. It returns the status sent.
-func (gateway *Gateway) call(ctx context.Context, w http.ResponseWriter, r *http.Request, setting overload.ReviewSettings, body []byte) (int, tokenCount) {
-	target := strings.TrimRight(setting.BaseURL, "/") + "/chat/completions"
-	if setting.Provider == overload.ProviderAnthropic {
-		target = strings.TrimRight(setting.BaseURL, "/") + "/v1/messages"
-	}
-	upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "api_error", "invalid model URL")
-		return http.StatusBadGateway, tokenCount{}
-	}
-	upstream.Header.Set("Content-Type", "application/json")
-	upstream.Header.Set("User-Agent", "overload-gateway")
+// the answer back, counting tokens on the way and dropping the usage-only
+// stream chunk when dropUsage is set. It returns the status sent.
+func (gateway *Gateway) call(ctx context.Context, w http.ResponseWriter, r *http.Request, setting overload.ReviewSettings, body []byte, dropUsage bool) (int, tokenCount) {
+	path := "chat/completions"
+	headers := http.Header{}
 	if accept := r.Header.Get("Accept"); accept != "" {
-		upstream.Header.Set("Accept", accept)
-	}
-	key := ""
-	if setting.APIKeyEnv != "" {
-		key = os.Getenv(setting.APIKeyEnv)
+		headers.Set("Accept", accept)
 	}
 	if setting.Provider == overload.ProviderAnthropic {
+		path = "v1/messages"
 		version := r.Header.Get("Anthropic-Version")
 		if version == "" {
-			version = "2023-06-01"
+			version = defaultAnthropicVersion
 		}
-		upstream.Header.Set("Anthropic-Version", version)
-		if beta := r.Header.Get("Anthropic-Beta"); beta != "" {
-			upstream.Header.Set("Anthropic-Beta", beta)
-		}
-		if key != "" {
-			upstream.Header.Set("X-Api-Key", key)
-		}
-	} else if key != "" {
-		upstream.Header.Set("Authorization", "Bearer "+key)
+		headers.Set("Anthropic-Version", version)
 	}
-	response, err := gateway.client.Do(upstream)
+	response, err := gateway.upstream.Send(ctx, setting.Profile(), path, headers, body)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "api_error", "the model server did not answer")
 		return http.StatusBadGateway, tokenCount{}
 	}
 	defer func() { _ = response.Body.Close() }()
-	for _, name := range []string{"Content-Type", "Retry-After"} {
-		if value := response.Header.Get(name); value != "" {
-			w.Header().Set(name, value)
-		}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		// Passed through, these would look like a bad overload key.
+		slog.Warn("model server rejected overload's credentials", "model", setting.Name, "status", response.StatusCode)
+		writeError(w, http.StatusBadGateway, "api_error", "the model server rejected overload's credentials for this model; ask an administrator to check its API key")
+		return http.StatusBadGateway, tokenCount{}
 	}
-	w.WriteHeader(response.StatusCode)
 	var counted tokenCount
-	sse := strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream")
-	scanner := &lineScanner{observe: counted.observe, sse: sse}
-	flusher, _ := w.(http.Flusher)
-	buffer := make([]byte, 32<<10)
-	for {
-		n, readErr := response.Body.Read(buffer)
-		if n > 0 {
-			scanner.write(buffer[:n])
-			if _, err := w.Write(buffer[:n]); err != nil {
-				break
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-	scanner.finish()
+	filter := &usageFilter{count: &counted, sse: strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream"), dropUsageChunk: dropUsage}
+	modelproxy.Relay(w, response, response.StatusCode, filter)
 	return response.StatusCode, counted
 }
 
@@ -373,53 +354,92 @@ func (count *tokenCount) observe(data []byte) {
 	}
 }
 
-// lineScanner feeds response JSON to observe: every `data:` line of an
-// event stream, or the whole body otherwise (up to 8 MiB).
-type lineScanner struct {
-	observe func([]byte)
-	sse     bool
-	pending bytes.Buffer
-}
-
 const maxObservedBytes = 8 << 20
 
-func (scanner *lineScanner) write(data []byte) {
-	if scanner.pending.Len()+len(data) > maxObservedBytes {
-		if !scanner.sse {
-			return
+// usageFilter passes a model response through while feeding its JSON to a
+// tokenCount: every `data:` line of an event stream, or the whole body
+// otherwise (up to 8 MiB). When dropUsageChunk is set it removes the
+// OpenAI stream chunk that carries only usage.
+type usageFilter struct {
+	count          *tokenCount
+	sse            bool
+	dropUsageChunk bool
+	pending        bytes.Buffer
+	overflowed     bool
+	skipBlank      bool
+}
+
+func (filter *usageFilter) Process(chunk []byte) []byte {
+	if !filter.sse {
+		if filter.overflowed || filter.pending.Len()+len(chunk) > maxObservedBytes {
+			filter.overflowed = true
+		} else {
+			filter.pending.Write(chunk)
 		}
-		scanner.pending.Reset()
+		return chunk
 	}
-	scanner.pending.Write(data)
-	if !scanner.sse {
-		return
-	}
+	filter.pending.Write(chunk)
+	var out []byte
 	for {
-		line, err := scanner.pending.ReadBytes('\n')
-		if err != nil {
-			scanner.pending.Reset()
-			scanner.pending.Write(line)
-			return
+		index := bytes.IndexByte(filter.pending.Bytes(), '\n')
+		if index < 0 {
+			break
 		}
-		scanner.line(line)
+		out = filter.line(out, filter.pending.Next(index+1))
 	}
+	if filter.pending.Len() > maxObservedBytes {
+		out = append(out, filter.pending.Bytes()...)
+		filter.pending.Reset()
+	}
+	return out
 }
 
-func (scanner *lineScanner) line(line []byte) {
-	if payload, ok := bytes.CutPrefix(bytes.TrimSpace(line), []byte("data:")); ok {
-		scanner.observe(bytes.TrimSpace(payload))
+func (filter *usageFilter) Finish() []byte {
+	if !filter.sse {
+		if !filter.overflowed {
+			filter.count.observe(filter.pending.Bytes())
+		}
+		filter.pending.Reset()
+		return nil
 	}
+	rest := bytes.Clone(filter.pending.Bytes())
+	filter.pending.Reset()
+	if len(rest) == 0 {
+		return nil
+	}
+	return filter.line(nil, rest)
 }
 
-func (scanner *lineScanner) finish() {
-	if !scanner.sse {
-		scanner.observe(scanner.pending.Bytes())
-		return
+// line handles one event stream line, appending what to send to out.
+func (filter *usageFilter) line(out, line []byte) []byte {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 && filter.skipBlank {
+		filter.skipBlank = false
+		return out
 	}
-	reader := bufio.NewScanner(&scanner.pending)
-	for reader.Scan() {
-		scanner.line(reader.Bytes())
+	filter.skipBlank = false
+	if payload, ok := bytes.CutPrefix(trimmed, []byte("data:")); ok {
+		payload = bytes.TrimSpace(payload)
+		filter.count.observe(payload)
+		if filter.dropUsageChunk && usageOnly(payload) {
+			filter.skipBlank = true
+			return out
+		}
 	}
+	return append(out, line...)
+}
+
+// usageOnly reports whether an OpenAI stream chunk carries usage and no
+// choices: the chunk include_usage adds at the end of a stream.
+func usageOnly(payload []byte) bool {
+	var chunk struct {
+		Choices []json.RawMessage `json:"choices"`
+		Usage   json.RawMessage   `json:"usage"`
+	}
+	if json.Unmarshal(payload, &chunk) != nil {
+		return false
+	}
+	return len(chunk.Choices) == 0 && len(chunk.Usage) > 0 && string(chunk.Usage) != "null"
 }
 
 // writeError answers in a shape both OpenAI and Anthropic clients read.

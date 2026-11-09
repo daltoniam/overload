@@ -3,13 +3,17 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
 	"github.com/daltoniam/overload/web/templates/pages"
 	"github.com/jackc/pgx/v5"
 )
@@ -29,12 +33,28 @@ func owner(ctx context.Context) (int64, bool) {
 	return actorID(who), overload.RoleAtLeast(who.role, overload.RoleAdmin)
 }
 
-func keysPage(ctx context.Context, keys []overload.APIKey, all bool, created *pages.NewKey) pages.KeysPage {
-	base := strings.TrimRight(os.Getenv("OVERLOAD_BASE_URL"), "/")
-	if base == "" {
-		base = "http://127.0.0.1:8082"
+// gatewayBase is the address agents reach overload at: OVERLOAD_BASE_URL,
+// or the address overload listens on.
+func gatewayBase() string {
+	if base := strings.TrimRight(os.Getenv("OVERLOAD_BASE_URL"), "/"); base != "" {
+		return base
 	}
-	return pages.KeysPage{Keys: keys, All: all, CanCreate: overload.RoleAtLeast(identityFrom(ctx).role, overload.RoleMember), Endpoint: base + "/v1", Created: created}
+	addr := os.Getenv("OVERLOAD_ADDR")
+	if addr == "" {
+		addr = "127.0.0.1:8082"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "http://127.0.0.1:8082"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func keysPage(ctx context.Context, keys []overload.APIKey, all bool, created *pages.NewKey) pages.KeysPage {
+	return pages.KeysPage{Keys: keys, All: all, CanCreate: overload.RoleAtLeast(identityFrom(ctx).role, overload.RoleMember), Endpoint: gatewayBase() + "/v1", Created: created, Now: time.Now()}
 }
 
 func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
@@ -45,7 +65,7 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.APIKeys(keysPage(r.Context(), keys, all, nil), csrf).Render(r.Context(), w)
+		_ = pages.APIKeys(keysPage(r.Context(), keys, all, nil), formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /keys", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
@@ -75,7 +95,7 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		_ = pages.APIKeys(keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret}), csrf).Render(r.Context(), w)
+		_ = pages.APIKeys(keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret}), formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /keys/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
@@ -87,6 +107,10 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			return
 		}
 		userID, all := owner(r.Context())
+		if r.PostForm.Get("confirmed") != "true" {
+			confirmRevoke(w, r, store, csrf, id)
+			return
+		}
 		if err := store.RevokeAPIKey(r.Context(), id, userID, all); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				http.NotFound(w, r)
@@ -107,4 +131,23 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 		}
 		_ = pages.Usage(totals, all).Render(r.Context(), w)
 	})
+}
+
+// confirmRevoke asks before revoking key id, naming it, since agents using
+// it stop working at once. Without JavaScript this page is the only check.
+func confirmRevoke(w http.ResponseWriter, r *http.Request, store KeyStore, csrf string, id int64) {
+	userID, all := owner(r.Context())
+	keys, err := store.ListAPIKeys(r.Context(), userID, all)
+	if err != nil {
+		http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
+		return
+	}
+	index := slices.IndexFunc(keys, func(key overload.APIKey) bool { return key.ID == id })
+	if index < 0 || keys[index].State(time.Now()) != overload.APIKeyActive {
+		http.NotFound(w, r)
+		return
+	}
+	prompt := pages.ConfirmPrompt{Eyebrow: "API keys / Revoke", Title: "Revoke API key " + keys[index].Name + "?", Impact: pages.RevokeImpact(keys[index]), Button: "Revoke key", Cancel: "/keys"}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_ = layouts.Base(layouts.PageData{Title: "Revoke API key", CurrentPath: "/keys"}).Render(templ.WithChildren(r.Context(), pages.Confirmation(r.URL.Path, formTokenFor(r, csrf), r.PostForm, prompt)), w)
 }

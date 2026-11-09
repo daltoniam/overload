@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
@@ -22,6 +23,7 @@ type KeysPage struct {
 	CanCreate bool
 	Endpoint  string
 	Created   *NewKey
+	Now       time.Time
 }
 
 templ APIKeys(page KeysPage, nonce string) {
@@ -38,7 +40,6 @@ templ APIKeys(page KeysPage, nonce string) {
 				<label class="field"><span>Name</span><input name="name" required maxlength="100" placeholder="laptop claude code"/></label>
 				<fieldset class="field"><legend>Scopes</legend>
 					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>
-					<label class="check"><input type="checkbox" name="scopes" value="reviews"/> Request pull request reviews</label>
 				</fieldset>
 				<label class="field"><span>Expires after (days)</span><input name="days" type="number" min="1" max="365" required value="90"/></label>
 				<div class="actions"><button type="submit">Create key</button></div>
@@ -48,6 +49,9 @@ templ APIKeys(page KeysPage, nonce string) {
 			if len(page.Keys) == 0 {
 				<div class="empty">No API keys yet.</div>
 			} else {
+				if len(page.Keys) >= overload.APIKeyListLimit {
+					<p class="muted" role="status">Showing the { strconv.Itoa(overload.APIKeyListLimit) } newest keys.</p>
+				}
 				<div class="table-wrap"><table><caption class="sr-only">API keys</caption><thead><tr><th>Key</th>
 					if page.All {
 						<th>Owner</th>
@@ -63,15 +67,18 @@ templ APIKeys(page KeysPage, nonce string) {
 							<td class="mono">{ key.ExpiresAt.UTC().Format("2006-01-02") }</td>
 							<td class="mono">{ lastUsed(key) }</td>
 							<td>
-								if key.RevokedAt != nil {
-									<span class="badge failed">Revoked</span>
-								} else {
-									<span class="badge enabled">Active</span>
+								switch key.State(page.Now) {
+									case overload.APIKeyRevoked:
+										<span class="badge failed">Revoked</span>
+									case overload.APIKeyExpired:
+										<span class="badge disabled">Expired</span>
+									default:
+										<span class="badge enabled">Active</span>
 								}
 							</td>
 							<td>
-								if key.RevokedAt == nil && page.CanCreate {
-									<form method="post" action={ templ.URL("/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Revoke</button></form>
+								if key.State(page.Now) == overload.APIKeyActive && page.CanCreate {
+									<form method="post" action={ templ.URL("/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke") } data-confirm-title="Revoke API key" data-confirm={ RevokeImpact(key) }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit" aria-label={ "Revoke " + key.Name }>Revoke</button></form>
 								}
 							</td>
 						</tr>
@@ -106,6 +113,11 @@ templ Usage(totals []overload.UsageTotal, all bool) {
 			}
 		</section>
 	}
+}
+
+// RevokeImpact names a key and what revoking it does.
+func RevokeImpact(key overload.APIKey) string {
+	return fmt.Sprintf("Revoke %q (%s)? Agents and CLIs using it stop working at once. This cannot be undone; create a new key to restore access.", key.Name, key.Prefix)
 }
 
 func keysHeading(all bool) string {

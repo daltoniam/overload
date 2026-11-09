@@ -40,7 +40,7 @@ func manageKeys(args []string) error {
 // without OIDC sign-in and for automation; people create their own keys on
 // the API keys page.
 func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) error {
-	usage := errors.New("usage: overload keys list | create --name NAME [--scopes models,reviews] [--days 90] | revoke ID")
+	usage := errors.New("usage: overload keys list | create --name NAME [--days 90] | revoke ID")
 	if len(args) == 0 {
 		return usage
 	}
@@ -55,22 +55,24 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		}
 		writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "ID\tNAME\tPREFIX\tOWNER\tSCOPES\tEXPIRES\tSTATUS")
+		now := time.Now()
 		for _, key := range keys {
-			status := "active"
-			if key.RevokedAt != nil {
-				status = "revoked"
-			}
 			owner := key.UserEmail
 			if owner == "" {
 				owner = "shared"
 			}
-			_, _ = fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", key.ID, key.Name, key.Prefix, owner, strings.Join(key.Scopes, ","), key.ExpiresAt.UTC().Format("2006-01-02"), status)
+			_, _ = fmt.Fprintf(writer, "%d\t%s\t%s\t%s\t%s\t%s\t%s\n", key.ID, key.Name, key.Prefix, owner, strings.Join(key.Scopes, ","), key.ExpiresAt.UTC().Format("2006-01-02"), key.State(now))
 		}
-		return writer.Flush()
+		if err := writer.Flush(); err != nil {
+			return err
+		}
+		if len(keys) >= overload.APIKeyListLimit {
+			_, err = fmt.Fprintf(out, "Showing the %d newest keys.\n", overload.APIKeyListLimit)
+		}
+		return err
 	case "create":
 		flags := flag.NewFlagSet("keys create", flag.ContinueOnError)
 		name := flags.String("name", "", "what the key is for")
-		scopes := flags.String("scopes", overload.ScopeModels, "comma-separated scopes: models, reviews")
 		days := flags.Int("days", 90, "days until the key expires (1 to 365)")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -78,7 +80,7 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		if flags.NArg() != 0 {
 			return usage
 		}
-		key, secret, err := store.CreateAPIKey(ctx, 0, *name, strings.Split(*scopes, ","), time.Duration(*days)*24*time.Hour)
+		key, secret, err := store.CreateAPIKey(ctx, 0, *name, []string{overload.ScopeModels}, time.Duration(*days)*24*time.Hour)
 		if err != nil {
 			return err
 		}

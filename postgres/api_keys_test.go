@@ -23,10 +23,12 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	if err != nil || !strings.HasPrefix(secret, key.Prefix+"_") || key.Name != "laptop" {
 		t.Fatalf("create: %+v %q %v", key, secret, err)
 	}
-	if _, _, err := store.CreateAPIKey(ctx, user.ID, "x", []string{"admin"}, time.Hour); err == nil {
-		t.Fatal("created a key with an unknown scope")
+	for _, scope := range []string{"admin", overload.ScopeReviews} {
+		if _, _, err := store.CreateAPIKey(ctx, user.ID, "x", []string{scope}, time.Hour); err == nil {
+			t.Fatalf("created a key with the %s scope", scope)
+		}
 	}
-	shared, sharedSecret, err := store.CreateAPIKey(ctx, 0, "ci", []string{overload.ScopeReviews}, time.Hour)
+	shared, sharedSecret, err := store.CreateAPIKey(ctx, 0, "ci", []string{overload.ScopeModels}, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +36,7 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	if err != nil || found.ID != key.ID || owner == nil || owner.Email != "a@example.com" || !found.HasScope(overload.ScopeModels) {
 		t.Fatalf("authenticate: %+v %+v %v", found, owner, err)
 	}
-	if found, owner, err := store.AuthenticateAPIKey(ctx, sharedSecret); err != nil || owner != nil || found.ID != shared.ID {
+	if found, owner, err := store.AuthenticateAPIKey(ctx, sharedSecret); err != nil || owner != nil || found.ID != shared.ID || found.State(time.Now()) != overload.APIKeyActive {
 		t.Fatalf("shared key: %+v %v", owner, err)
 	}
 	for _, bad := range []string{"", "ovl_nope", secret + "x", strings.Repeat("ovl_", 60)} {
@@ -77,5 +79,37 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	}
 	if _, _, err := store.AuthenticateAPIKey(ctx, sharedSecret); !errors.Is(err, postgres.ErrInvalidAPIKey) {
 		t.Fatal("revoked key works")
+	}
+}
+
+func TestSignInBelowMemberRevokesAPIKeys(t *testing.T) {
+	store := pgtest.Isolated(t)
+	ctx := context.Background()
+	person := overload.User{Issuer: "https://idp", Subject: "2", Email: "b@example.com", Role: overload.RoleMember}
+	user, err := store.SignInUser(ctx, person)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, secret, err := store.CreateAPIKey(ctx, user.ID, "laptop", []string{overload.ScopeModels}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	person.Role = overload.RoleAdmin
+	if _, err := store.SignInUser(ctx, person); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AuthenticateAPIKey(ctx, secret); err != nil {
+		t.Fatalf("a promotion revoked the key: %v", err)
+	}
+	person.Role = overload.RoleViewer
+	if _, err := store.SignInUser(ctx, person); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.AuthenticateAPIKey(ctx, secret); !errors.Is(err, postgres.ErrInvalidAPIKey) {
+		t.Fatalf("a viewer's key still works: %v", err)
+	}
+	keys, err := store.ListAPIKeys(ctx, user.ID, false)
+	if err != nil || len(keys) != 1 || keys[0].State(time.Now()) != overload.APIKeyRevoked {
+		t.Fatalf("keys: %+v %v", keys, err)
 	}
 }

@@ -4,13 +4,11 @@
 package modelproxy
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -35,9 +33,9 @@ type grant struct {
 
 // Proxy forwards granted model requests. It is safe for concurrent use.
 type Proxy struct {
-	base   string
-	client *http.Client
-	now    func() time.Time
+	base     string
+	upstream *Upstream
+	now      func() time.Time
 
 	mu     sync.Mutex
 	grants map[string]grant
@@ -46,11 +44,7 @@ type Proxy struct {
 // New returns a proxy whose grants are reachable at base (for example
 // http://overload.overload.svc:8083).
 func New(base string) *Proxy {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// Never follow redirects: Go keeps X-Api-Key on a redirect to another
-	// host, and the sandbox should not choose where the key goes.
-	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Proxy{base: strings.TrimRight(base, "/"), client: client, now: time.Now, grants: map[string]grant{}}
+	return &Proxy{base: strings.TrimRight(base, "/"), upstream: NewUpstream("overload-model-proxy"), now: time.Now, grants: map[string]grant{}}
 }
 
 // Grant returns a base URL that reaches model for ttl, and a function that
@@ -102,6 +96,7 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	provider := model.Provider
 	if provider == "" {
 		provider = overload.ProviderOpenAICompat
+		model.Provider = provider
 	}
 	if !allowedPaths[provider][path] {
 		http.NotFound(w, r)
@@ -119,59 +114,11 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request must name the granted model", http.StatusForbidden)
 		return
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(model.BaseURL, "/")+"/"+path, bytes.NewReader(body))
-	if err != nil {
-		http.Error(w, "invalid model URL", http.StatusBadGateway)
-		return
-	}
-	upstream.Header.Set("Content-Type", "application/json")
-	if accept := r.Header.Get("Accept"); accept != "" {
-		upstream.Header.Set("Accept", accept)
-	}
-	upstream.Header.Set("User-Agent", "overload-model-proxy")
-	for name, value := range model.Headers {
-		upstream.Header.Set(name, value)
-	}
-	switch {
-	case provider == overload.ProviderAnthropic:
-		// Anthropic-Beta is not forwarded: reviews need no beta features,
-		// and some (the MCP connector) would let a sandbox make Anthropic
-		// reach URLs of its choosing with the control plane's key.
-		if value := r.Header.Get("Anthropic-Version"); value != "" {
-			upstream.Header.Set("Anthropic-Version", value)
-		}
-		if model.APIKeyEnv != "" {
-			upstream.Header.Set("X-Api-Key", os.Getenv(model.APIKeyEnv))
-		}
-	case model.APIKeyEnv != "":
-		upstream.Header.Set("Authorization", "Bearer "+os.Getenv(model.APIKeyEnv))
-	}
-	response, err := proxy.client.Do(upstream)
+	response, err := proxy.upstream.Send(r.Context(), model, path, r.Header, body)
 	if err != nil {
 		http.Error(w, "model request failed", http.StatusBadGateway)
 		return
 	}
 	defer func() { _ = response.Body.Close() }()
-	for _, name := range []string{"Content-Type", "Retry-After"} {
-		if value := response.Header.Get(name); value != "" {
-			w.Header().Set(name, value)
-		}
-	}
-	w.WriteHeader(response.StatusCode)
-	flusher, _ := w.(http.Flusher)
-	buf := make([]byte, 32<<10)
-	for {
-		n, readErr := response.Body.Read(buf)
-		if n > 0 {
-			if _, err := w.Write(buf[:n]); err != nil {
-				return
-			}
-			if flusher != nil {
-				flusher.Flush()
-			}
-		}
-		if readErr != nil {
-			return
-		}
-	}
+	Relay(w, response, response.StatusCode, nil)
 }

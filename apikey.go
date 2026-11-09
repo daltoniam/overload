@@ -7,8 +7,9 @@ import (
 	"time"
 )
 
-// API key scopes. ScopeModels calls models through the gateway;
-// ScopeReviews requests pull request reviews.
+// API key scopes. ScopeModels calls models through the gateway.
+// ScopeReviews is reserved for requesting pull request reviews; no endpoint
+// accepts it yet, so keys cannot be created with it.
 const (
 	ScopeModels  = "models"
 	ScopeReviews = "reviews"
@@ -16,6 +17,20 @@ const (
 
 // MaxAPIKeyLifetime bounds how long an API key can live.
 const MaxAPIKeyLifetime = 365 * 24 * time.Hour
+
+// APIKeyListLimit is the most keys a list shows, newest first.
+const APIKeyListLimit = 500
+
+// ErrInvalidAPIKey means a key is unknown, expired, revoked or belongs to a
+// disabled user.
+var ErrInvalidAPIKey = errors.New("invalid API key")
+
+// API key states, as shown in lists.
+const (
+	APIKeyActive  = "active"
+	APIKeyExpired = "expired"
+	APIKeyRevoked = "revoked"
+)
 
 // APIKey is a per-person credential for agents and CLIs. Only a hash of the
 // secret is stored; Prefix identifies the key in lists and logs.
@@ -36,6 +51,18 @@ type APIKey struct {
 // HasScope reports whether the key grants scope.
 func (key APIKey) HasScope(scope string) bool { return slices.Contains(key.Scopes, scope) }
 
+// State reports whether the key is active, expired or revoked at now.
+func (key APIKey) State(now time.Time) string {
+	switch {
+	case key.RevokedAt != nil:
+		return APIKeyRevoked
+	case !now.Before(key.ExpiresAt):
+		return APIKeyExpired
+	default:
+		return APIKeyActive
+	}
+}
+
 // ValidateAPIKey checks a key about to be created.
 func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error {
 	if strings.TrimSpace(name) == "" || len(name) > 100 {
@@ -45,8 +72,8 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 		return errors.New("choose at least one scope")
 	}
 	for _, scope := range scopes {
-		if scope != ScopeModels && scope != ScopeReviews {
-			return errors.New("scopes are models and reviews")
+		if scope != ScopeModels {
+			return errors.New("the only scope is models")
 		}
 	}
 	if lifetime < time.Hour || lifetime > MaxAPIKeyLifetime {

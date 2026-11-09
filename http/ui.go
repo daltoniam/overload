@@ -64,7 +64,7 @@ func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
 	case strings.HasSuffix(path, "/delete"):
 		return pages.DeletePrompt, true
 	case disableUserPath.MatchString(path):
-		return pages.ConfirmPrompt{Eyebrow: "Confirm access change", Title: "Disable this person?", Impact: "They are signed out at once and cannot sign in until an administrator enables them again.", Button: "Disable", Cancel: "/users"}, true
+		return pages.ConfirmPrompt{Eyebrow: "Confirm access change", Title: "Disable this person?", Impact: "They are signed out at once, their API keys stop working, and they cannot sign in until an administrator enables them again.", Button: "Disable", Cancel: "/users"}, true
 	}
 	return pages.ConfirmPrompt{}, false
 }
@@ -228,7 +228,7 @@ func enhanceHTML(r *http.Request, body []byte, state pages.UIState) ([]byte, err
 		main.InsertBefore(notice, main.FirstChild)
 	}
 	walk(main, func(node *html.Node) {
-		if node.Data == "form" && attr(node, "method") == "post" && !strings.HasSuffix(attr(node, "action"), "/delete") {
+		if node.Data == "form" && attr(node, "method") == "post" && !strings.HasSuffix(attr(node, "action"), "/delete") && attr(node, "data-confirm") == "" {
 			setAttr(node, "data-enhance", "true")
 		}
 	})
@@ -345,7 +345,7 @@ func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handle
 		path = strings.TrimSuffix(r.URL.Path, "/delete")
 	} else if r.URL.Path == "/configure/repositories" && r.PostForm.Get("id") != "" {
 		path = r.URL.Path + "/" + r.PostForm.Get("id")
-	} else if r.URL.Path == "/catalog/policy" {
+	} else if r.URL.Path == "/catalog/policy" || r.URL.Path == "/keys" {
 		path = r.URL.Path
 	} else if existing := r.PostForm.Get("existing"); existing != "" {
 		path = r.URL.Path + "/" + url.PathEscape(existing)

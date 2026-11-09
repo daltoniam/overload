@@ -29,3 +29,4 @@ CREATE TABLE IF NOT EXISTS model_usage (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS model_usage_recent ON model_usage (created_at DESC);
+CREATE INDEX IF NOT EXISTS model_usage_user ON model_usage (user_id, created_at);

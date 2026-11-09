@@ -8,9 +8,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
@@ -26,11 +28,17 @@ type fakeStore struct {
 func (store *fakeStore) AuthenticateAPIKey(_ context.Context, secret string) (overload.APIKey, *overload.User, error) {
 	switch secret {
 	case "ovl_good":
-		return overload.APIKey{ID: 1, Prefix: "ovl_good", Scopes: []string{overload.ScopeModels}}, &overload.User{ID: 7}, nil
+		return overload.APIKey{ID: 1, Prefix: "ovl_good", Scopes: []string{overload.ScopeModels}}, &overload.User{ID: 7, Role: overload.RoleMember}, nil
 	case "ovl_reviews":
 		return overload.APIKey{ID: 2, Prefix: "ovl_reviews", Scopes: []string{overload.ScopeReviews}}, nil, nil
+	case "ovl_viewer":
+		return overload.APIKey{ID: 3, Prefix: "ovl_viewer", Scopes: []string{overload.ScopeModels}}, &overload.User{ID: 8, Role: overload.RoleViewer}, nil
+	case "ovl_shared":
+		return overload.APIKey{ID: 4, Prefix: "ovl_shared", Scopes: []string{overload.ScopeModels}}, nil, nil
+	case "ovl_database_down":
+		return overload.APIKey{}, nil, errors.New("connection refused")
 	}
-	return overload.APIKey{}, nil, errors.New("invalid")
+	return overload.APIKey{}, nil, overload.ErrInvalidAPIKey
 }
 func (store *fakeStore) ListReviewSettings(context.Context) ([]overload.ReviewSettings, error) {
 	return store.settings, nil
@@ -44,28 +52,62 @@ func (store *fakeStore) RecordUsage(_ context.Context, usage overload.Usage) err
 	store.usage = append(store.usage, usage)
 	return nil
 }
+func (store *fakeStore) recorded() []overload.Usage {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return slices.Clone(store.usage)
+}
 
-func TestGateway(t *testing.T) {
-	t.Setenv("OVERLOAD_MODEL_HOSTED", "upstream-key")
-	t.Setenv("OVERLOAD_MODEL_CLAUDE", "claude-key")
-	var mu sync.Mutex
-	var seen []*http.Request
-	var bodies []map[string]any
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// fakeUpstream is a model server that records what reached it. It answers
+// on the server's goroutines, so reads take the lock too.
+type fakeUpstream struct {
+	*httptest.Server
+	mu      sync.Mutex
+	headers []http.Header
+	bodies  []map[string]any
+}
+
+func (upstream *fakeUpstream) request(index int) (http.Header, map[string]any) {
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	return upstream.headers[index], upstream.bodies[index]
+}
+
+func (upstream *fakeUpstream) count() int {
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	return len(upstream.headers)
+}
+
+func newFakeUpstream(t *testing.T) *fakeUpstream {
+	upstream := &fakeUpstream{}
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("the gateway followed a redirect")
+	}))
+	t.Cleanup(elsewhere.Close)
+	upstream.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var body map[string]any
 		_ = json.Unmarshal(raw, &body)
-		mu.Lock()
-		seen, bodies = append(seen, r), append(bodies, body)
-		mu.Unlock()
+		upstream.mu.Lock()
+		upstream.headers, upstream.bodies = append(upstream.headers, r.Header.Clone()), append(upstream.bodies, body)
+		upstream.mu.Unlock()
 		switch {
-		case r.URL.Path == "/v1/messages":
+		case strings.HasPrefix(r.URL.Path, "/denied/"):
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"message":"bad key"}}`)
+		case strings.HasPrefix(r.URL.Path, "/redirect/"):
+			http.Redirect(w, r, elsewhere.URL+"/v1/chat/completions", http.StatusTemporaryRedirect)
+		case r.URL.Path == "/v1/messages" && body["stream"] == true:
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":1}}}\n\n")
 			_, _ = io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":12}}\n\n")
+		case r.URL.Path == "/v1/messages":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"type":"message","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":20,"output_tokens":7}}`)
 		case body["stream"] == true:
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")
+			_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\n")
 			_, _ = io.WriteString(w, "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n")
 		default:
 			w.Header().Set("Content-Type", "application/json")
@@ -73,12 +115,21 @@ func TestGateway(t *testing.T) {
 			_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"hi"}}],"usage":{"prompt_tokens":9,"completion_tokens":3}}`)
 		}
 	}))
-	defer upstream.Close()
+	t.Cleanup(upstream.Close)
+	return upstream
+}
+
+func TestGateway(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_HOSTED", "upstream-key")
+	t.Setenv("OVERLOAD_MODEL_CLAUDE", "claude-key")
+	upstream := newFakeUpstream(t)
 	store := &fakeStore{settings: []overload.ReviewSettings{
 		{Name: "flint", Provider: overload.ProviderOpenAICompat, ConnectionKind: "local", BaseURL: upstream.URL + "/v1", Model: "flint", Concurrency: 1, Catalog: "recursive-flint"},
 		{Name: "gpt", Provider: overload.ProviderOpenAICompat, ConnectionKind: "hosted", BaseURL: upstream.URL + "/v1/", Model: "gpt-6.1-sol", APIKeyEnv: "OVERLOAD_MODEL_HOSTED", Concurrency: 2},
 		{Name: "claude", Provider: overload.ProviderAnthropic, ConnectionKind: "hosted", BaseURL: upstream.URL, Model: "claude-opus-5-5", APIKeyEnv: "OVERLOAD_MODEL_CLAUDE", Concurrency: 1},
 		{Name: "qwen", Provider: overload.ProviderOpenAICompat, ConnectionKind: "local", BaseURL: upstream.URL + "/v1", Model: "qwen3.8-flash-next", Concurrency: 1},
+		{Name: "denied", Provider: overload.ProviderOpenAICompat, ConnectionKind: "hosted", BaseURL: upstream.URL + "/denied/v1", Model: "denied", APIKeyEnv: "OVERLOAD_MODEL_HOSTED", Concurrency: 1},
+		{Name: "moved", Provider: overload.ProviderOpenAICompat, ConnectionKind: "hosted", BaseURL: upstream.URL + "/redirect/v1", Model: "moved", APIKeyEnv: "OVERLOAD_MODEL_HOSTED", Concurrency: 1},
 	}, policy: catalog.Policy{BlockedOrigins: []string{"CN"}}}
 	gateway := New(store)
 	call := func(method, path, key, body string, headers ...string) *httptest.ResponseRecorder {
@@ -97,58 +148,97 @@ func TestGateway(t *testing.T) {
 
 	for name, test := range map[string]struct {
 		key, path, body string
+		headers         []string
 		status          int
+		message         string
 	}{
-		"no key":        {"", "/v1/models", "", http.StatusUnauthorized},
-		"bad key":       {"ovl_bad", "/v1/models", "", http.StatusUnauthorized},
-		"wrong scope":   {"ovl_reviews", "/v1/models", "", http.StatusUnauthorized},
-		"unknown model": {"ovl_good", "/v1/chat/completions", `{"model":"nope"}`, http.StatusNotFound},
-		"refused model": {"ovl_good", "/v1/chat/completions", `{"model":"qwen"}`, http.StatusNotFound},
-		"wrong API":     {"ovl_good", "/v1/messages", `{"model":"flint"}`, http.StatusBadRequest},
-		"not JSON":      {"ovl_good", "/v1/chat/completions", `nope`, http.StatusBadRequest},
-		"unknown path":  {"ovl_good", "/v1/embeddings", `{}`, http.StatusNotFound},
+		"no key":               {path: "/v1/models", status: http.StatusUnauthorized},
+		"bad key":              {key: "ovl_bad", path: "/v1/models", status: http.StatusUnauthorized},
+		"database down":        {key: "ovl_database_down", path: "/v1/models", status: http.StatusServiceUnavailable, message: "retry later"},
+		"wrong scope":          {key: "ovl_reviews", path: "/v1/models", status: http.StatusForbidden},
+		"viewer":               {key: "ovl_viewer", path: "/v1/models", status: http.StatusForbidden},
+		"shared key":           {key: "ovl_shared", path: "/v1/models", status: http.StatusOK},
+		"lowercase bearer":     {path: "/v1/models", headers: []string{"Authorization", "bearer ovl_good"}, status: http.StatusOK},
+		"uppercase bearer":     {path: "/v1/models", headers: []string{"Authorization", "BEARER  ovl_good"}, status: http.StatusOK},
+		"other scheme":         {path: "/v1/models", headers: []string{"Authorization", "Basic ovl_good"}, status: http.StatusUnauthorized},
+		"unknown model":        {key: "ovl_good", path: "/v1/chat/completions", body: `{"model":"nope"}`, status: http.StatusNotFound},
+		"refused model":        {key: "ovl_good", path: "/v1/chat/completions", body: `{"model":"qwen"}`, status: http.StatusNotFound},
+		"wrong API":            {key: "ovl_good", path: "/v1/messages", body: `{"model":"flint"}`, status: http.StatusBadRequest},
+		"not JSON":             {key: "ovl_good", path: "/v1/chat/completions", body: `nope`, status: http.StatusBadRequest},
+		"unknown path":         {key: "ovl_good", path: "/v1/embeddings", body: `{}`, status: http.StatusNotFound},
+		"upstream refuses key": {key: "ovl_good", path: "/v1/chat/completions", body: `{"model":"denied"}`, status: http.StatusBadGateway, message: "rejected overload's credentials"},
+		"upstream redirects":   {key: "ovl_good", path: "/v1/chat/completions", body: `{"model":"moved"}`, status: http.StatusTemporaryRedirect},
 	} {
 		method := http.MethodPost
 		if test.path == "/v1/models" {
 			method = http.MethodGet
 		}
-		if response := call(method, test.path, test.key, test.body); response.Code != test.status {
+		response := call(method, test.path, test.key, test.body, test.headers...)
+		if response.Code != test.status || !strings.Contains(response.Body.String(), test.message) {
 			t.Errorf("%s: %d %s", name, response.Code, response.Body.String())
 		}
 	}
+	var statuses []int
+	for _, usage := range store.recorded() {
+		statuses = append(statuses, usage.Status)
+	}
+	slices.Sort(statuses)
+	if !slices.Equal(statuses, []int{http.StatusTemporaryRedirect, http.StatusBadGateway}) || upstream.count() != 2 {
+		t.Fatalf("forwarded calls: statuses %v, upstream requests %d", statuses, upstream.count())
+	}
+	before, beforeUsage := upstream.count(), len(store.recorded())
 
 	list := call(http.MethodGet, "/v1/models", "ovl_good", "")
 	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), `"id":"claude"`) || strings.Contains(list.Body.String(), "qwen") {
 		t.Fatalf("models: %s", list.Body.String())
 	}
 
-	response := call(http.MethodPost, "/v1/chat/completions", "ovl_good", `{"model":"gpt","messages":[]}`)
+	response := call(http.MethodPost, "/v1/chat/completions", "ovl_good", `{"model":"gpt","messages":[]}`, "X-Api-Key", "ovl_good")
 	if response.Code != http.StatusOK || response.Header().Get("Set-Cookie") != "" || !strings.Contains(response.Body.String(), `"hi"`) {
 		t.Fatalf("chat: %d %v %s", response.Code, response.Header(), response.Body.String())
 	}
-	if seen[0].URL.Path != "/v1/chat/completions" || seen[0].Header.Get("Authorization") != "Bearer upstream-key" || bodies[0]["model"] != "gpt-6.1-sol" {
-		t.Fatalf("upstream: %s %q %v", seen[0].URL.Path, seen[0].Header.Get("Authorization"), bodies[0])
+	headers, body := upstream.request(before)
+	if headers.Get("Authorization") != "Bearer upstream-key" || headers.Get("X-Api-Key") != "" || body["model"] != "gpt-6.1-sol" {
+		t.Fatalf("upstream: %v %v", headers, body)
 	}
 
-	response = call(http.MethodPost, "/v1/chat/completions", "ovl_good", `{"model":"flint","stream":true}`)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "[DONE]") {
-		t.Fatalf("stream: %d %s", response.Code, response.Body.String())
+	response = call(http.MethodPost, "/v1/chat/completions", "ovl_good", `{"model":"flint","stream":true,"stream_options":{"include_usage":true}}`)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "[DONE]") || !strings.Contains(response.Body.String(), `"prompt_tokens":11`) {
+		t.Fatalf("stream with usage: %d %s", response.Code, response.Body.String())
 	}
-	options, _ := bodies[1]["stream_options"].(map[string]any)
-	if options["include_usage"] != true || seen[1].Header.Get("Authorization") != "" {
-		t.Fatalf("stream upstream: %v %q", bodies[1], seen[1].Header.Get("Authorization"))
-	}
-
-	response = call(http.MethodPost, "/v1/messages", "", `{"model":"claude","stream":true}`, "X-Api-Key", "ovl_good", "Anthropic-Beta", "tools")
-	if response.Code != http.StatusOK || seen[2].Header.Get("X-Api-Key") != "claude-key" || seen[2].Header.Get("Anthropic-Version") == "" || seen[2].Header.Get("Anthropic-Beta") != "tools" || bodies[2]["model"] != "claude-opus-5-5" {
-		t.Fatalf("messages: %d %v %v", response.Code, seen[2].Header, bodies[2])
+	headers, body = upstream.request(before + 1)
+	if options, _ := body["stream_options"].(map[string]any); options["include_usage"] != true || headers.Get("Authorization") != "" {
+		t.Fatalf("stream upstream: %v %q", body, headers.Get("Authorization"))
 	}
 
-	want := []string{"gpt 9/3", "flint 11/5", "claude 30/12"}
-	if len(store.usage) != len(want) {
-		t.Fatalf("usage = %+v", store.usage)
+	for index, request := range []string{`{"model":"flint","stream":true,"stream_options":{"include_usage":false}}`, `{"model":"flint","stream":true}`} {
+		response = call(http.MethodPost, "/v1/chat/completions", "ovl_good", request)
+		want := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\ndata: [DONE]\n\n"
+		if response.Code != http.StatusOK || response.Body.String() != want {
+			t.Fatalf("%s: %d %q", request, response.Code, response.Body.String())
+		}
+		if _, body := upstream.request(before + 2 + index); body["stream_options"].(map[string]any)["include_usage"] != true {
+			t.Fatalf("usage not requested upstream: %v", body)
+		}
 	}
-	for index, usage := range store.usage {
+
+	response = call(http.MethodPost, "/v1/messages", "", `{"model":"claude","stream":true}`, "X-Api-Key", "ovl_good", "Anthropic-Beta", "mcp-client-2025-04-04")
+	headers, body = upstream.request(before + 4)
+	if response.Code != http.StatusOK || headers.Get("X-Api-Key") != "claude-key" || headers.Get("Anthropic-Version") != defaultAnthropicVersion || headers.Get("Anthropic-Beta") != "" || headers.Get("Authorization") != "" || body["model"] != "claude-opus-5-5" {
+		t.Fatalf("messages: %d %v %v", response.Code, headers, body)
+	}
+
+	response = call(http.MethodPost, "/v1/messages", "ovl_good", `{"model":"claude"}`, "Anthropic-Version", "2025-01-01")
+	if headers, _ := upstream.request(before + 5); response.Code != http.StatusOK || headers.Get("Anthropic-Version") != "2025-01-01" || headers.Get("Authorization") != "" {
+		t.Fatalf("messages without streaming: %d %v", response.Code, headers)
+	}
+
+	want := []string{"gpt 9/3", "flint 11/5", "flint 11/5", "flint 11/5", "claude 30/12", "claude 20/7"}
+	usage := store.recorded()[beforeUsage:]
+	if len(usage) != len(want) {
+		t.Fatalf("usage = %+v", usage)
+	}
+	for index, usage := range usage {
 		if got := fmt.Sprintf("%s %d/%d", usage.Model, usage.InputTokens, usage.OutputTokens); got != want[index] || usage.UserID != 7 || usage.KeyID != 1 || usage.Status != http.StatusOK {
 			t.Errorf("usage %d = %+v", index, usage)
 		}
@@ -171,14 +261,97 @@ func TestGatewayQueueFull(t *testing.T) {
 	}
 }
 
-func TestTokenCount(t *testing.T) {
-	var count tokenCount
-	scanner := &lineScanner{observe: count.observe, sse: true}
-	scanner.write([]byte("data: {\"usage\":{\"prompt_"))
-	scanner.write([]byte("tokens\":4,\"completion_tokens\":2}}\n"))
-	scanner.write([]byte("data: {\"usage\":{\"completion_tokens\":6}}"))
-	scanner.finish()
-	if count.input != 4 || count.output != 6 {
-		t.Fatalf("count = %+v", count)
+// A request that waits for a slot longer than the server's write timeout
+// still gets its answer.
+func TestGatewayWaitOutlastsWriteTimeout(t *testing.T) {
+	upstream := newFakeUpstream(t)
+	store := &fakeStore{settings: []overload.ReviewSettings{{Name: "flint", Provider: overload.ProviderOpenAICompat, ConnectionKind: "local", BaseURL: upstream.URL + "/v1", Model: "flint", Concurrency: 1}}}
+	gateway := New(store)
+	server := httptest.NewUnstartedServer(gateway)
+	server.Config.WriteTimeout = 200 * time.Millisecond
+	server.Start()
+	defer server.Close()
+	release, err := gateway.queue(store.settings[0]).acquire(context.Background(), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		release()
+	}()
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/chat/completions", strings.NewReader(`{"model":"flint"}`))
+	request.Header.Set("Authorization", "Bearer ovl_good")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatalf("connection dropped while queued: %v", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"hi"`) {
+		t.Fatalf("queued call: %d %s", response.StatusCode, body)
+	}
+}
+
+func TestGatewayDropsIdleQueues(t *testing.T) {
+	flint := overload.ReviewSettings{Name: "flint", Concurrency: 1}
+	gateway := New(&fakeStore{})
+	release, _ := gateway.queue(overload.ReviewSettings{Name: "busy", Concurrency: 1}).acquire(context.Background(), "a")
+	gateway.queue(overload.ReviewSettings{Name: "removed", Concurrency: 1})
+	gateway.queue(flint)
+	gateway.dropIdleQueues(map[string]overload.ReviewSettings{"flint": flint})
+	kept := func() []string {
+		gateway.mu.Lock()
+		defer gateway.mu.Unlock()
+		var names []string
+		for name := range gateway.queues {
+			names = append(names, name)
+		}
+		slices.Sort(names)
+		return names
+	}
+	if got := kept(); !slices.Equal(got, []string{"busy", "flint"}) {
+		t.Fatalf("queues = %v", got)
+	}
+	release()
+	gateway.dropIdleQueues(nil)
+	if got := kept(); len(got) != 0 {
+		t.Fatalf("idle queues kept: %v", got)
+	}
+}
+
+func TestUsageFilter(t *testing.T) {
+	for name, test := range map[string]struct {
+		sse, drop bool
+		chunks    []string
+		want      string
+		in, out   int64
+	}{
+		"split usage line": {
+			sse: true, chunks: []string{"data: {\"usage\":{\"prompt_", "tokens\":4,\"completion_tokens\":2}}\n", "data: {\"usage\":{\"completion_tokens\":6}}"},
+			want: "data: {\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":2}}\ndata: {\"usage\":{\"completion_tokens\":6}}", in: 4, out: 6,
+		},
+		"drop usage chunk": {
+			sse: true, drop: true, chunks: []string{"data: {\"choices\":[{}]}\n\ndata: {\"choices\":[],\"usa", "ge\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\r\n\r\ndata: [DONE]\n\n"},
+			want: "data: {\"choices\":[{}]}\n\ndata: [DONE]\n\n", in: 3, out: 1,
+		},
+		"keep error chunk": {
+			sse: true, drop: true, chunks: []string{"data: {\"error\":{\"message\":\"x\"}}\n\n"},
+			want: "data: {\"error\":{\"message\":\"x\"}}\n\n",
+		},
+		"anthropic whole body": {
+			chunks: []string{`{"usage":{"input_tokens":20,`, `"output_tokens":7}}`},
+			want:   `{"usage":{"input_tokens":20,"output_tokens":7}}`, in: 20, out: 7,
+		},
+	} {
+		var count tokenCount
+		filter := &usageFilter{count: &count, sse: test.sse, dropUsageChunk: test.drop}
+		var got strings.Builder
+		for _, chunk := range test.chunks {
+			got.Write(filter.Process([]byte(chunk)))
+		}
+		got.Write(filter.Finish())
+		if got.String() != test.want || count.input != test.in || count.output != test.out {
+			t.Errorf("%s: %q %+v", name, got.String(), count)
+		}
 	}
 }

@@ -20,7 +20,7 @@ const APIKeyPrefix = "ovl_"
 
 // ErrInvalidAPIKey means a key is unknown, expired, revoked or belongs to a
 // disabled user.
-var ErrInvalidAPIKey = errors.New("invalid API key")
+var ErrInvalidAPIKey = overload.ErrInvalidAPIKey
 
 // CreateAPIKey creates a key for userID (0 for none) and returns it with
 // the secret, which is shown once and never stored.
@@ -88,10 +88,10 @@ func scanAPIKey(row pgx.Row) (overload.APIKey, error) {
 	return key, err
 }
 
-// ListAPIKeys returns keys, newest first: everyone's when all is set,
-// otherwise userID's.
+// ListAPIKeys returns at most overload.APIKeyListLimit keys, newest first:
+// everyone's when all is set, otherwise userID's.
 func (s *Store) ListAPIKeys(ctx context.Context, userID int64, all bool) ([]overload.APIKey, error) {
-	rows, err := s.Pool.Query(ctx, apiKeySelect+` WHERE $2 OR COALESCE(k.user_id, 0) = $1 ORDER BY k.created_at DESC, k.id DESC LIMIT 500`, userID, all)
+	rows, err := s.Pool.Query(ctx, apiKeySelect+` WHERE $2 OR COALESCE(k.user_id, 0) = $1 ORDER BY k.created_at DESC, k.id DESC LIMIT $3`, userID, all, overload.APIKeyListLimit)
 	if err != nil {
 		return nil, err
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,8 +34,11 @@ func TestRunKeys(t *testing.T) {
 	store := &fakeKeys{}
 	var out bytes.Buffer
 	ctx := context.Background()
-	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "models,reviews", "--days", "30"}, &out); err != nil || !strings.Contains(out.String(), "ovl_abc_secret") || store.keys[0].UserID != 0 {
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--days", "30"}, &out); err != nil || !strings.Contains(out.String(), "ovl_abc_secret") || store.keys[0].UserID != 0 || !slices.Equal(store.keys[0].Scopes, []string{overload.ScopeModels}) {
 		t.Fatalf("create: %v %s", err, out.String())
+	}
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "reviews"}, &out); err == nil {
+		t.Fatal("offered the reviews scope, which nothing accepts yet")
 	}
 	if err := runKeys(ctx, store, []string{"create", "--name", "x", "--days", "500"}, &out); err == nil {
 		t.Fatal("created a key that lasts 500 days")
@@ -42,9 +46,17 @@ func TestRunKeys(t *testing.T) {
 	if err := runKeys(ctx, store, []string{"revoke", "1"}, &out); err != nil {
 		t.Fatal(err)
 	}
+	store.keys = append(store.keys, overload.APIKey{ID: 2, Name: "old", Prefix: "ovl_old", Scopes: []string{overload.ScopeModels}, ExpiresAt: time.Now().Add(-time.Hour)})
 	out.Reset()
-	if err := runKeys(ctx, store, []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "revoked") || !strings.Contains(out.String(), "shared") {
+	if err := runKeys(ctx, store, []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "revoked") || !strings.Contains(out.String(), "expired") || !strings.Contains(out.String(), "shared") || strings.Contains(out.String(), "newest") {
 		t.Fatalf("list: %v %s", err, out.String())
+	}
+	for len(store.keys) < overload.APIKeyListLimit {
+		store.keys = append(store.keys, overload.APIKey{ID: int64(len(store.keys) + 1), ExpiresAt: time.Now().Add(time.Hour)})
+	}
+	out.Reset()
+	if err := runKeys(ctx, store, []string{"list"}, &out); err != nil || !strings.Contains(out.String(), "Showing the 500 newest keys.") {
+		t.Fatalf("capped list: %v", err)
 	}
 	if err := runKeys(ctx, store, []string{"revoke", "x"}, &out); err == nil {
 		t.Fatal("accepted a bad ID")

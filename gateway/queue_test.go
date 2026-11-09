@@ -8,7 +8,7 @@ import (
 )
 
 func TestFairQueueTakesTurns(t *testing.T) {
-	queue := newFairQueue(1, 10)
+	queue := newFairQueue(1, 10, 10)
 	ctx := context.Background()
 	release, err := queue.acquire(ctx, "alice")
 	if err != nil {
@@ -46,7 +46,7 @@ func TestFairQueueTakesTurns(t *testing.T) {
 }
 
 func TestFairQueueLimitsAndCancellation(t *testing.T) {
-	queue := newFairQueue(1, 1)
+	queue := newFairQueue(1, 1, 1)
 	release, _ := queue.acquire(context.Background(), "a")
 	ctx, cancel := context.WithCancel(context.Background())
 	waited := make(chan error, 1)
@@ -79,6 +79,31 @@ func TestFairQueueLimitsAndCancellation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+}
+
+func TestFairQueueLimitsEachCaller(t *testing.T) {
+	queue := newFairQueue(1, 10, 2)
+	release, _ := queue.acquire(context.Background(), "a")
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	waiting := func(caller string) {
+		queue.mu.Lock()
+		want := len(queue.queues[caller]) + 1
+		queue.mu.Unlock()
+		go func() { _, _ = queue.acquire(ctx, caller) }()
+		waitFor(t, func() bool {
+			queue.mu.Lock()
+			defer queue.mu.Unlock()
+			return len(queue.queues[caller]) == want
+		})
+	}
+	waiting("a")
+	waiting("a")
+	if _, err := queue.acquire(context.Background(), "a"); !errors.Is(err, errQueueFull) {
+		t.Fatalf("over a's waiting limit: %v", err)
+	}
+	waiting("b")
 }
 
 func waitFor(t *testing.T, condition func() bool) {

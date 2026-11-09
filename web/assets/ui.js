@@ -52,7 +52,7 @@
   });
   document.addEventListener('submit', function (event) {
     var form = event.target;
-    if (!(form instanceof HTMLFormElement) || !formAction(form).endsWith('/delete') || form.querySelector('[name="confirmed"]')) return;
+    if (!(form instanceof HTMLFormElement) || !(formAction(form).endsWith('/delete') || form.dataset.confirm) || form.querySelector('[name="confirmed"]')) return;
     event.preventDefault();
     opener = form.querySelector('button');
     var root = document.getElementById('modal-root');
@@ -62,8 +62,8 @@
     dialog.setAttribute('aria-labelledby', 'delete-title');
     var body = document.createElement('div');
     body.className = 'dialog-body';
-    var title = document.createElement('h2'); title.id = 'delete-title'; title.textContent = 'Confirm deletion'; body.appendChild(title);
-    var description = document.createElement('p'); description.textContent = 'Delete ' + new URL(formAction(form)).pathname.replace('/delete', '').split('/').pop() + '? This cannot be undone. Dependent configuration or history may prevent removal.'; body.appendChild(description);
+    var title = document.createElement('h2'); title.id = 'delete-title'; title.textContent = form.dataset.confirmTitle || 'Confirm deletion'; body.appendChild(title);
+    var description = document.createElement('p'); description.textContent = form.dataset.confirm || 'Delete ' + new URL(formAction(form)).pathname.replace('/delete', '').split('/').pop() + '? This cannot be undone. Dependent configuration or history may prevent removal.'; body.appendChild(description);
     var copy = form.cloneNode(true);
     var confirmed = document.createElement('input'); confirmed.type = 'hidden'; confirmed.name = 'confirmed'; confirmed.value = 'true'; copy.appendChild(confirmed);
     var cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'secondary'; cancel.dataset.closeDialog = 'true'; cancel.textContent = 'Cancel'; copy.prepend(cancel); copy.classList.add('actions');

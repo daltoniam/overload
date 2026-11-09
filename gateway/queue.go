@@ -6,7 +6,8 @@ import (
 	"sync"
 )
 
-// errQueueFull means too many requests are already waiting for a model.
+// errQueueFull means too many requests are already waiting for a model, or
+// for this caller.
 var errQueueFull = errors.New("queue full")
 
 // fairQueue hands a model's request slots to waiting callers in turn, so
@@ -14,17 +15,25 @@ var errQueueFull = errors.New("queue full")
 // frees, it goes to the next caller in round-robin order, not to the
 // oldest request.
 type fairQueue struct {
-	mu         sync.Mutex
-	slots      int
-	inUse      int
-	maxWaiting int
-	waiting    int
-	queues     map[string][]chan struct{}
-	order      []string
+	mu           sync.Mutex
+	slots        int
+	inUse        int
+	maxWaiting   int
+	maxPerCaller int
+	waiting      int
+	queues       map[string][]chan struct{}
+	order        []string
 }
 
-func newFairQueue(slots, maxWaiting int) *fairQueue {
-	return &fairQueue{slots: max(slots, 1), maxWaiting: maxWaiting, queues: map[string][]chan struct{}{}}
+func newFairQueue(slots, maxWaiting, maxPerCaller int) *fairQueue {
+	return &fairQueue{slots: max(slots, 1), maxWaiting: maxWaiting, maxPerCaller: maxPerCaller, queues: map[string][]chan struct{}{}}
+}
+
+// idle reports whether no request holds or waits for a slot.
+func (queue *fairQueue) idle() bool {
+	queue.mu.Lock()
+	defer queue.mu.Unlock()
+	return queue.inUse == 0 && queue.waiting == 0
 }
 
 // setSlots follows a change to the model's parallel slots.
@@ -44,7 +53,7 @@ func (queue *fairQueue) acquire(ctx context.Context, caller string) (func(), err
 		queue.mu.Unlock()
 		return queue.release, nil
 	}
-	if queue.waiting >= queue.maxWaiting {
+	if queue.waiting >= queue.maxWaiting || len(queue.queues[caller]) >= queue.maxPerCaller {
 		queue.mu.Unlock()
 		return nil, errQueueFull
 	}

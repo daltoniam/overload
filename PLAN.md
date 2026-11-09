@@ -1453,7 +1453,14 @@ plan and deploy/README.md.
 5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7; done): hashed,
    scoped, expiring keys; OpenAI and Anthropic compatible endpoints in front
    of saved models, with the origin policy, a fair per-model queue and usage
-   in tokens and minutes per user.
+   in tokens and minutes per user. Keys have one scope (`models`) until
+   phase 6 adds `reviews`. Follow-ups: reviews and the gateway count model
+   slots separately, so sharing one queue with the review harness is still
+   to do; usage rows (`model_usage`) are kept indefinitely, and a retention
+   job should roll rows older than about 13 months into monthly totals per
+   person and model before deleting them; models saved with the Responses
+   API are served through Chat Completions only; key revocation on leaving
+   the provider waits for SCIM.
 6. **Workload identity** (16.7 Workloads): GitHub Actions and Kubernetes
    service-account tokens accepted under a claim policy, so CI can request a
    review or call the gateway without a stored secret.
