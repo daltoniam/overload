@@ -75,7 +75,7 @@ func (hub Hub) client() *http.Client {
 		if len(via) >= 10 {
 			return errors.New("too many redirects")
 		}
-		if request.URL.Scheme != "https" && request.URL.Scheme != via[0].URL.Scheme {
+		if request.URL.Scheme != "https" && (request.URL.Scheme != via[0].URL.Scheme || via[0].URL.Scheme == "https") {
 			return errors.New("refusing a redirect to a non-https URL")
 		}
 		host := strings.ToLower(request.URL.Hostname())

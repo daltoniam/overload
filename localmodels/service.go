@@ -160,7 +160,9 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 		return err
 	}
 	if err := manager.Start(agent.Label); err != nil {
-		_ = manager.Remove(agent.Label)
+		if removeErr := manager.Remove(agent.Label); removeErr != nil {
+			return fmt.Errorf("start %s: %w; removing its service also failed: %v", service.ID, err, removeErr)
+		}
 		remaining := slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
 		if writeErr := store.writeServices(remaining); writeErr != nil {
 			return writeErr

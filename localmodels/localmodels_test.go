@@ -564,3 +564,15 @@ func TestHealth(t *testing.T) {
 		t.Fatal("waited out the deadline for a server that crashed while loading")
 	}
 }
+
+func TestHTTPSDownloadsRefuseHTTPRedirects(t *testing.T) {
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("weights")) }))
+	defer cdn.Close()
+	fake := &fakeHub{files: map[string][]byte{"flint-Q4_K_M.gguf": []byte("weights")}, digests: map[string]string{}, redirect: cdn.URL}
+	server := httptest.NewTLSServer(fake.handler())
+	defer server.Close()
+	hub := Hub{BaseURL: server.URL, Client: server.Client(), Token: "hf_secret"}
+	if _, err := NewStore(t.TempDir()).Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err == nil || !strings.Contains(err.Error(), "non-https") {
+		t.Fatalf("followed an https to http redirect: %v", err)
+	}
+}
