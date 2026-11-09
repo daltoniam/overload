@@ -38,14 +38,20 @@ func DetectLlama(ctx context.Context, binary string) (LlamaVersion, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, binary, "--version").CombinedOutput()
+	if ctx.Err() != nil {
+		return LlamaVersion{}, fmt.Errorf("%s --version: %w", binary, ctx.Err())
+	}
 	version, parseErr := ParseLlamaVersion(string(output))
-	if parseErr != nil {
-		if err != nil {
-			return LlamaVersion{}, fmt.Errorf("%s --version: %w", binary, err)
-		}
+	switch {
+	case parseErr == nil:
+		// Some builds print the version and exit non-zero; the version
+		// line is what matters.
+		return version, nil
+	case err != nil:
+		return LlamaVersion{}, fmt.Errorf("%s --version: %w", binary, err)
+	default:
 		return LlamaVersion{}, parseErr
 	}
-	return version, nil
 }
 
 // CheckRuntime reports whether version can load model, with the fix when

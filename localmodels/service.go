@@ -133,6 +133,17 @@ var PortInUse = func(port int) bool {
 	return true
 }
 
+// portFreeSoon waits a few seconds for a stopped server to release port.
+func portFreeSoon(port int) error {
+	for range 25 {
+		if !PortInUse(port) {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("port %d is still in use", port)
+}
+
 // Serve installs and starts the service, replacing an earlier one for the
 // same model, and records it. It refuses a port another service or
 // program uses, and removes the service again if it cannot start.
@@ -168,6 +179,16 @@ func (store Store) Serve(ctx context.Context, manager ServiceManager, agent laun
 	}
 	if err := store.filesPresent(service); err != nil {
 		return err
+	}
+	if replacing {
+		// The recorded agent may have stopped and its port been taken
+		// since: stop it and check the port is free before replacing its
+		// configuration; restart it if not.
+		manager.Stop(agent.Label)
+		if portFreeSoon(service.Port) != nil {
+			_ = manager.Start(agent.Label)
+			return fmt.Errorf("port %d is in use by another program; choose another with --port", service.Port)
+		}
 	}
 	previous := slices.Clone(services)
 	hadService := slices.ContainsFunc(services, func(existing Service) bool { return existing.ID == service.ID })

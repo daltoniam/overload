@@ -583,6 +583,15 @@ func TestLlamaVersion(t *testing.T) {
 	if version, err := DetectLlama(context.Background(), script); err != nil || version.Build != 12058 {
 		t.Fatalf("detect = %+v, %v", version, err)
 	}
+	hanging := filepath.Join(t.TempDir(), "llama-server")
+	if err := os.WriteFile(hanging, []byte("#!/bin/sh\necho 'version: 12058 (deadbee)'\nsleep 10\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if _, err := DetectLlama(ctx, hanging); err == nil {
+		t.Fatal("a probe that timed out reported success")
+	}
 }
 
 type fakeManager struct {
@@ -592,6 +601,7 @@ type fakeManager struct {
 	removed  []string
 	startErr error
 	writeErr error
+	onStop   func(label string)
 }
 
 func (manager *fakeManager) Write(agent launchd.Agent) error {
@@ -605,7 +615,12 @@ func (manager *fakeManager) Start(label string) error {
 	manager.started = append(manager.started, label)
 	return manager.startErr
 }
-func (manager *fakeManager) Stop(label string) { manager.stopped = append(manager.stopped, label) }
+func (manager *fakeManager) Stop(label string) {
+	manager.stopped = append(manager.stopped, label)
+	if manager.onStop != nil {
+		manager.onStop(label)
+	}
+}
 func (manager *fakeManager) Remove(label string) error {
 	manager.removed = append(manager.removed, label)
 	return nil
@@ -664,9 +679,17 @@ func TestServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	busy[8080] = true
+	manager.onStop = func(string) { busy[8080] = false }
 	if err := store.Serve(context.Background(), manager, agent, service); err != nil {
 		t.Fatalf("restarting a model's own service: %v", err)
 	}
+	manager.onStop = nil
+	busy[8080] = true
+	manager.started = nil
+	if err := store.Serve(context.Background(), manager, agent, service); err == nil || !strings.Contains(err.Error(), "another program") || len(manager.started) != 1 {
+		t.Fatalf("replaced a service whose port another program took: %v, restarted %v", err, manager.started)
+	}
+	manager.onStop = func(string) { busy[8080] = false }
 	manager.stopped = nil
 	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: "dev.second.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.second.model.recursive-flint", Port: 8081, Files: service.Files}); err == nil || !strings.Contains(err.Error(), "another install") {
 		t.Fatalf("a second install took over a served model: %v", err)
@@ -957,12 +980,15 @@ func TestReuseReplacesAStaleDestination(t *testing.T) {
 		}
 	}
 	present := map[string]bool{}
-	links := store.reuseFiles([]Installed{old}, current, present)
-	if data, _ := os.ReadFile(store.FilePath(current, file)); len(links) != 1 || string(data) != "stale bytes!" {
+	staged := store.reuseFiles([]Installed{old}, current, present)
+	if data, _ := os.ReadFile(store.FilePath(current, file)); len(staged) != 1 || string(data) != "stale bytes!" {
 		t.Fatal("reuse touched the new revision before the downloads verified")
 	}
-	if err := linkInto(links[0].source, links[0].destination, store.partialPath(current, file)); err != nil {
+	if err := os.Remove(store.FilePath(old, file)); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Rename(staged[0][0], staged[0][1]); err != nil {
+		t.Fatalf("a reused file was lost when the old revision was released: %v", err)
 	}
 	data, _ := os.ReadFile(store.FilePath(current, file))
 	if !present[file.Path] || string(data) != string(content) {

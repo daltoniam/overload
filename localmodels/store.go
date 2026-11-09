@@ -121,7 +121,7 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	present := store.presentFiles(manifest, installed, progress)
-	links := store.reuseFiles(manifest, installed, present)
+	staged := store.reuseFiles(manifest, installed, present)
 	if err := store.checkSpace(installed, present); err != nil {
 		return Installed{}, err
 	}
@@ -129,7 +129,6 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	// overwrites the files an installed entry or a running service uses.
 	// Files are moved into place only after all of them verified, and the
 	// manifest switches to the revision after that.
-	var staged [][2]string
 	for _, file := range selected {
 		if present[file.Path] {
 			continue
@@ -139,11 +138,6 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
 		staged = append(staged, [2]string{partial, store.FilePath(installed, file)})
-	}
-	for _, link := range links {
-		if err := linkInto(link.source, link.destination, store.partialPath(installed, link.file)); err != nil {
-			return Installed{}, fmt.Errorf("reuse %s from the installed revision: %w", link.file.Path, err)
-		}
 	}
 	for _, step := range staged {
 		if err := os.Rename(step[0], step[1]); err != nil {
@@ -217,12 +211,14 @@ func (store Store) presentFiles(manifest []Installed, installed Installed, progr
 	return present
 }
 
-// reuseFiles finds files an installed revision of the same repository
-// already has with the same digest, to hard-link into the new revision
-// once every download has verified, and moves unfinished downloads of the
-// same file from older revision directories, so updating to a revision
-// that changed one file downloads only that file.
-func (store Store) reuseFiles(manifest []Installed, installed Installed, present map[string]bool) []reuseLink {
+// reuseFiles hard-links files an installed revision of the same
+// repository already has with the same digest into their partial names
+// in the new revision, and moves unfinished downloads of the same file
+// from older revision directories, so updating to a revision that changed
+// one file downloads only that file. Linking now pins the content: a
+// release of the old revision during the download cannot take it away.
+// It returns the links to move into place with the downloads.
+func (store Store) reuseFiles(manifest []Installed, installed Installed, present map[string]bool) [][2]string {
 	byDigest := map[string]string{}
 	for _, entry := range manifest {
 		if entry.Repository != installed.Repository {
@@ -232,28 +228,33 @@ func (store Store) reuseFiles(manifest []Installed, installed Installed, present
 			byDigest[file.SHA256] = store.FilePath(entry, file)
 		}
 	}
-	var links []reuseLink
+	var staged [][2]string
 	for _, file := range installed.Files {
 		if present[file.Path] {
 			continue
 		}
 		destination := store.FilePath(installed, file)
-		if source, ok := byDigest[file.SHA256]; ok && source != destination {
-			if info, err := os.Stat(source); err == nil && info.Size() == file.Size {
-				links = append(links, reuseLink{source, destination, file})
-				present[file.Path] = true
-				continue
-			}
+		if source, ok := byDigest[file.SHA256]; ok && source != destination && store.linkPartial(source, installed, file) {
+			staged = append(staged, [2]string{store.partialPath(installed, file), destination})
+			present[file.Path] = true
+			continue
 		}
 		store.adoptPartial(installed, file)
 	}
-	return links
+	return staged
 }
 
-// reuseLink is a file to hard-link from an installed revision.
-type reuseLink struct {
-	source, destination string
-	file                File
+// linkPartial hard-links source, if it has the file's size, to the file's
+// partial name in the new revision. Without hard links it reports false
+// and the file is downloaded.
+func (store Store) linkPartial(source string, installed Installed, file File) bool {
+	info, err := os.Stat(source)
+	partial := store.partialPath(installed, file)
+	if err != nil || info.Size() != file.Size || os.MkdirAll(filepath.Dir(partial), 0o755) != nil {
+		return false
+	}
+	_ = os.Remove(partial)
+	return os.Link(source, partial) == nil
 }
 
 // adoptPartial moves an unfinished download of file with the same digest
@@ -278,25 +279,6 @@ func (store Store) adoptPartial(installed Installed, file File) {
 			return
 		}
 	}
-}
-
-// linkInto hard-links source to destination through temporary, a name
-// clean removes if this is interrupted, and a rename, so a stale
-// destination is replaced and never half-written. A hard link survives the
-// source being deleted.
-func linkInto(source, destination, temporary string) error {
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-		return err
-	}
-	_ = os.Remove(temporary)
-	if err := os.Link(source, temporary); err != nil {
-		return err
-	}
-	if err := os.Rename(temporary, destination); err != nil {
-		_ = os.Remove(temporary)
-		return err
-	}
-	return nil
 }
 
 // release deals with the files of replaced entries that no installed entry
