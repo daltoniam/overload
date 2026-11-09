@@ -40,7 +40,8 @@ Running `install` again keeps the configuration and restarts the services.
 `overload status` shows services and health. `overload uninstall` removes the
 launchd agents (model services included) and keeps the data; `--purge`
 deletes the install directory too, including downloaded model weights unless
-`OVERLOAD_MODELS_DIR` points elsewhere. `--home`, `--label` and `--port` allow side-by-side installs.
+`OVERLOAD_MODELS_DIR` points elsewhere. `--home`, `--label` and `--port`
+allow side-by-side installs.
 
 `make install-test` (and the macOS CI job) installs under a throwaway label
 and port and checks login, `install-check`, a saved model surviving restarts

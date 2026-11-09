@@ -341,7 +341,7 @@ func TestSelectQuant(t *testing.T) {
 			t.Errorf("%s: %v, %v", quant, paths, err)
 		}
 	}
-	for _, quant := range []string{"", "Q2_K", "Q6_K", "Q5_K", "../x", "Q4 K"} {
+	for _, quant := range []string{"", "Q2_K", "Q6_K", "Q5_K", "../x", "Q4 K", "M", "XL", "K_M"} {
 		if _, err := SelectQuant(files, quant); err == nil {
 			t.Errorf("%q selected", quant)
 		}
@@ -587,5 +587,28 @@ func TestHTTPSDownloadsRefuseHTTPRedirects(t *testing.T) {
 	hub := Hub{BaseURL: server.URL, Client: server.Client(), Token: "hf_secret"}
 	if _, err := NewStore(t.TempDir()).Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err == nil || !strings.Contains(err.Error(), "non-https") {
 		t.Fatalf("followed an https to http redirect: %v", err)
+	}
+}
+
+func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
+	store := NewStore(t.TempDir())
+	file := File{Path: "flint-Q4_K_M.gguf", SHA256: strings.Repeat("c", 64)}
+	destination := store.Path("test/flint-GGUF", file.Path)
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := destination + ".0123456789abcdef" + partialSuffix
+	mine := destination + ".mine" + partialSuffix
+	for _, path := range []string{stale, mine} {
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store.removeStalePartials("test/flint-GGUF", file)
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("a partial download from another revision was kept")
+	}
+	if _, err := os.Stat(mine); err != nil {
+		t.Fatal("an unrelated .part file was removed")
 	}
 }

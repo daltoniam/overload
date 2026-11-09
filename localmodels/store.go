@@ -159,8 +159,12 @@ func (store Store) removeStalePartials(repository string, file File) {
 	}
 	prefix := filepath.Base(destination) + "."
 	for _, entry := range entries {
-		path := filepath.Join(filepath.Dir(destination), entry.Name())
-		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), partialSuffix) && path != keep {
+		name := entry.Name()
+		path := filepath.Join(filepath.Dir(destination), name)
+		if !entry.Type().IsRegular() || path == keep || len(name) != len(prefix)+16+len(partialSuffix) || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, partialSuffix) {
+			continue
+		}
+		if _, err := hex.DecodeString(name[len(prefix) : len(prefix)+16]); err == nil {
 			_ = os.Remove(path)
 		}
 	}

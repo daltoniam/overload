@@ -51,7 +51,9 @@ var (
 	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$`)
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	revisionPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
-	quantPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_]{0,31}$`)
+	// quantPattern accepts llama.cpp quantization names: Q4_K_M, IQ3_XXS,
+	// TQ1_0, BF16, F16, F32, MXFP4.
+	quantPattern = regexp.MustCompile(`^(?i)(I?Q[0-9]|TQ[0-9]|BF16|F16|F32|MXFP4)[A-Za-z0-9_]{0,27}$`)
 )
 
 // ValidRepository reports whether repository is a Hugging Face owner/name.
