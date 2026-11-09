@@ -217,14 +217,34 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	if !plan.enqueue {
-		degraded, _ := result.Metrics["degraded"].(bool)
-		state, description := finalStatus(overload.ReviewComment, len(result.Findings), degraded)
+		gate := overload.GateOutcome(gateInput(spec.Workflow, result))
+		description := gate.Description
 		if plan.postStatus != "" {
 			description += " (not posted: posting is off)"
 		}
-		reportStatus(ctx, w.Store, w.Status, runID, state, description)
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, description)
 	}
 	return nil
+}
+
+// gateInput reads a finished review's merge gate inputs from its pinned
+// workflow and result.
+func gateInput(workflow overload.ResolvedWorkflow, result overload.ReviewResult) overload.GateInput {
+	degraded, _ := result.Metrics["degraded"].(bool)
+	var routing overload.Routing
+	switch value := result.Metrics["routing"].(type) {
+	case overload.Routing:
+		routing = value
+	default:
+		if data, err := json.Marshal(value); err == nil {
+			_ = json.Unmarshal(data, &routing)
+		}
+	}
+	severities := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		severities = append(severities, finding.Severity)
+	}
+	return overload.GateInput{Decision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths, Routing: routing, Degraded: degraded, Severities: severities}
 }
 
 type postingPlan struct {

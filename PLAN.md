@@ -1473,7 +1473,7 @@ plan and deploy/README.md.
    across replicas; and workload tokens can request reviews and call
    models but cannot yet trigger agents or workflows (16.7 names agents
    too).
-7. **The review bot as a merge gate** (16.4 item 7, 16.7): the commit
+7. **The review bot as a merge gate** (16.4 item 7, 16.7; done): the commit
    status never passes a review that did not finish or skipped files;
    protected paths that always need a human; bot approval limited to named
    low-risk paths; a documented branch-protection recipe.

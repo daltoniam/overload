@@ -264,12 +264,11 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := 10
-	newRun := func(decision string, findings ...overload.Finding) int64 {
+	newGatedRun := func(snapshot, metrics string, findings ...overload.Finding) int64 {
 		t.Helper()
 		pr++
-		snapshot := fmt.Sprintf(`{"review_decision":%q}`, decision)
 		var runID int64
-		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, post_status, installation_id, config_snapshot) VALUES ($1, $2, $3, $4, 'webhook', 'completed', false, 'queued', $5, $6) RETURNING id`, repoID, pr, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID, snapshot).Scan(&runID); err != nil {
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, post_status, installation_id, config_snapshot, metrics) VALUES ($1, $2, $3, $4, 'webhook', 'completed', false, 'queued', $5, $6, $7) RETURNING id`, repoID, pr, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID, snapshot, metrics).Scan(&runID); err != nil {
 			t.Fatal(err)
 		}
 		tx, err := store.Pool.Begin(ctx)
@@ -283,6 +282,10 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			t.Fatal(err)
 		}
 		return runID
+	}
+	newRun := func(decision string, findings ...overload.Finding) int64 {
+		t.Helper()
+		return newGatedRun(fmt.Sprintf(`{"review_decision":%q}`, decision), `{}`, findings...)
 	}
 	finding := func(severity string) overload.Finding {
 		return overload.Finding{Path: "a.go", Line: 3, Side: "RIGHT", Severity: severity, Category: "bug", Title: severity + " bug", Body: "b", Confidence: 0.9, Evidence: "x()"}
@@ -333,6 +336,34 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			}
 			if len(poster.dismissed)+len(tt.wantDismissed) > 0 && fmt.Sprint(poster.dismissed) != fmt.Sprint(tt.wantDismissed) {
 				t.Fatalf("dismissed %v, want %v", poster.dismissed, tt.wantDismissed)
+			}
+		})
+	}
+
+	gated := []struct {
+		name, snapshot, metrics string
+		wantEvent, wantState    string
+		wantSummary             string
+	}{
+		{"files not reviewed fail the check", `{"review_decision":"approve"}`, `{"degraded":true,"routing":{"too_large":["big.go"],"agents":[{"agent":"main","files":["a.go"]}],"degraded":["1 files were too large to review: big.go"]}}`, overload.ReviewComment, "failure", "Not reviewed"},
+		{"a failed agent fails the check", `{"review_decision":"request_changes"}`, `{"degraded":true,"routing":{"agents":[{"agent":"main","files":["a.go","b.go"],"failed":"timeout","unreviewed":["b.go"]}],"degraded":["main agent failed"]}}`, overload.ReviewComment, "failure", "`b.go`"},
+		{"human review paths block approval", `{"review_decision":"approve","human_review_paths":["auth/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["auth/login.go"]}]}}`, overload.ReviewComment, "success", "human review paths"},
+		{"approve paths limit approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["docs/a.md","main.go"]}]}}`, overload.ReviewComment, "success", ""},
+		{"approve paths allow approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"skipped":["go.sum"],"agents":[{"agent":"main","files":["docs/a.md"]}]}}`, overload.ReviewApprove, "success", ""},
+	}
+	for _, tt := range gated {
+		t.Run(tt.name, func(t *testing.T) {
+			poster := &fakePoster{}
+			before := len(statuses.states)
+			work(poster, newGatedRun(tt.snapshot, tt.metrics, finding("low")))
+			if len(statuses.states) != before+1 || statuses.states[before] != tt.wantState {
+				t.Fatalf("commit statuses %v, want %q", statuses.states[before:], tt.wantState)
+			}
+			if len(poster.events) != 1 || poster.events[0] != tt.wantEvent {
+				t.Fatalf("events %v, want %q", poster.events, tt.wantEvent)
+			}
+			if !strings.Contains(poster.summary, tt.wantSummary) {
+				t.Fatalf("summary %q does not mention %q", poster.summary, tt.wantSummary)
 			}
 		})
 	}

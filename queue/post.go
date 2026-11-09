@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/github"
@@ -38,19 +39,20 @@ type PostWorker struct {
 
 func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostReviewArgs]) error {
 	runID := job.Args.RunID
-	if !PostingEnabled() {
-		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
-			return err
-		}
-		reportStatus(ctx, w.Store, w.Status, runID, statusSuccess, "Reviewed; not posted because posting is off")
-		return nil
-	}
 	target, err := w.Store.LoadPostTarget(ctx, runID)
 	if errors.Is(err, postgres.ErrNothingToPost) {
 		return nil
 	}
 	if err != nil {
 		return err
+	}
+	gate := overload.GateOutcome(target.GateInput())
+	if !PostingEnabled() {
+		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
+			return err
+		}
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description+" (not posted: posting is off)")
+		return nil
 	}
 	if target.RepositoryPaused {
 		return w.Store.SkipPost(ctx, runID, "repository_paused")
@@ -77,11 +79,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if existing > 0 {
 		return w.Store.FinishPost(ctx, target, "posted", existing)
 	}
-	severities := append([]string(nil), target.DuplicateSeverities...)
-	for _, finding := range target.Findings {
-		severities = append(severities, finding.Severity)
-	}
-	event := overload.ReviewEvent(target.ReviewDecision, target.BlockSeverity, target.Partial, severities)
+	event := gate.Event
 	decides := target.ReviewDecision == overload.ReviewDecisionRequestChanges || target.ReviewDecision == overload.ReviewDecisionApprove
 	var standing []int64
 	if decides {
@@ -96,11 +94,10 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		if err := w.Store.FinishPost(ctx, target, "nothing_new", 0); err != nil {
 			return err
 		}
-		state, description := finalStatus(event, len(severities), target.Partial)
-		reportStatus(ctx, w.Store, w.Status, runID, state, description)
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 		return nil
 	}
-	summary := reviewSummary(event, target, len(severities)-len(target.Findings)) + "\n\n" + marker
+	summary := reviewSummary(event, target, len(target.DuplicateSeverities)) + gateNotes(gate) + "\n\n" + marker
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, event, summary, target.Findings)
 	if errors.Is(err, github.ErrReviewRejected) {
 		if err := w.Store.RejectPost(ctx, runID, err.Error()); err != nil {
@@ -118,9 +115,38 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
 		return err
 	}
-	state, description := finalStatus(event, len(severities), target.Partial)
-	reportStatus(ctx, w.Store, w.Status, runID, state, description)
+	reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 	return nil
+}
+
+// gateNotes tells reviewers which files the review did not cover and which
+// sensitive files still need a person.
+func gateNotes(gate overload.Gate) string {
+	var notes strings.Builder
+	if len(gate.Unreviewed) > 0 {
+		fmt.Fprintf(&notes, "\n\nNot reviewed, so the overload check fails until a person reviews them: %s.", codeList(gate.Unreviewed))
+	}
+	if len(gate.HumanFiles) > 0 {
+		fmt.Fprintf(&notes, "\n\nThese files are on this workflow's human review paths, so overload does not approve this pull request: %s.", codeList(gate.HumanFiles))
+	}
+	return notes.String()
+}
+
+// codeList formats up to ten paths for a review body.
+func codeList(paths []string) string {
+	shown := paths
+	if len(shown) > 10 {
+		shown = shown[:10]
+	}
+	quoted := make([]string, len(shown))
+	for index, path := range shown {
+		quoted[index] = "`" + strings.ReplaceAll(path, "`", "'") + "`"
+	}
+	list := strings.Join(quoted, ", ")
+	if len(paths) > len(shown) {
+		list += fmt.Sprintf(" and %d more", len(paths)-len(shown))
+	}
+	return list
 }
 
 // dismiss withdraws overload's earlier requests for changes once a review

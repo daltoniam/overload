@@ -203,3 +203,11 @@ func TestWorkflowFormReviewDecision(t *testing.T) {
 		t.Fatalf("comment mode should store nothing: %+v %v", workflow, err)
 	}
 }
+
+func TestWorkflowFormGatePaths(t *testing.T) {
+	values := url.Values{"name": {"review"}, "kind": {"pr_review"}, "main_agent": {"lead"}, "review_decision": {"approve"}, "block_severity": {"high"}, "human_review_paths": {"auth/\r\n\r\n.github/**"}, "approve_paths": {"docs/**\r\n"}}
+	workflow, err := workflowFromForm(values)
+	if err != nil || strings.Join(workflow.HumanReviewPaths, ",") != "auth/**,.github/**" || strings.Join(workflow.ApprovePaths, ",") != "docs/**" || workflow.Validate() != nil {
+		t.Fatalf("workflow %+v err %v", workflow, err)
+	}
+}

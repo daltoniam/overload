@@ -62,6 +62,8 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.MaxFindings = number(values.Get("max_findings"), "the finding limit must be a number")
 		workflow.MaxFileChars = number(values.Get("max_file_chars"), "the largest file size must be a number")
 		workflow.ReviewDecision = values.Get("review_decision")
+		workflow.HumanReviewPaths = strings.Split(values.Get("human_review_paths"), "\n")
+		workflow.ApprovePaths = strings.Split(values.Get("approve_paths"), "\n")
 		if workflow.ReviewDecision != "" && workflow.ReviewDecision != overload.ReviewDecisionComment {
 			workflow.BlockSeverity = values.Get("block_severity")
 		}

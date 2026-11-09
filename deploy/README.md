@@ -525,6 +525,43 @@ the pull request is not posted again, even if its line moved. Model text is
 stripped of links, images, HTML and @mentions before it is stored, because
 the model reads untrusted pull request content.
 
+### The review as a merge gate
+
+Overload sets an `overload` commit status on every reviewed head (with the
+GitHub App's "Commit statuses: write" permission), and with a review
+decision of request changes or approve it posts `REQUEST_CHANGES` or
+`APPROVE` reviews. The status is built to be a required check:
+
+- It fails when the review requested changes, and when any changed file was
+  not reviewed: too large for the model's context, or assigned to an agent
+  that failed. A review that never finishes leaves the status pending or
+  sets an error; nothing that did not finish passes. Files on the
+  workflow's skip paths are excluded on purpose.
+- It is computed the same way when posting is off, so it can gate merges
+  before comments are turned on.
+- **Human review paths** (workflow setting `human_review_paths`, globs such
+  as `auth/**`, `**/migrations/**`, `.github/**`): a pull request touching
+  them is never approved by overload, and the review lists them.
+- **Approve only these paths** (`approve_paths`): with approval on,
+  overload approves only when every changed file (skip paths aside) matches
+  these low-risk globs, such as `docs/**`; other pull requests get
+  comments.
+- Pull request text stays untrusted: models only produce findings, and the
+  decision comes from finding severities and the rules above.
+
+Recipe for a protected branch (Settings, Branches or Rules):
+
+1. Require status checks to pass, select `overload`, and require branches to
+   be up to date, so the check is for the head being merged.
+2. Require a pull request review, and add a `CODEOWNERS` file naming people
+   for the same sensitive paths as `human_review_paths`, with "Require
+   review from Code Owners" on. Overload never approves those pull
+   requests, so a person always has to.
+3. Decide whether overload's approval may count. Check in a test repository
+   whether your plan counts a GitHub App's approval toward the required
+   reviews; if it does and you want bot-only merges, limit them with
+   `approve_paths`, otherwise keep `review_decision` at request changes.
+
 ## Signing in
 
 A single-user install signs in with the generated Basic Auth login. Teams

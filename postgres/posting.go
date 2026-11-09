@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/daltoniam/overload"
 	"github.com/jackc/pgx/v5"
@@ -39,6 +41,20 @@ type PostTarget struct {
 	// Superseded is set when a newer commit of the pull request has its own
 	// review, so comments on this commit would be stale.
 	Superseded bool
+	// Routing is the review's routing, and HumanReviewPaths and
+	// ApprovePaths the pinned workflow's merge gate paths.
+	Routing          overload.Routing
+	HumanReviewPaths []string
+	ApprovePaths     []string
+}
+
+// GateInput returns what decides the target's merge gate.
+func (target PostTarget) GateInput() overload.GateInput {
+	severities := append([]string(nil), target.DuplicateSeverities...)
+	for _, finding := range target.Findings {
+		severities = append(severities, finding.Severity)
+	}
+	return overload.GateInput{Decision: target.ReviewDecision, BlockSeverity: target.BlockSeverity, HumanReviewPaths: target.HumanReviewPaths, ApprovePaths: target.ApprovePaths, Routing: target.Routing, Degraded: target.Partial, Severities: severities}
 }
 
 var ErrNothingToPost = errors.New("run is not awaiting posting")
@@ -48,7 +64,8 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')), COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', '') FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.ReviewDecision, &target.BlockSeverity)
+	var routing, human, approve []byte
+	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')), COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', ''), COALESCE(r.metrics->'routing', 'null'), COALESCE(r.config_snapshot->'human_review_paths', 'null'), COALESCE(r.config_snapshot->'approve_paths', 'null') FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.ReviewDecision, &target.BlockSeverity, &routing, &human, &approve)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}
@@ -57,6 +74,14 @@ func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, er
 	}
 	if installation != nil {
 		target.InstallationID = *installation
+	}
+	for _, field := range []struct {
+		data   []byte
+		target any
+	}{{routing, &target.Routing}, {human, &target.HumanReviewPaths}, {approve, &target.ApprovePaths}} {
+		if err := json.Unmarshal(field.data, field.target); err != nil {
+			return target, fmt.Errorf("read run %d: %w", runID, err)
+		}
 	}
 	rows, err := s.Pool.Query(ctx, `SELECT f.id, f.path, f.line, f.side, f.severity, f.category, f.title, f.body, f.confidence, f.evidence,
 EXISTS (SELECT 1 FROM findings p JOIN runs pr ON pr.id = p.run_id WHERE p.status = 'posted' AND p.fingerprint = f.fingerprint AND pr.repository_id = r.repository_id AND pr.pr_number = r.pr_number)

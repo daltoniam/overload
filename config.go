@@ -114,6 +114,12 @@ type Workflow struct {
 	// comments, requests changes or approves; see ReviewEvent.
 	ReviewDecision string `json:"review_decision,omitempty"`
 	BlockSeverity  string `json:"block_severity,omitempty"`
+	// HumanReviewPaths are globs of sensitive files (auth, migrations, CI
+	// configuration) that always need a person: a review touching them
+	// never approves. ApprovePaths, when set, are the only files a review
+	// may approve on its own; see GateOutcome.
+	HumanReviewPaths []string `json:"human_review_paths,omitempty"`
+	ApprovePaths     []string `json:"approve_paths,omitempty"`
 	// MaxFileChars caps the characters of diff and file content sent in one
 	// file review; larger diffs are skipped as too large. 0 picks a default
 	// for the workflow's models (see FileCharBudget).
@@ -146,6 +152,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
+		return err
+	}
+	if err := validateGatePaths(workflow.Kind, workflow.ReviewDecision, workflow.HumanReviewPaths, workflow.ApprovePaths); err != nil {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
@@ -214,6 +223,10 @@ type ResolvedWorkflow struct {
 	ReviewDecision string          `json:"review_decision,omitempty"`
 	BlockSeverity  string          `json:"block_severity,omitempty"`
 	MaxFileChars   int             `json:"max_file_chars,omitempty"`
+	// HumanReviewPaths and ApprovePaths are the workflow's merge gate
+	// paths; see GateOutcome.
+	HumanReviewPaths []string `json:"human_review_paths,omitempty"`
+	ApprovePaths     []string `json:"approve_paths,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -244,6 +257,9 @@ func (workflow ResolvedWorkflow) Verify() error {
 		return err
 	}
 	if err := validateReviewDecision(workflow.Kind, workflow.ReviewDecision, workflow.BlockSeverity); err != nil {
+		return err
+	}
+	if err := validateGatePaths(workflow.Kind, workflow.ReviewDecision, workflow.HumanReviewPaths, workflow.ApprovePaths); err != nil {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -175,6 +176,53 @@ type Routing struct {
 	Agents   []AgentFiles `json:"agents"`
 	Planner  string       `json:"planner,omitempty"`
 	Degraded []string     `json:"degraded,omitempty"`
+}
+
+// ChangedFiles lists every changed file the routing saw, reviewed or not.
+func (routing Routing) ChangedFiles() []string {
+	seen := map[string]bool{}
+	var files []string
+	add := func(paths []string) {
+		for _, path := range paths {
+			if !seen[path] {
+				seen[path] = true
+				files = append(files, path)
+			}
+		}
+	}
+	add(routing.Skipped)
+	add(routing.TooLarge)
+	for _, agent := range routing.Agents {
+		add(agent.Files)
+	}
+	slices.Sort(files)
+	return files
+}
+
+// UnreviewedFiles lists changed files that some review could not cover:
+// files too large to review, and files an agent was given but did not
+// review. Skipped files are left out on purpose.
+func (routing Routing) UnreviewedFiles() []string {
+	seen := map[string]bool{}
+	var files []string
+	for _, paths := range append([][]string{routing.TooLarge}, unreviewedByAgent(routing.Agents)...) {
+		for _, path := range paths {
+			if !seen[path] {
+				seen[path] = true
+				files = append(files, path)
+			}
+		}
+	}
+	slices.Sort(files)
+	return files
+}
+
+func unreviewedByAgent(agents []AgentFiles) [][]string {
+	lists := make([][]string, 0, len(agents))
+	for _, agent := range agents {
+		lists = append(lists, agent.Unreviewed)
+	}
+	return lists
 }
 
 // FileReviews is the number of (agent, file) reviews the routing needs.
@@ -538,6 +586,8 @@ func (workflow *Workflow) Normalize() {
 		workflow.MainReviews = ""
 	}
 	workflow.SkipPaths = normalizeGlobs(workflow.SkipPaths)
+	workflow.HumanReviewPaths = normalizeGlobs(workflow.HumanReviewPaths)
+	workflow.ApprovePaths = normalizeGlobs(workflow.ApprovePaths)
 	for name, scope := range workflow.Scopes {
 		if scope.Mode == ScopeGlobs {
 			scope.Mode = ""

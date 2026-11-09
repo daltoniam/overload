@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 )
@@ -18,11 +17,10 @@ type StatusSetter interface {
 	SetStatus(ctx context.Context, installationID int64, repository, sha, state, description, targetURL string) error
 }
 
-// Commit status states.
+// Commit status states set outside a review's merge gate (see
+// overload.GateOutcome).
 const (
 	statusPending = "pending"
-	statusSuccess = "success"
-	statusFailure = "failure"
 	statusError   = "error"
 )
 
@@ -41,6 +39,10 @@ func reportStatus(ctx context.Context, store *postgres.Store, setter StatusSette
 			return
 		}
 		setter = client
+	}
+	// GitHub refuses status descriptions over 140 characters.
+	if len([]rune(description)) > 140 {
+		description = string([]rune(description)[:139]) + "…"
 	}
 	err := setter.SetStatus(context.WithoutCancel(ctx), target.installation, target.repository, target.sha, state, description, runURL(runID))
 	switch {
@@ -77,23 +79,4 @@ func runURL(runID int64) string {
 		return ""
 	}
 	return fmt.Sprintf("%s/runs/%d", base, runID)
-}
-
-// finalStatus describes a posted review as a commit status: failure when
-// the review requested changes, success otherwise. A partial review (some
-// files could not be reviewed) says so.
-func finalStatus(event string, findings int, partial bool) (string, string) {
-	state, description := statusSuccess, fmt.Sprintf("%d issue(s) noted as comments", findings)
-	switch {
-	case event == overload.ReviewRequestChanges:
-		state, description = statusFailure, "Changes requested: blocking issues found"
-	case event == overload.ReviewApprove:
-		description = "Approved"
-	case findings == 0:
-		description = "No issues found"
-	}
-	if partial {
-		description = "Partial review, some files not reviewed. " + description
-	}
-	return state, description
 }
