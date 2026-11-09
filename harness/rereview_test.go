@@ -114,11 +114,14 @@ func TestPriorFindingsOnRevertedFilesAreResolved(t *testing.T) {
 	if fmt.Sprint(carried) != "[1 3]" || metrics["prior_file_unchanged"] != 1 {
 		t.Fatalf("carried = %v metrics = %+v", carried, metrics)
 	}
-	parsed, err := parseReviewDiff("diff --git a/gone.go b/gone.go\ndeleted file mode 100644\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n" + utilPatch)
+	// A deletion and a pure rename (no commentable lines) count with
+	// both their paths.
+	parsed, err := parseReviewDiff("diff --git a/gone.go b/gone.go\ndeleted file mode 100644\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n" +
+		"diff --git a/old/name.go b/new/name.go\nsimilarity index 100%\nrename from old/name.go\nrename to new/name.go\n" + utilPatch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if touched := parsed.touched(); !touched["gone.go"] || !touched["svc/util.py"] || len(touched) != 2 {
+	if touched := parsed.touched(); !touched["gone.go"] || !touched["svc/util.py"] || !touched["old/name.go"] || !touched["new/name.go"] || len(touched) != 4 {
 		t.Fatalf("touched = %v", touched)
 	}
 }

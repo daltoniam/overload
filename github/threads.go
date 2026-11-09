@@ -24,6 +24,17 @@ const (
 	maxThreadPages  = 30
 )
 
+// ownAuthor reports whether a GraphQL comment author is overload. GraphQL
+// reports an App's bot without the [bot] suffix, so the bare name counts
+// only for a Bot author: a person may own the same name.
+func ownAuthor(author, typeName, login string) bool {
+	if strings.EqualFold(author, login) {
+		return true
+	}
+	bare, isApp := strings.CutSuffix(login, "[bot]")
+	return isApp && typeName == "Bot" && strings.EqualFold(author, bare)
+}
+
 func commentTitle(title string) string {
 	return "**" + title + "**"
 }
@@ -117,7 +128,7 @@ const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved comments(first: 1) { nodes { databaseId path originalLine body author { login } } } }
+        nodes { id isResolved comments(first: 1) { nodes { databaseId path originalLine body author { login __typename } } } }
       }
     }
   }
@@ -218,7 +229,8 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 									OriginalLine int    `json:"originalLine"`
 									Body         string `json:"body"`
 									Author       struct {
-										Login string `json:"login"`
+										Login    string `json:"login"`
+										TypeName string `json:"__typename"`
 									} `json:"author"`
 								} `json:"nodes"`
 							} `json:"comments"`
@@ -236,8 +248,7 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 				continue
 			}
 			first := thread.Comments.Nodes[0]
-			// GraphQL reports the App's bot without the [bot] suffix.
-			if !strings.EqualFold(first.Author.Login, strings.TrimSuffix(login, "[bot]")) && !strings.EqualFold(first.Author.Login, login) {
+			if !ownAuthor(first.Author.Login, first.Author.TypeName, login) {
 				continue
 			}
 			// Resolved threads are kept: they count when deciding whether

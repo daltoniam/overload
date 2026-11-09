@@ -211,3 +211,22 @@ func TestLegacyMatchCountsResolvedThreads(t *testing.T) {
 		t.Fatalf("resolved %d threads (%d mutations): %v", count, mutations, err)
 	}
 }
+
+func TestOwnAuthorNeedsTheBotForTheBareName(t *testing.T) {
+	for _, test := range []struct {
+		author, typeName, login string
+		want                    bool
+	}{
+		{"overload", "Bot", "overload[bot]", true},
+		{"overload[bot]", "Bot", "overload[bot]", true},
+		{"overload", "User", "overload[bot]", false},
+		{"overload", "", "overload[bot]", false},
+		{"dev", "User", "dev", true},
+		{"Dev", "User", "dev", true},
+		{"mallory", "User", "overload[bot]", false},
+	} {
+		if got := ownAuthor(test.author, test.typeName, test.login); got != test.want {
+			t.Errorf("ownAuthor(%q, %q, %q) = %v", test.author, test.typeName, test.login, got)
+		}
+	}
+}
