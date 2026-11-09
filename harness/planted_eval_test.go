@@ -2,7 +2,6 @@ package harness
 
 import (
 	"context"
-	_ "embed"
 	"fmt"
 	"os"
 	"strconv"
@@ -12,10 +11,10 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/eval"
 )
 
-//go:embed testdata/planted/invoice.go.txt
-var plantedInvoice string
+var plantedInvoice = eval.PlantedInvoice
 
 type plantedBug struct {
 	name  string
@@ -121,8 +120,7 @@ func evalHeaders() map[string]string {
 	return nil
 }
 
-//go:embed testdata/planted/textutil.go.txt
-var plantedTextutil string
+var plantedTextutil = eval.PlantedTextutil
 
 func newFileDiff(path, content string) string {
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")

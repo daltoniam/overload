@@ -86,6 +86,8 @@ func run(args []string) error {
 		return manageUsers(args[1:])
 	case "keys":
 		return manageKeys(args[1:])
+	case "bakeoff":
+		return manageBakeoff(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
@@ -155,6 +157,11 @@ func serve() error {
 	client, err := queue.NewClient(store, 2, int((260*time.Minute)/time.Second), runner, models)
 	if err != nil {
 		return err
+	}
+	if interrupted, err := store.FailInterruptedBakeoffs(ctx); err != nil {
+		return fmt.Errorf("recover interrupted bake-offs: %w", err)
+	} else if interrupted > 0 {
+		slog.Info("bake-offs interrupted by a restart", "bakeoffs", interrupted)
 	}
 	if recovered, err := store.RecoverInterruptedRuns(ctx, client); err != nil {
 		return fmt.Errorf("recover interrupted runs: %w", err)
@@ -246,6 +253,12 @@ func (store serverStore) QueueReviewByName(ctx context.Context, repository strin
 		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
 	}
 	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again, true)
+}
+
+// QueueBakeoff pins models and suites and queues a bake-off on this
+// server's job queue.
+func (store serverStore) QueueBakeoff(ctx context.Context, models, suites []string, runs int) (int64, error) {
+	return store.CreateBakeoff(ctx, store.jobs, models, suites, runs)
 }
 
 // RunScheduleNow queues a schedule's workflow on this server's job queue.

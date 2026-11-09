@@ -1487,7 +1487,7 @@ plan and deploy/README.md.
    again, so a no-op commit can re-roll the model; keeping them until the
    lines they point to change or a person dismisses them needs per-finding
    resolution state, line tracking across commits and a dismiss action.
-8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
+8. **Model bake-offs** (16.4 item 3; done): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.
 9. **Local multi-agent review** (16.10): risk tier and specialist selection

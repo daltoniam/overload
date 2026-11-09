@@ -303,7 +303,7 @@ $10M in annual revenue.
 
 ### Measurements
 
-A 92-line Go file with five planted bugs (`harness/testdata/planted`), run
+A 92-line Go file with five planted bugs (`eval/fixtures`), run
 through the normal review path on an M1 Max with 64 GB. Rerun with
 `OVERLOAD_PLANTED_EVAL=1 go test -run TestPlantedBugEval -v ./harness/` and
 the `OVERLOAD_EVAL_*` variables described in the test.
@@ -472,6 +472,37 @@ APIs, where eight at once cut a 21-file review from 138 s to 24 s.
 Local connections have no response-header timeout, because a non-streaming
 reply sends nothing until all thinking is done; the review timeout (260
 minutes by default) still bounds every call.
+
+### Bake-offs
+
+A bake-off runs the same reviews through several saved models and compares
+what each found, where it pointed, how long it took and how many tokens it
+used, so a team can choose models on evidence from its own code. Start one
+under Bake-offs, or:
+
+```sh
+overload bakeoff run --models flint,opus --suites planted --runs 3
+overload bakeoff show 4
+```
+
+- The built-in `planted` suite is the planted-bug file the measurements
+  above use (five bugs) and a file with a misleading name that hides a SQL
+  injection.
+- Build cases from your own history: pick commits that fixed a real bug.
+  `overload bakeoff case --repo . --commit <fix>` prints a case in which
+  the reviewer sees the change that undoes the fix (the buggy code as new
+  lines) and is expected to point at the lines the fix changed. Save cases
+  as a suite with `overload bakeoff suite save NAME case1.json case2.json`.
+  Only modified files are included, at most 20 per commit.
+- A bug counts as found when a finding cites its file within two lines of
+  the expected range and, for planted bugs, uses the expected words.
+  **Misplaced** counts bugs a model described in the right file but cited
+  on the wrong lines, which overload drops before posting (the problem
+  that sank Gemma 4 26B-A4B and Devstral above). **Other findings** may be
+  real bugs that were not planted.
+- Reviews run one at a time on the server, with the model policy checked
+  for each model; a model the policy refuses is recorded as failed rather
+  than called. A restart ends a running bake-off as failed.
 
 ## GitHub
 
