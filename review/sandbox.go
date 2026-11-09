@@ -63,7 +63,12 @@ func (runner SandboxRunner) grantModels(ttl time.Duration) (overload.ResolvedWor
 	return workflow, revokeAll, nil
 }
 
-const sandboxReviewCommand = "set -e; mkdir repo; tar -xzf head.tar.gz -C repo --strip-components=1 --no-same-owner --no-same-permissions; rm head.tar.gz; overload-agent review --spec spec.json --repo repo --out result.json --timeout %s"
+// The archive is extracted in its own command so its time is measured
+// apart from the review.
+const (
+	sandboxExtractCommand = "set -e; mkdir repo; tar -xzf head.tar.gz -C repo --strip-components=1 --no-same-owner --no-same-permissions; rm head.tar.gz"
+	sandboxReviewCommand  = "overload-agent review --spec spec.json --repo repo --out result.json --timeout %s"
+)
 
 func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber int) (overload.ReviewSpec, overload.ReviewResult, string, error) {
 	if runner.Source == nil || runner.Sandbox == nil {
@@ -74,6 +79,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 		return overload.ReviewSpec{}, overload.ReviewResult{}, "", err
 	}
 	defer revoke()
+	timer := newTransferTimer()
 	spec, archive, sha, err := fetchPR(ctx, runner.Source, workflow, repo, prNumber, runner.Rereview)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -81,6 +87,8 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if spec.Tier != nil && spec.Tier.Skip {
 		return spec, skippedReview(*spec.Tier), sha, nil
 	}
+	timer.lap("fetch_seconds")
+	timer.metrics["archive_bytes"] = int64(archive.Len())
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -90,6 +98,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("start sandbox: %w", err)
 	}
+	timer.lap("sandbox_start_seconds")
 	defer func() { _ = box.Close(context.WithoutCancel(ctx)) }()
 	if err := box.Upload(ctx, "spec.json", bytes.NewReader(specJSON)); err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("upload spec: %w", err)
@@ -97,6 +106,15 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 	if err := box.Upload(ctx, "head.tar.gz", archive); err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("upload archive: %w", err)
 	}
+	timer.lap("upload_seconds")
+	extract, err := box.Exec(ctx, sandboxExtractCommand)
+	if err != nil {
+		return spec, overload.ReviewResult{}, sha, fmt.Errorf("sandbox extract: %w", err)
+	}
+	if extract.ExitCode != 0 {
+		return spec, overload.ReviewResult{}, sha, fmt.Errorf("sandbox extract exited %d: %s", extract.ExitCode, overload.TruncateUTF8(extract.Stderr+extract.Stdout, 500))
+	}
+	timer.lap("extract_seconds")
 	timeout := maxAgentTimeout
 	if deadline, ok := ctx.Deadline(); ok {
 		timeout = min(timeout, time.Until(deadline)-30*time.Second)
@@ -105,6 +123,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 		return spec, overload.ReviewResult{}, sha, errors.New("not enough time left to run the review")
 	}
 	exec, err := box.Exec(ctx, fmt.Sprintf(sandboxReviewCommand, timeout.Round(time.Second)))
+	timer.lap("review_seconds")
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("sandbox exec: %w", err)
 	}
@@ -128,6 +147,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 		result.Metrics = map[string]any{}
 	}
 	result.Metrics["sandbox"] = box.Name()
+	result.Metrics["transfer"] = timer.metrics
 	return spec, result, sha, err
 }
 
@@ -141,4 +161,22 @@ func (buffer *limitedBuffer) Write(data []byte) (int, error) {
 		return 0, errors.New("sandbox result too large")
 	}
 	return buffer.Buffer.Write(data)
+}
+
+// transferTimer records how long each step of getting the repository to
+// the reviewer took, to judge whether large repositories need a faster
+// transfer.
+type transferTimer struct {
+	last    time.Time
+	metrics map[string]any
+}
+
+func newTransferTimer() *transferTimer {
+	return &transferTimer{last: time.Now(), metrics: map[string]any{}}
+}
+
+func (timer *transferTimer) lap(name string) {
+	now := time.Now()
+	timer.metrics[name] = now.Sub(timer.last).Round(time.Millisecond).Seconds()
+	timer.last = now
 }

@@ -128,3 +128,32 @@ func (s *Store) Spend(ctx context.Context, now time.Time) (SpendSummary, error) 
 	}
 	return summary, nil
 }
+
+// TransferStep is how long one step of getting the repository to the
+// reviewer took across runs, in seconds.
+type TransferStep struct {
+	Step string  `json:"step"`
+	Runs int     `json:"runs"`
+	P50  float64 `json:"p50"`
+	P90  float64 `json:"p90"`
+	Max  float64 `json:"max"`
+}
+
+// transferSteps are the timings reviews record under metrics.transfer.
+var transferSteps = []string{"fetch_seconds", "sandbox_start_seconds", "upload_seconds", "extract_seconds", "review_seconds", "archive_bytes"}
+
+// TransferTimes summarizes repository transfer timings of runs in the
+// filter's window, to decide whether a large repository needs a faster
+// transfer.
+func (s *Store) TransferTimes(ctx context.Context, filter CostFilter) ([]TransferStep, error) {
+	var steps []TransferStep
+	for _, step := range transferSteps {
+		summary := TransferStep{Step: step}
+		err := s.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY value), 0), COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY value), 0), COALESCE(max(value), 0) FROM (SELECT (r.metrics->'transfer'->>$4)::float8 AS value FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.created_at >= $1 AND r.created_at < $2 AND ($3='' OR repo.full_name=$3) AND jsonb_typeof(r.metrics->'transfer'->$4) = 'number') timings`, filter.Since, filter.Until, filter.Repository, step).Scan(&summary.Runs, &summary.P50, &summary.P90, &summary.Max)
+		if err != nil {
+			return nil, err
+		}
+		steps = append(steps, summary)
+	}
+	return steps, nil
+}

@@ -99,6 +99,7 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if runner.Source == nil || runner.Reviewer == nil {
 		return overload.ReviewSpec{}, overload.ReviewResult{}, "", errors.New("PR source and reviewer required")
 	}
+	timer := newTransferTimer()
 	spec, archive, sha, err := fetchPR(ctx, runner.Source, runner.Workflow, repo, prNumber, runner.Rereview)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -106,6 +107,8 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if spec.Tier != nil && spec.Tier.Skip {
 		return spec, skippedReview(*spec.Tier), sha, nil
 	}
+	timer.lap("fetch_seconds")
+	timer.metrics["archive_bytes"] = int64(archive.Len())
 	workspace, err := os.MkdirTemp("", "overload-pr-")
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -114,13 +117,18 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if err := ExtractArchive(ctx, bytes.NewReader(archive.Bytes()), workspace); err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("extract head: %w", err)
 	}
+	timer.lap("extract_seconds")
 	root, err := os.OpenRoot(workspace)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}
 	defer func() { _ = root.Close() }()
 	result, err := runner.Reviewer.Review(ctx, spec, root.FS())
+	timer.lap("review_seconds")
 	result = recordTier(spec, result)
+	if result.Metrics != nil {
+		result.Metrics["transfer"] = timer.metrics
+	}
 	if err != nil {
 		return spec, result, sha, err
 	}

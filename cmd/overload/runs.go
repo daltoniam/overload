@@ -14,11 +14,12 @@ import (
 	"github.com/daltoniam/overload/postgres"
 )
 
-const runsUsage = "usage: overload runs cost [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--repo owner/name] [--json]"
+const runsUsage = "usage: overload runs cost|transfer [--since YYYY-MM-DD] [--until YYYY-MM-DD] [--repo owner/name] [--json]"
 
-// manageRuns reports on runs.
+// manageRuns reports on runs: what they cost, or how long getting the
+// repository to the reviewer took.
 func manageRuns(args []string) error {
-	if len(args) == 0 || args[0] != "cost" {
+	if len(args) == 0 || (args[0] != "cost" && args[0] != "transfer") {
 		return errors.New(runsUsage)
 	}
 	filter, asJSON, err := parseCostFlags(args[1:], time.Now())
@@ -35,11 +36,30 @@ func manageRuns(args []string) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
+	if args[0] == "transfer" {
+		steps, err := store.TransferTimes(ctx, filter)
+		if err != nil {
+			return err
+		}
+		return writeTransfer(os.Stdout, steps, asJSON)
+	}
 	report, err := store.RunCosts(ctx, filter)
 	if err != nil {
 		return err
 	}
 	return writeCostReport(os.Stdout, report, asJSON)
+}
+
+func writeTransfer(out io.Writer, steps []postgres.TransferStep, asJSON bool) error {
+	if asJSON {
+		return json.NewEncoder(out).Encode(steps)
+	}
+	for _, step := range steps {
+		if _, err := fmt.Fprintf(out, "%-22s runs %-5d p50 %-10.1f p90 %-10.1f max %.1f\n", step.Step, step.Runs, step.P50, step.P90, step.Max); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseCostFlags reads the report window. --since defaults to the start of

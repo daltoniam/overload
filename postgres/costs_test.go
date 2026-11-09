@@ -113,3 +113,34 @@ func TestModelPricesArePinned(t *testing.T) {
 		t.Fatalf("unpriced model still priced: %+v %v", again.Agents[0].Model.Pricing, err)
 	}
 }
+
+func TestTransferTimes(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := fmt.Sprintf("test-transfer-%d/api", time.Now().UnixNano())
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	for _, upload := range []float64{2, 4, 40} {
+		if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, metrics) VALUES ($1, 1, '', '', 'webhook', 'completed', $2)`, repoID, fmt.Sprintf(`{"transfer":{"upload_seconds":%v,"archive_bytes":346000000}}`, upload)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	steps, err := store.TransferTimes(ctx, CostFilter{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour), Repository: repo})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, step := range steps {
+		if step.Step == "upload_seconds" && (step.Runs != 3 || step.P50 != 4 || step.Max != 40) {
+			t.Fatalf("upload = %+v", step)
+		}
+		if step.Step == "extract_seconds" && step.Runs != 0 {
+			t.Fatalf("extract = %+v", step)
+		}
+	}
+}

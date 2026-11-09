@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -26,6 +27,8 @@ type ReviewWorker struct {
 	Models  reviewpkg.ModelGrants
 	// Status sets commit statuses; nil uses the GitHub App.
 	Status StatusSetter
+	// Archives caches head archives on disk; nil downloads every time.
+	Archives *reviewpkg.ArchiveCache
 }
 
 func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewArgs]) error {
@@ -84,6 +87,9 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		source = client
 	}
 	again := w.rereviewBase(ctx, run, resolved, source, repoName)
+	if w.Archives != nil {
+		source = reviewpkg.CachedSource{PullRequestSource: source, Cache: w.Archives}
+	}
 	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved, Rereview: again}
 	if w.Sandbox != nil {
 		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models, Rereview: again}
@@ -288,7 +294,7 @@ func planPosting(dryRun, enabled bool) postingPlan {
 
 func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner, models reviewpkg.ModelGrants) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models})
+	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models, Archives: archiveCacheFromEnvironment()})
 	river.AddWorker(workers, &ScheduleWorker{Store: store})
 	river.AddWorker(workers, &PostWorker{Store: store})
 	river.AddWorker(workers, &SkipStatusWorker{Store: store})
@@ -316,4 +322,19 @@ func resolvedPrior(spec overload.ReviewSpec, result overload.ReviewResult) []int
 		}
 	}
 	return ids
+}
+
+// archiveCacheFromEnvironment caches head archives in
+// OVERLOAD_ARCHIVE_CACHE_DIR, up to OVERLOAD_ARCHIVE_CACHE_MB megabytes
+// (default 2048), when the directory is set.
+func archiveCacheFromEnvironment() *reviewpkg.ArchiveCache {
+	dir := os.Getenv("OVERLOAD_ARCHIVE_CACHE_DIR")
+	if dir == "" {
+		return nil
+	}
+	megabytes := int64(2048)
+	if value, err := strconv.ParseInt(os.Getenv("OVERLOAD_ARCHIVE_CACHE_MB"), 10, 64); err == nil && value > 0 {
+		megabytes = value
+	}
+	return &reviewpkg.ArchiveCache{Dir: dir, MaxBytes: megabytes << 20}
 }
