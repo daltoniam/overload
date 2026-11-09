@@ -201,7 +201,7 @@ func (command modelsCommand) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		removed, err := store.Remove(flags.positional[0], *quant)
+		removed, err := store.Remove(ctx, flags.positional[0], *quant)
 		if err != nil {
 			return err
 		}
@@ -216,7 +216,7 @@ func (command modelsCommand) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		freed, err := store.Clean()
+		freed, err := store.Clean(ctx)
 		if err != nil {
 			return err
 		}

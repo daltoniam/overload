@@ -629,13 +629,13 @@ func (store Store) Find(id, quant string) (Installed, error) {
 // Remove deletes an installed quantization's files, keeping any another
 // installed entry still uses or a model service still loads. A model that
 // is being served cannot be removed.
-func (store Store) Remove(id, quant string) (Installed, error) {
+func (store Store) Remove(ctx context.Context, id, quant string) (Installed, error) {
 	unlock, err := store.lock(".lock")
 	if err != nil {
 		return Installed{}, err
 	}
 	defer unlock()
-	unlockServices, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
+	unlockServices, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -682,13 +682,13 @@ func (store Store) removeEmptyParents(dir string) {
 // Clean removes partial downloads, and weights a newer download replaced
 // once no model service loads them, and returns the bytes freed. Other
 // files in the directory are left alone.
-func (store Store) Clean() (int64, error) {
+func (store Store) Clean(ctx context.Context) (int64, error) {
 	unlock, err := store.lock(".lock")
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
-	unlockServices, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
+	unlockServices, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return 0, err
 	}

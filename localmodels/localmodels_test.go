@@ -218,10 +218,10 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store.Dir, "stale.gguf.0123456789abcdef.part"), []byte("12345"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if freed, err := store.Clean(); err != nil || freed < 5 {
+	if freed, err := store.Clean(context.Background()); err != nil || freed < 5 {
 		t.Fatalf("clean = %d, %v", freed, err)
 	}
-	if _, err := store.Remove("recursive-flint", ""); err != nil {
+	if _, err := store.Remove(context.Background(), "recursive-flint", ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(store.Dir, "test")); !os.IsNotExist(err) {
@@ -278,7 +278,7 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if _, err := os.Stat(oldPath); err != nil {
 		t.Fatal("a served model's files were deleted")
 	}
-	if _, err := store.Clean(); err != nil {
+	if _, err := store.Clean(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(oldPath); err != nil {
@@ -294,7 +294,7 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if err := os.WriteFile(unrelated, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if freed, err := store.Clean(); err != nil || freed != 3 {
+	if freed, err := store.Clean(context.Background()); err != nil || freed != 3 {
 		t.Fatalf("clean of retired weights = %d, %v", freed, err)
 	}
 	if _, err := os.Stat(unrelated); err != nil {
@@ -304,7 +304,7 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if err := os.WriteFile(foreign, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Clean(); err != nil {
+	if _, err := store.Clean(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(foreign); err != nil {
@@ -347,7 +347,7 @@ func TestCleanKeepsRetiredFilesThatAreInstalledAgain(t *testing.T) {
 	if err := store.writeRetired([]string{path}); err != nil {
 		t.Fatal(err)
 	}
-	if freed, err := store.Clean(); err != nil || freed != 0 {
+	if freed, err := store.Clean(context.Background()); err != nil || freed != 0 {
 		t.Fatalf("clean = %d, %v", freed, err)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -704,7 +704,7 @@ func TestServices(t *testing.T) {
 	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: "dev.overload.model.missing"}, Service{ID: "missing", Port: 8095}); err == nil || !strings.Contains(err.Error(), "not downloaded") {
 		t.Fatalf("served a model that is not downloaded: %v", err)
 	}
-	if _, err := store.Remove(model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
+	if _, err := store.Remove(context.Background(), model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
 		t.Fatalf("removed a served model: %v", err)
 	}
 	manager.writeErr = errors.New("disk full")
@@ -744,13 +744,13 @@ func TestRemoveKeepsSharedFiles(t *testing.T) {
 	if err := store.writeManifest([]Installed{{ID: "a", Quant: "Q8_0", Repository: "test/shared", Revision: testRevision, Files: files}, {ID: "b", Quant: "Q8_0", Repository: "test/shared", Revision: testRevision, Files: files}}); err != nil {
 		t.Fatal(err)
 	}
-	if removed, err := store.Remove("a", ""); err != nil || removed.Freed != 0 {
+	if removed, err := store.Remove(context.Background(), "a", ""); err != nil || removed.Freed != 0 {
 		t.Fatalf("remove = %+v, %v", removed, err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("a file another entry uses was deleted")
 	}
-	if removed, err := store.Remove("b", ""); err != nil || removed.Freed != 1 {
+	if removed, err := store.Remove(context.Background(), "b", ""); err != nil || removed.Freed != 1 {
 		t.Fatalf("remove of the last user = %+v, %v", removed, err)
 	}
 }
