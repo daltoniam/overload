@@ -94,7 +94,9 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		if err != nil || id < 1 {
 			return usage
 		}
-		if err := store.RevokeAPIKey(ctx, id, 0, true); err != nil {
+		if err := store.RevokeAPIKey(ctx, id, 0, true); errors.Is(err, overload.ErrInvalidAPIKey) {
+			return fmt.Errorf("no active API key %d", id)
+		} else if err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(out, "Revoked key %d\n", id)

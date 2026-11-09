@@ -25,6 +25,9 @@ func (store *fakeKeys) ListAPIKeys(context.Context, int64, bool) ([]overload.API
 	return store.keys, nil
 }
 func (store *fakeKeys) RevokeAPIKey(_ context.Context, id, _ int64, _ bool) error {
+	if id < 1 || int(id) > len(store.keys) || store.keys[id-1].RevokedAt != nil {
+		return overload.ErrInvalidAPIKey
+	}
 	now := time.Now()
 	store.keys[id-1].RevokedAt = &now
 	return nil
@@ -45,6 +48,9 @@ func TestRunKeys(t *testing.T) {
 	}
 	if err := runKeys(ctx, store, []string{"revoke", "1"}, &out); err != nil {
 		t.Fatal(err)
+	}
+	if err := runKeys(ctx, store, []string{"revoke", "1"}, &out); err == nil || !strings.Contains(err.Error(), "no active API key 1") {
+		t.Fatalf("revoking a revoked key: %v", err)
 	}
 	store.keys = append(store.keys, overload.APIKey{ID: 2, Name: "old", Prefix: "ovl_old", Scopes: []string{overload.ScopeModels}, ExpiresAt: time.Now().Add(-time.Hour)})
 	out.Reset()

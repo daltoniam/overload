@@ -634,9 +634,9 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
   responses included: overload always asks OpenAI-compatible servers for
   stream usage and drops that chunk again for clients that did not ask for
   it). Anthropic's cached input (cache reads and writes) counts as input,
-  as OpenAI's cached prompt tokens already do. Requests refused before reaching a model (bad key, unknown model,
-  full queue) are not recorded. The Usage page shows the last 30 days per
-  person and model.
+  as OpenAI's cached prompt tokens already do. Requests refused before
+  reaching a model (bad key, unknown model, full queue) are not recorded.
+  The Usage page shows the last 30 days per person and model.
 - Callers' own credentials and `anthropic-beta` headers are never passed
   on, and redirects from the model server are not followed. When the model
   server refuses overload's credentials the gateway answers 502, so a bad
