@@ -3,6 +3,7 @@ package launchd
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Agent is a login service that launchd starts at login and restarts if it
@@ -115,7 +117,9 @@ func Remove(label string) error {
 // State describes a loaded agent ("running (pid 123)") or reports "not
 // loaded".
 func State(label string) string {
-	out, err := exec.Command("launchctl", "print", domain()+"/"+label).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "launchctl", "print", domain()+"/"+label).CombinedOutput()
 	if err != nil {
 		return "not loaded"
 	}

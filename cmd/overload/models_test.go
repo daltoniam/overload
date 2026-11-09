@@ -44,12 +44,16 @@ func TestModelsCommand(t *testing.T) {
 	sum := sha256.Sum256(weights)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/models/LiquidAI/LFM2.5-24B-A2B-GGUF/tree/main":
+		case "/api/models/LiquidAI/LFM2.5-24B-A2B-GGUF/revision/main":
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": strings.Repeat("a", 40)})
+		case "/api/models/LiquidAI/LFM2.5-24B-A2B-GGUF/tree/" + strings.Repeat("a", 40):
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"type": "file", "path": "LFM2.5-24B-A2B-Q8_0.gguf", "lfs": map[string]any{"oid": hex.EncodeToString(sum[:]), "size": len(weights)}}})
-		case "/LiquidAI/LFM2.5-24B-A2B-GGUF/resolve/main/LFM2.5-24B-A2B-Q8_0.gguf":
+		case "/LiquidAI/LFM2.5-24B-A2B-GGUF/resolve/" + strings.Repeat("a", 40) + "/LFM2.5-24B-A2B-Q8_0.gguf":
 			_, _ = w.Write(weights)
 		case "/health":
 			w.WriteHeader(http.StatusOK)
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"lfm2.5-24b-a2b"}]}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -64,6 +68,10 @@ func TestModelsCommand(t *testing.T) {
 	t.Setenv("OVERLOAD_MODELS_DIR", filepath.Join(dir, "models"))
 	t.Setenv("OVERLOAD_LLAMA_SERVER", llama)
 	t.Setenv("OVERLOAD_INSTALL_LABEL", "test.overload")
+	probe := localmodels.PortInUse
+	localmodels.PortInUse = func(int) bool { return false }
+	t.Cleanup(func() { localmodels.PortInUse = probe })
+	t.Setenv("OVERLOAD_CONFIG", filepath.Join(dir, "overload.env"))
 	var out bytes.Buffer
 	manager := &recordingManager{agents: map[string]launchd.Agent{}}
 	var saved overload.ReviewSettings
@@ -104,9 +112,9 @@ func TestModelsCommand(t *testing.T) {
 	if saved.Name != "lfm" || saved.BaseURL != "http://127.0.0.1:"+strconv.Itoa(port)+"/v1" || saved.Catalog != "lfm2.5-24b-a2b" || saved.Concurrency != 2 || saved.ReasoningParam != "none" || saved.Model != "lfm2.5-24b-a2b" {
 		t.Fatalf("saved connection = %+v", saved)
 	}
-	summary, err := localModelSummary(localmodels.NewStore(filepath.Join(dir, "models")), manager, "lfm2.5-24b-a2b")
-	if err != nil || len(summary.Quants) != 1 || summary.Endpoint == "" || summary.Service != "running" {
-		t.Fatalf("summary = %+v, %v", summary, err)
+	summary := localModelSummary(localmodels.NewStore(filepath.Join(dir, "models")), manager, "lfm2.5-24b-a2b")
+	if summary.Error != "" || len(summary.Quants) != 1 || summary.Endpoint == "" || summary.Service != "running" {
+		t.Fatalf("summary = %+v", summary)
 	}
 	if err := run("status"); err != nil || !strings.Contains(out.String(), "running") || !strings.Contains(out.String(), "ready") {
 		t.Fatalf("status: %v %s", err, out.String())
@@ -129,5 +137,14 @@ func TestModelsCommand(t *testing.T) {
 	}
 	if err := run("bogus"); err == nil {
 		t.Fatal("unknown subcommand accepted")
+	}
+	if err := run("pull", "claude-opus-5.5", "--quant", "Q8_0"); err == nil || !strings.Contains(err.Error(), "hosted") {
+		t.Fatalf("pulled a hosted model: %v", err)
+	}
+	if err := run("list", "--quant", "Q8_0"); err == nil {
+		t.Fatal("list accepted a flag it does not have")
+	}
+	if err := run("stop", "renamed-entry"); err == nil || strings.Contains(err.Error(), "catalog") {
+		t.Fatalf("stop of an ID the catalog no longer has: %v", err)
 	}
 }

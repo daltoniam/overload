@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,6 +83,11 @@ func (store Store) ServiceAgent(model catalog.Model, installed Installed, option
 	if len(installed.Files) == 0 {
 		return launchd.Agent{}, Service{}, errors.New("the installed model has no files")
 	}
+	for _, path := range []string{store.Dir, options.Binary, options.LogDir} {
+		if !filepath.IsAbs(path) {
+			return launchd.Agent{}, Service{}, fmt.Errorf("%q must be an absolute path: launchd does not start services in this directory", path)
+		}
+	}
 	name := model.ID
 	if model.Runtime.ServedName != "" {
 		name = model.Runtime.ServedName
@@ -88,9 +95,9 @@ func (store Store) ServiceAgent(model catalog.Model, installed Installed, option
 	service := Service{ID: model.ID, Quant: installed.Quant, Label: options.LabelPrefix + ".model." + model.ID, Port: options.Port, Parallel: options.Parallel, ModelName: name}
 	args := []string{options.Binary, "-m", store.Path(installed.Repository, installed.Files[0].Path), "--host", "127.0.0.1", "--port", strconv.Itoa(options.Port), "--alias", name}
 	args = append(args, scaleContext(model.Runtime.ServerArgs, options.Parallel)...)
-	if options.Parallel > 1 {
-		args = append(args, "-np", strconv.Itoa(options.Parallel))
-	}
+	// Always set the slot count: newer llama-server builds pick several
+	// slots on their own, which would divide the context.
+	args = append(args, "-np", strconv.Itoa(options.Parallel))
 	agent := launchd.Agent{Label: service.Label, Args: args, Dir: store.Dir, Log: filepath.Join(options.LogDir, "model-"+model.ID+".log")}
 	return agent, service, nil
 }
@@ -109,23 +116,48 @@ func scaleContext(args []string, parallel int) []string {
 	return out
 }
 
+// PortInUse reports whether something answers on a local port; a variable
+// so tests can replace it.
+var PortInUse = func(port int) bool {
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
 // Serve installs and starts the service, replacing an earlier one for the
-// same model, and records it.
+// same model, and records it. It refuses a port another service or
+// program uses, and removes the service again if it cannot start.
 func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Service) error {
+	unlock, err := store.lock(".services.lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	services, err := store.Services()
 	if err != nil {
 		return err
 	}
+	replacing := false
 	for _, existing := range services {
 		if existing.Port == service.Port && existing.ID != service.ID {
 			return fmt.Errorf("port %d is already used by the %s service", service.Port, existing.ID)
 		}
+		if existing.ID == service.ID && existing.Port == service.Port {
+			replacing = true
+		}
 	}
 	manager.Stop(agent.Label)
+	if !replacing && PortInUse(service.Port) {
+		return fmt.Errorf("port %d is already in use on this Mac; choose another with --port", service.Port)
+	}
 	if err := manager.Write(agent); err != nil {
 		return err
 	}
 	if err := manager.Start(agent.Label); err != nil {
+		_ = manager.Remove(agent.Label)
 		return err
 	}
 	services = slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
@@ -134,6 +166,11 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 
 // StopService removes the model's service.
 func (store Store) StopService(manager ServiceManager, id string) error {
+	unlock, err := store.lock(".services.lock")
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	services, err := store.Services()
 	if err != nil {
 		return err
@@ -205,11 +242,24 @@ func CheckHealth(ctx context.Context, client *http.Client, service Service) Heal
 	}
 }
 
-// WaitReady polls the service until it is ready or ctx ends.
-func WaitReady(ctx context.Context, client *http.Client, service Service, interval time.Duration) error {
+// ErrNotStarting means the model server never answered.
+var ErrNotStarting = errors.New("the model server is not starting")
+
+// WaitReady polls the service until it is ready or ctx ends. A server that
+// has not answered at all after unreachable is reported as not starting,
+// rather than waiting out ctx.
+func WaitReady(ctx context.Context, client *http.Client, service Service, interval, unreachable time.Duration) error {
+	started, answered := time.Now(), false
 	for {
-		if CheckHealth(ctx, client, service) == HealthReady {
+		switch CheckHealth(ctx, client, service) {
+		case HealthReady:
 			return nil
+		case HealthLoading:
+			answered = true
+		case HealthUnreachable:
+			if !answered && unreachable > 0 && time.Since(started) > unreachable {
+				return ErrNotStarting
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -217,4 +267,34 @@ func WaitReady(ctx context.Context, client *http.Client, service Service, interv
 		case <-time.After(interval):
 		}
 	}
+}
+
+// CheckModel confirms the server on the service's port is the one serving
+// this model, by its /v1/models list.
+func CheckModel(ctx context.Context, client *http.Client, service Service) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, service.BaseURL()+"/models", nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	var list struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&list); err != nil {
+		return fmt.Errorf("port %d does not answer like llama-server", service.Port)
+	}
+	for _, model := range list.Data {
+		if model.ID == service.ModelName {
+			return nil
+		}
+	}
+	return fmt.Errorf("port %d serves a different model; another server may be using it", service.Port)
 }

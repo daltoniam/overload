@@ -110,7 +110,7 @@ type fakeLocalStore struct {
 	local *pages.LocalModel
 }
 
-func (store *fakeLocalStore) LocalModel(string) (*pages.LocalModel, error) { return store.local, nil }
+func (store *fakeLocalStore) LocalModel(string) *pages.LocalModel { return store.local }
 
 func TestCatalogEntryShowsLocalModel(t *testing.T) {
 	t.Setenv("OVERLOAD_UI_INSECURE", "1")

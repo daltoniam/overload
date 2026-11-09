@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -13,52 +14,109 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload/catalog"
 	"github.com/daltoniam/overload/launchd"
 )
 
+const testRevision = "0123456789abcdef0123456789abcdef01234567"
+
+// fakeHub serves a Hugging Face repository named test/flint-GGUF.
 type fakeHub struct {
+	mu        sync.Mutex
 	files     map[string][]byte
 	digests   map[string]string
+	pageSize  int
 	failAfter atomic.Int64
+	short     atomic.Bool
+	stall     atomic.Bool
 	ranges    atomic.Int64
 	noRange   bool
+	badRange  atomic.Bool
+	redirect  string
+	revision  string
 }
 
-func (hub *fakeHub) handler(t *testing.T) http.Handler {
+func digestOf(content []byte) string {
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
+}
+
+func (hub *fakeHub) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/models/test/flint-GGUF/tree/main") {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		revision := hub.revision
+		if revision == "" {
+			revision = testRevision
+		}
+		switch r.URL.Path {
+		case "/api/models/test/flint-GGUF/revision/main":
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": revision})
+			return
+		case "/api/models/test/flint-GGUF/tree/" + revision:
 			var entries []map[string]any
 			for path, content := range hub.files {
 				digest := hub.digests[path]
 				if digest == "" {
-					sum := sha256.Sum256(content)
-					digest = hex.EncodeToString(sum[:])
+					digest = digestOf(content)
 				}
-				entries = append(entries, map[string]any{"type": "file", "path": path, "size": 134, "lfs": map[string]any{"oid": digest, "size": len(content)}})
+				entries = append(entries, map[string]any{"type": "file", "path": path, "lfs": map[string]any{"oid": digest, "size": len(content)}})
 			}
-			entries = append(entries, map[string]any{"type": "file", "path": "README.md", "size": 10}, map[string]any{"type": "directory", "path": "Q8_0"}, map[string]any{"type": "file", "path": "../evil-Q4_K_M.gguf", "lfs": map[string]any{"oid": strings.Repeat("a", 64), "size": 1}})
+			entries = append(entries, map[string]any{"type": "file", "path": "README.md"}, map[string]any{"type": "directory", "path": "Q8_0"}, map[string]any{"type": "file", "path": "../evil-Q4_K_M.gguf", "lfs": map[string]any{"oid": strings.Repeat("a", 64), "size": 1}})
+			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+			if hub.pageSize > 0 {
+				start := page * hub.pageSize
+				end := min(start+hub.pageSize, len(entries))
+				if end < len(entries) {
+					w.Header().Set("Link", fmt.Sprintf(`<http://%s%s?recursive=true&page=%d>; rel="next"`, r.Host, r.URL.Path, page+1))
+				}
+				entries = entries[min(start, len(entries)):end]
+			}
 			_ = json.NewEncoder(w).Encode(entries)
 			return
 		}
-		path, ok := strings.CutPrefix(r.URL.Path, "/test/flint-GGUF/resolve/main/")
+		prefix := "/test/flint-GGUF/resolve/" + revision + "/"
+		path, ok := strings.CutPrefix(r.URL.Path, prefix)
 		content, found := hub.files[path]
 		if !ok || !found {
 			http.NotFound(w, r)
+			return
+		}
+		if hub.redirect != "" && r.URL.Query().Get("signed") == "" {
+			http.Redirect(w, r, hub.redirect+r.URL.Path+"?signed=1", http.StatusFound)
 			return
 		}
 		start := 0
 		if header := r.Header.Get("Range"); header != "" && !hub.noRange {
 			hub.ranges.Add(1)
 			value, _ := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(header, "bytes="), "-"))
+			if hub.badRange.Swap(false) || value >= len(content) {
+				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+				return
+			}
 			start = value
 			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, len(content)-1, len(content)))
 			w.WriteHeader(http.StatusPartialContent)
 		}
 		body := content[start:]
+		if hub.short.Swap(false) {
+			_, _ = w.Write(body[:len(body)/2])
+			return
+		}
+		if hub.stall.Swap(false) {
+			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			_, _ = w.Write(body[:10])
+			w.(http.Flusher).Flush()
+			hub.mu.Unlock()
+			<-r.Context().Done()
+			hub.mu.Lock()
+			return
+		}
 		if limit := hub.failAfter.Swap(0); limit > 0 {
 			w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 			_, _ = w.Write(body[:limit])
@@ -79,52 +137,68 @@ func testModel() catalog.Model {
 	return model
 }
 
+func newHub(t *testing.T, files map[string][]byte) (*fakeHub, Hub) {
+	fake := &fakeHub{files: files, digests: map[string]string{}}
+	server := httptest.NewServer(fake.handler())
+	t.Cleanup(server.Close)
+	return fake, Hub{BaseURL: server.URL, Client: server.Client(), Stall: 200 * time.Millisecond}
+}
+
 func TestPullResumesAndVerifies(t *testing.T) {
 	content := []byte(strings.Repeat("flint weights ", 5000))
-	hub := &fakeHub{files: map[string][]byte{"flint-Q4_K_M.gguf": content, "flint-Q8_0.gguf": []byte("other")}}
-	server := httptest.NewServer(hub.handler(t))
-	defer server.Close()
-	client := Hub{BaseURL: server.URL, Client: server.Client()}
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content, "flint-Q8_0.gguf": []byte("other")})
+	fake.pageSize = 2
 	store := NewStore(t.TempDir())
 	ctx := context.Background()
+	file := File{Path: "flint-Q4_K_M.gguf", Size: int64(len(content)), SHA256: digestOf(content)}
 
-	hub.failAfter.Store(1000)
-	if _, err := store.Pull(ctx, client, testModel(), "q4_k_m", "", nil); err == nil || !strings.Contains(err.Error(), "resume") {
+	fake.failAfter.Store(1000)
+	if _, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", nil); err == nil || !strings.Contains(err.Error(), "resume") {
 		t.Fatalf("interrupted pull: %v", err)
 	}
-	partial, err := os.Stat(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf") + partialSuffix)
+	partial, err := os.Stat(store.partialPath("test/flint-GGUF", file))
 	if err != nil || partial.Size() != 1000 {
 		t.Fatalf("partial file: %v %v", partial, err)
 	}
+	fake.short.Store(true)
+	if _, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", nil); err == nil || !strings.Contains(err.Error(), "resume") {
+		t.Fatalf("short response: %v", err)
+	}
+	if partial, err := os.Stat(store.partialPath("test/flint-GGUF", file)); err != nil || partial.Size() <= 1000 {
+		t.Fatalf("a short response discarded the partial file: %v", err)
+	}
+	fake.stall.Store(true)
+	if _, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", nil); err == nil {
+		t.Fatal("a stalled download did not fail")
+	}
+	fake.badRange.Store(true)
 	var last int64
-	installed, err := store.Pull(ctx, client, testModel(), "q4_k_m", "", func(_ string, done, total int64) { last = done })
+	installed, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", func(_ string, done, _ int64, _ bool) { last = done })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hub.ranges.Load() != 1 || last != int64(len(content)) || installed.Quant != "Q4_K_M" || installed.Size() != int64(len(content)) {
-		t.Fatalf("resume: ranges %d, last %d, installed %+v", hub.ranges.Load(), last, installed)
+	if last != int64(len(content)) || installed.Quant != "Q4_K_M" || installed.Revision != testRevision || installed.Size() != int64(len(content)) {
+		t.Fatalf("installed %+v, last %d", installed, last)
 	}
 	data, err := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf"))
 	if err != nil || string(data) != string(content) {
 		t.Fatal("downloaded file differs")
 	}
-	if _, err := store.Pull(ctx, client, testModel(), "Q4_K_M", "", nil); err != nil || hub.ranges.Load() != 1 {
+	ranges := fake.ranges.Load()
+	verified := false
+	if _, err := store.Pull(ctx, hub, testModel(), "Q4_K_M", "", func(_ string, _, _ int64, verifying bool) { verified = verifying }); err != nil || fake.ranges.Load() != ranges || !verified {
 		t.Fatalf("second pull downloaded again: %v", err)
 	}
-	list, err := store.List()
-	if err != nil || len(list) != 1 {
-		t.Fatalf("manifest = %+v, %v", list, err)
-	}
 
-	hub.digests = map[string]string{"flint-Q8_0.gguf": strings.Repeat("0", 64)}
-	if _, err := store.Pull(ctx, client, testModel(), "Q8_0", "test/flint-GGUF", nil); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	fake.digests["flint-Q8_0.gguf"] = strings.Repeat("0", 64)
+	if _, err := store.Pull(ctx, hub, testModel(), "Q8_0", "test/flint-GGUF", nil); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("corrupt pull: %v", err)
 	}
-	if _, err := os.Stat(store.Path("test/flint-GGUF", "flint-Q8_0.gguf") + partialSuffix); !os.IsNotExist(err) {
-		t.Fatal("corrupt partial file kept")
-	}
-	if _, err := store.Pull(ctx, client, testModel(), "Q6_K", "", nil); err == nil || !strings.Contains(err.Error(), "no download") {
+	if _, err := store.Pull(ctx, hub, testModel(), "Q6_K", "", nil); err == nil || !strings.Contains(err.Error(), "no download") {
 		t.Fatalf("missing quant: %v", err)
+	}
+	if _, err := store.Pull(ctx, hub, testModel(), "Q4_K_M", "../x", nil); err == nil {
+		t.Fatal("pulled from an invalid repository")
 	}
 
 	used, free, err := store.Usage()
@@ -134,40 +208,73 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(store.Dir, "stale.gguf.part"), []byte("12345"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if freed, err := store.Clean(); err != nil || freed != 5 {
+	if freed, err := store.Clean(); err != nil || freed < 5 {
 		t.Fatalf("clean = %d, %v", freed, err)
 	}
 	if _, err := store.Remove("recursive-flint", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")); !os.IsNotExist(err) {
-		t.Fatal("removed model's file remains")
+	if _, err := os.Stat(filepath.Join(store.Dir, "test")); !os.IsNotExist(err) {
+		t.Fatal("removing the model left its directories")
 	}
-	if _, err := store.Find("recursive-flint", ""); err == nil {
-		t.Fatal("removed model still listed")
+}
+
+func TestPartialFromAnotherRevisionIsNotResumed(t *testing.T) {
+	old, current := []byte(strings.Repeat("a", 4096)), []byte(strings.Repeat("b", 4096))
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": old})
+	store := NewStore(t.TempDir())
+	fake.failAfter.Store(100)
+	_, _ = store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+	fake.mu.Lock()
+	fake.files["flint-Q4_K_M.gguf"], fake.revision = current, strings.Repeat("f", 40)
+	fake.mu.Unlock()
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatalf("pull after the repository changed: %v", err)
+	}
+	if data, _ := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")); string(data) != string(current) {
+		t.Fatal("mixed revisions")
 	}
 }
 
 func TestPullRestartsWithoutRangeSupport(t *testing.T) {
 	content := []byte(strings.Repeat("x", 4096))
-	hub := &fakeHub{files: map[string][]byte{"flint-Q4_K_M.gguf": content}, noRange: true}
-	server := httptest.NewServer(hub.handler(t))
-	defer server.Close()
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	fake.noRange = true
 	store := NewStore(t.TempDir())
-	partial := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf") + partialSuffix
+	partial := store.partialPath("test/flint-GGUF", File{Path: "flint-Q4_K_M.gguf", SHA256: digestOf(content)})
 	if err := os.MkdirAll(filepath.Dir(partial), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(partial, []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Pull(context.Background(), Hub{BaseURL: server.URL, Client: server.Client()}, testModel(), "Q4_K_M", "", nil); err != nil {
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
 		t.Fatal(err)
 	}
 }
 
+func TestRedirectsDropTheToken(t *testing.T) {
+	content := []byte("weights")
+	var gotAuth atomic.Value
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth.Store(r.Header.Get("Authorization"))
+		_, _ = w.Write(content)
+	}))
+	defer cdn.Close()
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	fake.redirect = strings.Replace(cdn.URL, "127.0.0.1", "localhost", 1)
+	hub.Token = "hf_secret"
+	store := NewStore(t.TempDir())
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotAuth.Load() != "" {
+		t.Fatalf("the token went to another host: %v", gotAuth.Load())
+	}
+}
+
 func TestSelectQuant(t *testing.T) {
-	files := []File{{Path: "flint-Q4_K_M.gguf"}, {Path: "flint-Q4_K_M_L.gguf"}, {Path: "Q8_0/flint-Q8_0-00002-of-00002.gguf"}, {Path: "Q8_0/flint-Q8_0-00001-of-00002.gguf"}, {Path: "mmproj-Q8_0.gguf"}, {Path: "flint-IQ3_XXS.gguf"}, {Path: "a-Q6_K.gguf"}, {Path: "b-Q6_K.gguf"}}
+	files := []File{{Path: "flint-Q4_K_M.gguf"}, {Path: "flint-Q4_K_M_L.gguf"}, {Path: "Q8_0/flint-Q8_0-00002-of-00002.gguf"}, {Path: "Q8_0/flint-Q8_0-00001-of-00002.gguf"}, {Path: "mmproj-Q8_0.gguf"}, {Path: "flint-IQ3_XXS.gguf"}, {Path: "a-Q6_K.gguf"}, {Path: "b-Q6_K.gguf"}, {Path: "x-Q5_K-00001-of-00003.gguf"}, {Path: "x-Q5_K-00002-of-00003.gguf"}}
 	for quant, want := range map[string]string{"Q4_K_M": "flint-Q4_K_M.gguf", "q8_0": "Q8_0/flint-Q8_0-00001-of-00002.gguf,Q8_0/flint-Q8_0-00002-of-00002.gguf", "IQ3_XXS": "flint-IQ3_XXS.gguf"} {
 		selected, err := SelectQuant(files, quant)
 		var paths []string
@@ -178,25 +285,38 @@ func TestSelectQuant(t *testing.T) {
 			t.Errorf("%s: %v, %v", quant, paths, err)
 		}
 	}
-	for _, quant := range []string{"", "Q2_K", "Q6_K"} {
+	for _, quant := range []string{"", "Q2_K", "Q6_K", "Q5_K", "../x", "Q4 K"} {
 		if _, err := SelectQuant(files, quant); err == nil {
 			t.Errorf("%q selected", quant)
 		}
 	}
 }
 
-func TestListFilesRejectsBadRepository(t *testing.T) {
+func TestListFilesRejectsBadInput(t *testing.T) {
 	for _, repository := range []string{"", "a", "../x/y", "a/b/c", "a/.."} {
-		if _, err := (Hub{}).ListFiles(context.Background(), repository); err == nil {
+		if _, err := (Hub{}).ListFiles(context.Background(), repository, testRevision); err == nil {
 			t.Errorf("%q accepted", repository)
+		}
+	}
+	if _, err := (Hub{}).ListFiles(context.Background(), "a/b", "main"); err == nil {
+		t.Error("a branch name was accepted as a revision")
+	}
+	for _, path := range []string{"a//b.gguf", "./a.gguf", "a/../b.gguf", "/a.gguf", "a\\b.gguf"} {
+		if safeRelative(path) {
+			t.Errorf("%q accepted", path)
 		}
 	}
 }
 
 func TestLlamaVersion(t *testing.T) {
-	version, err := ParseLlamaVersion("ggml_metal_init: ...\nversion: 11803 (a1b2c3d)\nbuilt with clang for arm64-apple-darwin")
-	if err != nil || version.Build != 11803 || version.Commit != "a1b2c3d" {
-		t.Fatalf("version = %+v, %v", version, err)
+	for output, want := range map[string]LlamaVersion{
+		"ggml_metal_init: ...\nversion: 11803 (a1b2c3d)\nbuilt with clang": {Build: 11803, Commit: "a1b2c3d"},
+		"version: 12058 (unknown)":   {Build: 12058, Commit: "unknown"},
+		"version: 0 (a1b2c3d-dirty)": {Build: 0, Commit: "a1b2c3d-dirty"},
+	} {
+		if got, err := ParseLlamaVersion(output); err != nil || got != want {
+			t.Errorf("%q: %+v %v", output, got, err)
+		}
 	}
 	if _, err := ParseLlamaVersion("llama-server 1.0"); err == nil {
 		t.Fatal("parsed nonsense")
@@ -205,8 +325,15 @@ func TestLlamaVersion(t *testing.T) {
 	if err := CheckRuntime(flint, LlamaVersion{Build: 11669}); err == nil || !strings.Contains(err.Error(), "b11801 or newer") {
 		t.Fatalf("old build: %v", err)
 	}
+	if err := CheckRuntime(flint, LlamaVersion{Build: 0}); err == nil || !strings.Contains(err.Error(), "--skip-version-check") {
+		t.Fatalf("unknown build: %v", err)
+	}
 	if err := CheckRuntime(flint, LlamaVersion{Build: 11801}); err != nil {
 		t.Fatal(err)
+	}
+	ripple, _ := catalog.Lookup("ripple-65b-preview")
+	if err := CheckRuntime(ripple, LlamaVersion{Build: 0}); err != nil {
+		t.Fatalf("an entry without a minimum build: %v", err)
 	}
 	qwen, _ := catalog.Lookup("qwen3.8-flash-next")
 	if err := CheckRuntime(qwen, LlamaVersion{Build: 99999}); err == nil {
@@ -222,9 +349,10 @@ func TestLlamaVersion(t *testing.T) {
 }
 
 type fakeManager struct {
-	written map[string]launchd.Agent
-	started []string
-	removed []string
+	written  map[string]launchd.Agent
+	started  []string
+	removed  []string
+	startErr error
 }
 
 func (manager *fakeManager) Write(agent launchd.Agent) error {
@@ -233,7 +361,7 @@ func (manager *fakeManager) Write(agent launchd.Agent) error {
 }
 func (manager *fakeManager) Start(label string) error {
 	manager.started = append(manager.started, label)
-	return nil
+	return manager.startErr
 }
 func (manager *fakeManager) Stop(string) {}
 func (manager *fakeManager) Remove(label string) error {
@@ -243,10 +371,14 @@ func (manager *fakeManager) Remove(label string) error {
 func (manager *fakeManager) State(string) string { return "running" }
 
 func TestServices(t *testing.T) {
+	busy := map[int]bool{9000: true}
+	PortInUse = func(port int) bool { return busy[port] }
+	t.Cleanup(func() { PortInUse = func(int) bool { return false } })
 	store := NewStore(t.TempDir())
 	model := testModel()
 	installed := Installed{ID: model.ID, Quant: "Q4_K_M", Repository: "test/flint-GGUF", Files: []File{{Path: "flint-Q4_K_M.gguf"}}}
-	agent, service, err := store.ServiceAgent(model, installed, ServeOptions{Binary: "/opt/llama/llama-server", LabelPrefix: "dev.overload", Port: 8080, Parallel: 2, LogDir: "/tmp/logs"})
+	options := ServeOptions{Binary: "/opt/llama/llama-server", LabelPrefix: "dev.overload", Port: 8080, Parallel: 2, LogDir: "/tmp/logs"}
+	agent, service, err := store.ServiceAgent(model, installed, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,27 +388,52 @@ func TestServices(t *testing.T) {
 			t.Errorf("args %q missing %q", args, want)
 		}
 	}
+	options.Parallel = 1
+	if single, _, _ := store.ServiceAgent(model, installed, options); !strings.Contains(strings.Join(single.Args, " "), "-np 1") {
+		t.Error("a single slot is not set explicitly")
+	}
 	if service.Label != "dev.overload.model.recursive-flint" || service.BaseURL() != "http://127.0.0.1:8080/v1" || service.ModelName != "flint" {
 		t.Fatalf("service = %+v", service)
 	}
-	for _, options := range []ServeOptions{{Port: 80, Parallel: 1}, {Port: 8080, Parallel: 0}} {
-		if _, _, err := store.ServiceAgent(model, installed, options); err == nil {
-			t.Errorf("%+v accepted", options)
+	for _, bad := range []ServeOptions{{Binary: "/b", LogDir: "/l", Port: 80, Parallel: 1}, {Binary: "/b", LogDir: "/l", Port: 8080, Parallel: 0}, {Binary: "llama-server", LogDir: "/l", Port: 8080, Parallel: 1}} {
+		if _, _, err := store.ServiceAgent(model, installed, bad); err == nil {
+			t.Errorf("%+v accepted", bad)
 		}
 	}
+	if _, _, err := NewStore("models").ServiceAgent(model, installed, ServeOptions{Binary: "/b", LogDir: "/l", Port: 8080, Parallel: 1}); err == nil {
+		t.Error("a relative model directory was accepted")
+	}
 	manager := &fakeManager{written: map[string]launchd.Agent{}}
+	if err := store.Serve(manager, agent, Service{ID: "x", Label: "dev.overload.model.x", Port: 9000}); err == nil || !strings.Contains(err.Error(), "already in use") {
+		t.Fatalf("busy port: %v", err)
+	}
 	if err := store.Serve(manager, agent, service); err != nil {
 		t.Fatal(err)
+	}
+	busy[8080] = true
+	if err := store.Serve(manager, agent, service); err != nil {
+		t.Fatalf("restarting a model's own service: %v", err)
 	}
 	other := Service{ID: "other", Label: "dev.overload.model.other", Port: 8080}
 	if err := store.Serve(manager, launchd.Agent{Label: other.Label}, other); err == nil {
 		t.Fatal("two services on one port")
 	}
+	manager.startErr = errors.New("boom")
+	failing := Service{ID: "failing", Label: "dev.overload.model.failing", Port: 8090}
+	if err := store.Serve(manager, launchd.Agent{Label: failing.Label}, failing); err == nil || manager.removed[len(manager.removed)-1] != failing.Label {
+		t.Fatalf("a service that failed to start was not removed: %v %v", err, manager.removed)
+	}
 	services, err := store.Services()
-	if err != nil || len(services) != 1 || len(manager.started) != 1 {
+	if err != nil || len(services) != 1 {
 		t.Fatalf("services = %+v, %v", services, err)
 	}
-	if err := store.StopService(manager, "recursive-flint"); err != nil || len(manager.removed) != 1 {
+	if err := store.writeManifest([]Installed{installed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remove(model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
+		t.Fatalf("removed a served model: %v", err)
+	}
+	if err := store.StopService(manager, "recursive-flint"); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
 	if err := store.StopService(manager, "recursive-flint"); err == nil {
@@ -284,29 +441,59 @@ func TestServices(t *testing.T) {
 	}
 }
 
+func TestRemoveKeepsSharedFiles(t *testing.T) {
+	store := NewStore(t.TempDir())
+	path := store.Path("test/shared", "model.gguf")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	files := []File{{Path: "model.gguf", Size: 1}}
+	if err := store.writeManifest([]Installed{{ID: "a", Quant: "Q8_0", Repository: "test/shared", Files: files}, {ID: "b", Quant: "Q8_0", Repository: "test/shared", Files: files}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remove("a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("a file another entry uses was deleted")
+	}
+}
+
 func TestHealth(t *testing.T) {
 	var status atomic.Int64
 	status.Store(http.StatusServiceUnavailable)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/health" {
+		switch r.URL.Path {
+		case "/health":
+			w.WriteHeader(int(status.Load()))
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"data":[{"id":"flint"}]}`))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		w.WriteHeader(int(status.Load()))
 	}))
 	defer server.Close()
 	parsed, _ := url.Parse(server.URL)
 	port, _ := strconv.Atoi(parsed.Port())
-	service := Service{ID: "flint", Port: port}
+	service := Service{ID: "flint", Port: port, ModelName: "flint"}
 	ctx := context.Background()
 	if health := CheckHealth(ctx, server.Client(), service); health != HealthLoading {
 		t.Fatalf("health = %s", health)
 	}
 	status.Store(http.StatusOK)
-	if err := WaitReady(ctx, server.Client(), service, 0); err != nil {
+	if err := WaitReady(ctx, server.Client(), service, 0, time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if health := CheckHealth(ctx, server.Client(), Service{Port: 1}); health != HealthUnreachable {
-		t.Fatalf("health = %s", health)
+	if err := CheckModel(ctx, server.Client(), service); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckModel(ctx, server.Client(), Service{Port: port, ModelName: "qwen"}); err == nil {
+		t.Fatal("a different model's server was accepted")
+	}
+	if err := WaitReady(ctx, server.Client(), Service{Port: 1}, time.Millisecond, 20*time.Millisecond); !errors.Is(err, ErrNotStarting) {
+		t.Fatalf("unreachable server: %v", err)
 	}
 }

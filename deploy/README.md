@@ -139,8 +139,9 @@ control against someone who can edit model connections and the policy.
 
 ### Downloading and serving models
 
-`overload models` manages llama.cpp models from the catalog on a Mac, so
-nothing needs to be run by hand:
+`overload models` manages llama.cpp models from the catalog (see Catalog and
+model policy above), so nothing needs to be run by hand. Downloads work on
+macOS and Linux; `serve` uses launchd and needs macOS.
 
 ```sh
 overload models pull recursive-flint --quant Q4_K_M   # resumable, SHA-256 verified
@@ -154,22 +155,32 @@ overload models clean                                 # delete partial downloads
 ```
 
 - `pull` downloads from the catalog's Hugging Face repository (or
-  `--repository`), into `models` next to the install's configuration
-  (`--dir` or `OVERLOAD_MODELS_DIR` changes it). An interrupted download
-  resumes where it stopped. Every file is checked against the SHA-256
-  Hugging Face publishes for it; a mismatch deletes the partial file. Gated
-  models need `HF_TOKEN`.
+  `--repository OWNER/NAME`) at the commit its main branch points to, into
+  `models` next to the install's configuration. `--dir` or
+  `OVERLOAD_MODELS_DIR` changes the directory; put `OVERLOAD_MODELS_DIR` in
+  the configuration file so every command and the catalog page use the same
+  one. An interrupted or stalled download resumes where it stopped. Every
+  file is checked against the SHA-256 Hugging Face publishes for it; a
+  mismatch deletes the partial file. A download that would leave less than
+  2 GB free is refused. Gated models need `HF_TOKEN` or a token saved by
+  `hf auth login`; the token is not sent on redirects to other hosts.
 - `check` and `serve` compare `llama-server --version` with the catalog's
-  minimum build (Flint needs b11801) and say how to upgrade. They use
-  `--llama-server`, `OVERLOAD_LLAMA_SERVER` or `llama-server` on PATH.
+  minimum build (Flint needs b11801) and say how to upgrade; builds that
+  report no number need `--skip-version-check`. They use `--llama-server`,
+  `OVERLOAD_LLAMA_SERVER` or `llama-server` on PATH.
 - `serve` registers a launchd agent (`dev.overload.model.<id>`) that runs
   llama-server on 127.0.0.1 with the catalog's arguments, starts at login
-  and restarts if it exits, then waits until `/health` reports the model
-  loaded. `--parallel N` gives N request slots, each with the catalog's full
-  context. `--connect NAME` also saves a model connection with the catalog
-  entry and settings; without it the command to add one is printed. Logs
-  are in `logs/model-<id>.log`.
-- The catalog page for a model shows what this machine has downloaded and
+  and restarts if it exits. It refuses a port something else uses, waits
+  until `/health` reports the model loaded (printing the log if the server
+  never answers), and checks the server lists the model. `--parallel N`
+  gives N request slots, each with the catalog's full context.
+  `--connect NAME` also saves a model connection with the catalog entry and
+  settings; without it the command to add one is printed. Logs are in the
+  install's `logs/model-<id>.log`. `overload uninstall` removes model
+  services too.
+- `rm` refuses a model that is being served, and keeps files another
+  downloaded entry uses.
+- The catalog page for a model shows what this Mac has downloaded and
   serves.
 
 ### DwarfStar on Metal

@@ -21,14 +21,18 @@ import (
 type Hub struct {
 	// BaseURL is https://huggingface.co unless a test or mirror sets it.
 	BaseURL string
-	// Token is an optional Hugging Face access token for gated models.
+	// Token is an optional Hugging Face access token for gated models. It
+	// is sent only to BaseURL's host and its subdomains.
 	Token  string
 	Client *http.Client
+	// Stall aborts a download that receives nothing for this long; zero
+	// means two minutes.
+	Stall time.Duration
 }
 
 // DefaultHub returns a hub for huggingface.co. Downloads have no overall
-// timeout because weights take tens of minutes; callers bound them with
-// their context.
+// timeout because weights take tens of minutes; a stalled transfer is cut
+// off instead.
 func DefaultHub(token string) Hub {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = time.Minute
@@ -46,45 +50,149 @@ type File struct {
 var (
 	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$`)
 	digestPattern     = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	revisionPattern   = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	quantPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_]{0,31}$`)
 )
 
-// ListFiles returns the repository's files on its main branch.
-func (hub Hub) ListFiles(ctx context.Context, repository string) ([]File, error) {
-	if !repositoryPattern.MatchString(repository) || strings.Contains(repository, "..") {
+// ValidRepository reports whether repository is a Hugging Face owner/name.
+func ValidRepository(repository string) bool {
+	return repositoryPattern.MatchString(repository) && !strings.Contains(repository, "..")
+}
+
+// client returns the HTTP client, refusing redirects to non-https URLs and
+// dropping the token on redirects that leave the hub's domain.
+func (hub Hub) client() *http.Client {
+	base := http.DefaultClient
+	if hub.Client != nil {
+		base = hub.Client
+	}
+	client := *base
+	hubHost := ""
+	if parsed, err := url.Parse(hub.BaseURL); err == nil {
+		hubHost = strings.ToLower(parsed.Hostname())
+	}
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("too many redirects")
+		}
+		if request.URL.Scheme != "https" && request.URL.Scheme != via[0].URL.Scheme {
+			return errors.New("refusing a redirect to a non-https URL")
+		}
+		host := strings.ToLower(request.URL.Hostname())
+		if host != hubHost && !strings.HasSuffix(host, "."+hubHost) {
+			request.Header.Del("Authorization")
+		}
+		return nil
+	}
+	return &client
+}
+
+// Revision returns the commit the repository's main branch points at, so
+// one download reads one consistent snapshot.
+func (hub Hub) Revision(ctx context.Context, repository string) (string, error) {
+	var info struct {
+		SHA string `json:"sha"`
+	}
+	if err := hub.getJSON(ctx, "/api/models/"+repository+"/revision/main", &info, nil); err != nil {
+		return "", fmt.Errorf("read %s: %w", repository, err)
+	}
+	if !revisionPattern.MatchString(info.SHA) {
+		return "", fmt.Errorf("read %s: no revision", repository)
+	}
+	return info.SHA, nil
+}
+
+// ListFiles returns the repository's files at revision, following
+// pagination.
+func (hub Hub) ListFiles(ctx context.Context, repository, revision string) ([]File, error) {
+	if !ValidRepository(repository) {
 		return nil, fmt.Errorf("invalid repository %q", repository)
 	}
-	request, err := hub.request(ctx, "/api/models/"+repository+"/tree/main?recursive=true")
-	if err != nil {
-		return nil, err
+	if !revisionPattern.MatchString(revision) {
+		return nil, fmt.Errorf("invalid revision %q", revision)
 	}
-	response, err := hub.Client.Do(request)
+	next := "/api/models/" + repository + "/tree/" + revision + "?recursive=true"
+	var files []File
+	for page := 0; next != ""; page++ {
+		if page == 100 {
+			return nil, fmt.Errorf("list %s: too many pages", repository)
+		}
+		var entries []struct {
+			Type string `json:"type"`
+			Path string `json:"path"`
+			LFS  *struct {
+				OID  string `json:"oid"`
+				Size int64  `json:"size"`
+			} `json:"lfs"`
+		}
+		var link string
+		if err := hub.getJSON(ctx, next, &entries, &link); err != nil {
+			return nil, fmt.Errorf("list %s: %w", repository, err)
+		}
+		for _, entry := range entries {
+			if entry.Type != "file" || entry.LFS == nil || !digestPattern.MatchString(entry.LFS.OID) || entry.LFS.Size < 0 || !safeRelative(entry.Path) {
+				continue
+			}
+			files = append(files, File{Path: entry.Path, Size: entry.LFS.Size, SHA256: entry.LFS.OID})
+		}
+		var err error
+		if next, err = hub.nextPage(link); err != nil {
+			return nil, err
+		}
+	}
+	return files, nil
+}
+
+// nextPage reads a Link header's rel="next" URL, which must stay on the hub.
+func (hub Hub) nextPage(link string) (string, error) {
+	for _, part := range strings.Split(link, ",") {
+		target, params, ok := strings.Cut(strings.TrimSpace(part), ";")
+		if !ok || !strings.Contains(params, `rel="next"`) {
+			continue
+		}
+		target = strings.Trim(strings.TrimSpace(target), "<>")
+		parsed, err := url.Parse(target)
+		base, baseErr := url.Parse(hub.BaseURL)
+		if err != nil || baseErr != nil || (parsed.IsAbs() && parsed.Host != base.Host) {
+			return "", errors.New("unexpected pagination link")
+		}
+		return parsed.RequestURI(), nil
+	}
+	return "", nil
+}
+
+func (hub Hub) getJSON(ctx context.Context, path string, target any, link *string) error {
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	request, err := hub.request(ctx, path)
 	if err != nil {
-		return nil, fmt.Errorf("list %s: %w", repository, err)
+		return err
+	}
+	response, err := hub.client().Do(request)
+	if err != nil {
+		return requestError(err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("list %s: %s", repository, statusMessage(response))
+		return errors.New(statusMessage(response))
 	}
-	var entries []struct {
-		Type string `json:"type"`
-		Path string `json:"path"`
-		Size int64  `json:"size"`
-		LFS  *struct {
-			OID  string `json:"oid"`
-			Size int64  `json:"size"`
-		} `json:"lfs"`
+	if link != nil {
+		*link = response.Header.Get("Link")
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(&entries); err != nil {
-		return nil, fmt.Errorf("list %s: invalid response", repository)
+	if err := json.NewDecoder(io.LimitReader(response.Body, 8<<20)).Decode(target); err != nil {
+		return errors.New("invalid response")
 	}
-	var files []File
-	for _, entry := range entries {
-		if entry.Type != "file" || entry.LFS == nil || !digestPattern.MatchString(entry.LFS.OID) || !safeRelative(entry.Path) {
-			continue
-		}
-		files = append(files, File{Path: entry.Path, Size: entry.LFS.Size, SHA256: entry.LFS.OID})
+	return nil
+}
+
+// requestError hides the URL (which may carry signed query parameters)
+// from network errors.
+func requestError(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return urlErr.Err
 	}
-	return files, nil
+	return err
 }
 
 // safeRelative accepts a forward-slash path inside the repository.
@@ -92,15 +200,18 @@ func safeRelative(path string) bool {
 	if path == "" || strings.HasPrefix(path, "/") || strings.Contains(path, "\\") || strings.ContainsAny(path, "\x00\r\n") {
 		return false
 	}
-	return !slices.Contains(strings.Split(path, "/"), "..") && !slices.Contains(strings.Split(path, "/"), ".")
+	parts := strings.Split(path, "/")
+	return !slices.Contains(parts, "..") && !slices.Contains(parts, ".") && !slices.Contains(parts, "")
 }
+
+var splitPart = regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
 
 // SelectQuant picks the GGUF files of one quantization: a single file or
 // every part of a split model, in order. Vision projector files are left
 // out.
 func SelectQuant(files []File, quant string) ([]File, error) {
-	if quant == "" {
-		return nil, errors.New("choose a quantization")
+	if !quantPattern.MatchString(quant) {
+		return nil, errors.New("choose a quantization such as Q4_K_M")
 	}
 	token := regexp.MustCompile(`(?i)(^|[-._/])` + regexp.QuoteMeta(quant) + `([-./]|$)`)
 	var selected []File
@@ -115,17 +226,20 @@ func SelectQuant(files []File, quant string) ([]File, error) {
 		return nil, fmt.Errorf("no %s GGUF file in the repository", quant)
 	}
 	slices.SortFunc(selected, func(a, b File) int { return strings.Compare(a.Path, b.Path) })
-	if len(selected) > 1 {
-		for _, file := range selected {
-			if !splitPart.MatchString(file.Path) {
-				return nil, fmt.Errorf("more than one %s GGUF file in the repository", quant)
-			}
+	if len(selected) == 1 {
+		return selected, nil
+	}
+	for index, file := range selected {
+		match := splitPart.FindStringSubmatch(file.Path)
+		if match == nil {
+			return nil, fmt.Errorf("more than one %s GGUF file in the repository", quant)
+		}
+		if match[1] != fmt.Sprintf("%05d", index+1) || match[2] != fmt.Sprintf("%05d", len(selected)) || splitPart.ReplaceAllString(file.Path, "") != splitPart.ReplaceAllString(selected[0].Path, "") {
+			return nil, fmt.Errorf("the %s GGUF parts are incomplete or belong to different models", quant)
 		}
 	}
 	return selected, nil
 }
-
-var splitPart = regexp.MustCompile(`-\d{5}-of-\d{5}\.gguf$`)
 
 func (hub Hub) request(ctx context.Context, path string) (*http.Request, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(hub.BaseURL, "/")+path, nil)
@@ -139,12 +253,12 @@ func (hub Hub) request(ctx context.Context, path string) (*http.Request, error) 
 	return request, nil
 }
 
-func (hub Hub) fileURL(repository, path string) string {
+func (hub Hub) fileURL(repository, revision, path string) string {
 	escaped := make([]string, 0, strings.Count(path, "/")+1)
 	for _, part := range strings.Split(path, "/") {
 		escaped = append(escaped, url.PathEscape(part))
 	}
-	return "/" + repository + "/resolve/main/" + strings.Join(escaped, "/")
+	return "/" + repository + "/resolve/" + revision + "/" + strings.Join(escaped, "/")
 }
 
 func statusMessage(response *http.Response) string {

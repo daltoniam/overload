@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,7 +23,8 @@ import (
 )
 
 // Store keeps downloaded weights under Dir, one directory per repository,
-// and a manifest of what finished downloading and verified.
+// and a manifest of what finished downloading and verified. Dir must be
+// absolute: launchd services refer to files by path.
 type Store struct {
 	Dir string
 	now func() time.Time
@@ -34,9 +37,11 @@ func NewStore(dir string) Store {
 
 // Installed is one downloaded quantization of a catalog model.
 type Installed struct {
-	ID           string    `json:"id"`
-	Quant        string    `json:"quant"`
-	Repository   string    `json:"repository"`
+	ID         string `json:"id"`
+	Quant      string `json:"quant"`
+	Repository string `json:"repository"`
+	// Revision is the repository commit the files came from.
+	Revision     string    `json:"revision,omitempty"`
 	Files        []File    `json:"files"`
 	DownloadedAt time.Time `json:"downloaded_at"`
 }
@@ -50,15 +55,21 @@ func (installed Installed) Size() int64 {
 	return total
 }
 
-// Progress reports bytes downloaded so far out of total for one file.
-type Progress func(path string, done, total int64)
+// Progress reports bytes done so far out of total for one file; verifying
+// is set while an existing file is checked rather than downloaded.
+type Progress func(path string, done, total int64, verifying bool)
 
-const partialSuffix = ".part"
+const (
+	partialSuffix = ".part"
+	defaultStall  = 2 * time.Minute
+	// freeMargin is left free on the volume after a download.
+	freeMargin = 2 << 30
+)
 
 // Pull downloads quant of the catalog model from repository (the entry's
-// repository for that quant when empty), resuming partial files and
-// verifying each against its published SHA-256. Files already verified
-// are not downloaded again.
+// repository for that quant when empty), at the repository's current
+// revision. Partial files resume; every file is verified against its
+// published SHA-256, and files already verified are not downloaded again.
 func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant, repository string, progress Progress) (Installed, error) {
 	if repository == "" {
 		for _, weights := range model.Weights {
@@ -68,9 +79,19 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		}
 	}
 	if repository == "" {
-		return Installed{}, fmt.Errorf("the catalog has no download for %s %s; pass a Hugging Face repository", model.ID, quant)
+		return Installed{}, fmt.Errorf("the catalog has no download for %s %s; pass a Hugging Face repository with --repository", model.ID, quant)
 	}
-	files, err := hub.ListFiles(ctx, repository)
+	if !ValidRepository(repository) {
+		return Installed{}, fmt.Errorf("invalid repository %q", repository)
+	}
+	if !filepath.IsAbs(store.Dir) {
+		return Installed{}, errors.New("the model directory must be an absolute path")
+	}
+	revision, err := hub.Revision(ctx, repository)
+	if err != nil {
+		return Installed{}, err
+	}
+	files, err := hub.ListFiles(ctx, repository, revision)
 	if err != nil {
 		return Installed{}, err
 	}
@@ -78,17 +99,20 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	if err != nil {
 		return Installed{}, fmt.Errorf("%s: %w", repository, err)
 	}
-	unlock, err := store.lock()
+	unlock, err := store.lock(".lock")
 	if err != nil {
 		return Installed{}, err
 	}
 	defer unlock()
+	if err := store.checkSpace(repository, selected); err != nil {
+		return Installed{}, err
+	}
 	for _, file := range selected {
-		if err := store.download(ctx, hub, repository, file, progress); err != nil {
+		if err := store.download(ctx, hub, repository, revision, file, progress); err != nil {
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
 	}
-	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Files: selected, DownloadedAt: store.now().UTC()}
+	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected, DownloadedAt: store.now().UTC()}
 	manifest, err := store.readManifest()
 	if err != nil {
 		return Installed{}, err
@@ -98,17 +122,48 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	return installed, store.writeManifest(manifest)
 }
 
+// checkSpace refuses a download that would leave less than freeMargin.
+func (store Store) checkSpace(repository string, files []File) error {
+	var needed int64
+	for _, file := range files {
+		needed += file.Size
+		if info, err := os.Stat(store.partialPath(repository, file)); err == nil {
+			needed -= info.Size()
+		}
+		if info, err := os.Stat(store.Path(repository, file.Path)); err == nil && info.Size() == file.Size {
+			needed -= file.Size
+		}
+	}
+	free, err := freeBytes(store.Dir)
+	if err != nil || needed <= 0 {
+		return nil
+	}
+	if free-needed < freeMargin {
+		return fmt.Errorf("the download needs %.1f GB but only %.1f GB is free on the volume; free space or run overload models clean", float64(needed)/1e9, float64(free)/1e9)
+	}
+	return nil
+}
+
 // Path is where a repository file is stored.
 func (store Store) Path(repository, path string) string {
 	return filepath.Join(store.Dir, filepath.FromSlash(repository), filepath.FromSlash(path))
 }
 
-func (store Store) download(ctx context.Context, hub Hub, repository string, file File, progress Progress) error {
+// partialPath names an unfinished download after the digest it should
+// end with, so a partial file from another revision is never resumed.
+func (store Store) partialPath(repository string, file File) string {
+	return store.Path(repository, file.Path) + "." + file.SHA256[:16] + partialSuffix
+}
+
+func (store Store) download(ctx context.Context, hub Hub, repository, revision string, file File, progress Progress) error {
 	if !safeRelative(file.Path) || !digestPattern.MatchString(file.SHA256) {
 		return errors.New("invalid file entry")
 	}
 	destination := store.Path(repository, file.Path)
 	if info, err := os.Stat(destination); err == nil && info.Size() == file.Size {
+		if progress != nil {
+			progress(file.Path, 0, file.Size, true)
+		}
 		if sum, err := fileDigest(destination); err == nil && sum == file.SHA256 {
 			return nil
 		}
@@ -116,32 +171,36 @@ func (store Store) download(ctx context.Context, hub Hub, repository string, fil
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		return err
 	}
-	partial := destination + partialSuffix
+	partial := store.partialPath(repository, file)
 	output, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = output.Close() }()
-	hash := sha256.New()
-	offset, err := io.Copy(hash, output)
+	digest := sha256.New()
+	offset, err := io.Copy(digest, output)
 	if err != nil {
 		return err
 	}
 	if offset > file.Size {
-		if err := restart(output, hash); err != nil {
+		if err := restart(output, digest); err != nil {
 			return err
 		}
 		offset = 0
 	}
 	if offset < file.Size {
-		if offset, err = fetch(ctx, hub, repository, file, output, hash, offset, progress); err != nil {
+		offset, err = fetch(ctx, hub, hub.fileURL(repository, revision, file.Path), file, output, digest, offset, progress)
+		if err != nil {
 			return err
 		}
 	}
-	if offset != file.Size || hex.EncodeToString(hash.Sum(nil)) != file.SHA256 {
+	if offset != file.Size {
+		return fmt.Errorf("download stopped at %d of %d bytes; run the command again to resume", offset, file.Size)
+	}
+	if hex.EncodeToString(digest.Sum(nil)) != file.SHA256 {
 		_ = output.Close()
 		_ = os.Remove(partial)
-		return errors.New("downloaded file does not match its published size and SHA-256; the partial file was removed")
+		return errors.New("downloaded file does not match its published SHA-256; the partial file was removed")
 	}
 	if err := output.Sync(); err != nil {
 		return err
@@ -152,64 +211,92 @@ func (store Store) download(ctx context.Context, hub Hub, repository string, fil
 	return os.Rename(partial, destination)
 }
 
-// fetch downloads file from offset (or from the start when the server
-// ignores the range) into output and hash, and returns the bytes written.
-func fetch(ctx context.Context, hub Hub, repository string, file File, output *os.File, hash io.Writer, offset int64, progress Progress) (int64, error) {
-	request, err := hub.request(ctx, hub.fileURL(repository, file.Path))
+// fetch downloads file from offset into output and digest and returns the
+// bytes now written. A server that ignores or cannot satisfy the range
+// gets one request for the whole file instead.
+func fetch(ctx context.Context, hub Hub, path string, file File, output *os.File, digest hash.Hash, offset int64, progress Progress) (int64, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	request, err := hub.request(ctx, path)
 	if err != nil {
 		return offset, err
 	}
 	if offset > 0 {
 		request.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset))
 	}
-	response, err := hub.Client.Do(request)
+	response, err := hub.client().Do(request)
 	if err != nil {
-		return offset, err
+		return offset, requestError(err)
 	}
 	defer func() { _ = response.Body.Close() }()
 	switch {
-	case response.StatusCode == http.StatusPartialContent && offset > 0 && strings.HasPrefix(response.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-", offset)):
+	case response.StatusCode == http.StatusPartialContent && offset > 0 && rangeMatches(response.Header.Get("Content-Range"), offset, file.Size):
 	case response.StatusCode == http.StatusOK:
-		if err := restart(output, hash); err != nil {
+		if err := restart(output, digest); err != nil {
 			return offset, err
 		}
 		offset = 0
+	case response.StatusCode == http.StatusRequestedRangeNotSatisfiable || response.StatusCode == http.StatusPartialContent:
+		_ = response.Body.Close()
+		if err := restart(output, digest); err != nil {
+			return offset, err
+		}
+		return fetch(ctx, hub, path, file, output, digest, 0, progress)
 	default:
 		return offset, errors.New(statusMessage(response))
 	}
-	reader := io.LimitReader(response.Body, file.Size-offset+1)
+	stall := hub.Stall
+	if stall <= 0 {
+		stall = defaultStall
+	}
+	watchdog := time.AfterFunc(stall, cancel)
+	defer watchdog.Stop()
+	reader := io.LimitReader(response.Body, file.Size-offset)
 	buffer := make([]byte, 1<<20)
 	for {
 		n, readErr := reader.Read(buffer)
 		if n > 0 {
+			watchdog.Reset(stall)
 			if _, err := output.Write(buffer[:n]); err != nil {
 				return offset, err
 			}
-			_, _ = hash.Write(buffer[:n])
+			digest.Write(buffer[:n])
 			offset += int64(n)
 			if progress != nil {
-				progress(file.Path, offset, file.Size)
+				progress(file.Path, offset, file.Size, false)
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
 			return offset, nil
 		}
 		if readErr != nil {
-			return offset, fmt.Errorf("download interrupted at %d of %d bytes (run the command again to resume): %w", offset, file.Size, readErr)
+			return offset, fmt.Errorf("download interrupted at %d of %d bytes (run the command again to resume): %w", offset, file.Size, requestError(readErr))
 		}
 	}
 }
 
-func restart(output *os.File, hash io.Writer) error {
+// rangeMatches checks a Content-Range of "bytes start-end/total".
+func rangeMatches(header string, offset, size int64) bool {
+	value, ok := strings.CutPrefix(header, "bytes ")
+	if !ok {
+		return false
+	}
+	span, total, ok := strings.Cut(value, "/")
+	start, _, ok2 := strings.Cut(span, "-")
+	if !ok || !ok2 || start != strconv.FormatInt(offset, 10) {
+		return false
+	}
+	return total == "*" || total == strconv.FormatInt(size, 10)
+}
+
+func restart(output *os.File, digest hash.Hash) error {
 	if err := output.Truncate(0); err != nil {
 		return err
 	}
 	if _, err := output.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	if resettable, ok := hash.(interface{ Reset() }); ok {
-		resettable.Reset()
-	}
+	digest.Reset()
 	return nil
 }
 
@@ -219,11 +306,11 @@ func fileDigest(path string) (string, error) {
 		return "", err
 	}
 	defer func() { _ = file.Close() }()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	digest := sha256.New()
+	if _, err := io.Copy(digest, file); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 // List returns the installed models, oldest download first.
@@ -254,9 +341,11 @@ func (store Store) Find(id, quant string) (Installed, error) {
 	}
 }
 
-// Remove deletes an installed quantization's files.
+// Remove deletes an installed quantization's files, keeping any another
+// installed entry still uses. A model that is being served cannot be
+// removed.
 func (store Store) Remove(id, quant string) (Installed, error) {
-	unlock, err := store.lock()
+	unlock, err := store.lock(".lock")
 	if err != nil {
 		return Installed{}, err
 	}
@@ -265,9 +354,13 @@ func (store Store) Remove(id, quant string) (Installed, error) {
 	if err != nil {
 		return Installed{}, err
 	}
-	for _, file := range installed.Files {
-		if err := os.Remove(store.Path(installed.Repository, file.Path)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return Installed{}, err
+	services, err := store.Services()
+	if err != nil {
+		return Installed{}, err
+	}
+	for _, service := range services {
+		if service.ID == installed.ID && strings.EqualFold(service.Quant, installed.Quant) {
+			return Installed{}, fmt.Errorf("%s is being served; run overload models stop %s first", id, id)
 		}
 	}
 	manifest, err := store.readManifest()
@@ -277,12 +370,39 @@ func (store Store) Remove(id, quant string) (Installed, error) {
 	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool {
 		return entry.ID == installed.ID && entry.Quant == installed.Quant
 	})
+	inUse := map[string]bool{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			inUse[store.Path(entry.Repository, file.Path)] = true
+		}
+	}
+	for _, file := range installed.Files {
+		path := store.Path(installed.Repository, file.Path)
+		if inUse[path] {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return Installed{}, err
+		}
+		store.removeEmptyParents(filepath.Dir(path))
+	}
 	return installed, store.writeManifest(manifest)
+}
+
+// removeEmptyParents deletes empty directories up to, but not including,
+// the store's root.
+func (store Store) removeEmptyParents(dir string) {
+	for dir != store.Dir && strings.HasPrefix(dir, store.Dir+string(filepath.Separator)) {
+		if os.Remove(dir) != nil {
+			return
+		}
+		dir = filepath.Dir(dir)
+	}
 }
 
 // Clean removes partial downloads and returns the bytes freed.
 func (store Store) Clean() (int64, error) {
-	unlock, err := store.lock()
+	unlock, err := store.lock(".lock")
 	if err != nil {
 		return 0, err
 	}
@@ -332,11 +452,16 @@ func (store Store) Usage() (used, free int64, err error) {
 	if err != nil {
 		return 0, 0, err
 	}
+	free, err = freeBytes(store.Dir)
+	return used, free, err
+}
+
+func freeBytes(dir string) (int64, error) {
 	var stat syscall.Statfs_t
-	if err := syscall.Statfs(existingParent(store.Dir), &stat); err != nil {
-		return used, 0, err
+	if err := syscall.Statfs(existingParent(dir), &stat); err != nil {
+		return 0, err
 	}
-	return used, int64(stat.Bavail) * int64(stat.Bsize), nil
+	return int64(stat.Bavail) * int64(stat.Bsize), nil
 }
 
 func existingParent(dir string) string {
@@ -386,25 +511,32 @@ func writeFileAtomic(path string, data []byte) error {
 		_ = temporary.Close()
 		return err
 	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
 	return os.Rename(temporary.Name(), path)
 }
 
-// lock serializes changes to the store across processes, so two pulls do
-// not write the same partial file.
-func (store Store) lock() (func(), error) {
+// lock takes an exclusive lock on a file in the store's directory, so two
+// commands do not write the same files.
+func (store Store) lock(name string) (func(), error) {
 	if err := os.MkdirAll(store.Dir, 0o755); err != nil {
 		return nil, err
 	}
-	file, err := os.OpenFile(filepath.Join(store.Dir, ".lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	file, err := os.OpenFile(filepath.Join(store.Dir, name), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, err
 	}
 	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = file.Close()
-		return nil, errors.New("another overload models command is using the model directory")
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errors.New("another overload models command is using the model directory")
+		}
+		return nil, fmt.Errorf("lock the model directory: %w", err)
 	}
 	return func() {
 		_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)

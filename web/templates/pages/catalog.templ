@@ -49,6 +49,8 @@ templ policyBadge(decision catalog.Decision) {
 // LocalModel is what this machine has of a catalog entry: downloaded
 // quantizations and the model service started with overload models serve.
 type LocalModel struct {
+	// Error explains why the model directory could not be read.
+	Error    string
 	Quants   []string
 	Size     string
 	Endpoint string
@@ -121,7 +123,9 @@ templ CatalogEntry(model catalog.Model, decision catalog.Decision, local *LocalM
 		}
 		if local != nil {
 			<section class="panel"><h2>On this machine</h2>
-				if len(local.Quants) == 0 {
+				if local.Error != "" {
+					<p class="notice error">{ local.Error }</p>
+				} else if len(local.Quants) == 0 {
 					<div class="empty">Not downloaded. Run <code>overload models pull { model.ID } --quant QUANT</code>.</div>
 				} else {
 					<dl>

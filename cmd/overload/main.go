@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/daltoniam/overload/github"
@@ -282,8 +283,15 @@ func newTunnel(store *postgres.Store, addr string) *tunnel.Manager {
 
 // LocalModel reports the catalog entry's downloads and model service in
 // this install's model directory.
-func (store serverStore) LocalModel(id string) (*pages.LocalModel, error) {
-	return localModelSummary(localmodels.NewStore(modelsDir("")), localmodels.Launchd{}, id)
+func (store serverStore) LocalModel(id string) *pages.LocalModel {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	dir, err := modelsDir("")
+	if err != nil {
+		return nil
+	}
+	return localModelSummary(localmodels.NewStore(dir), localmodels.Launchd{}, id)
 }
 
 func (store serverStore) ChangedFiles(ctx context.Context, repository string, number int) ([]string, error) {

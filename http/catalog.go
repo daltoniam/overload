@@ -15,7 +15,7 @@ import (
 // LocalModelReader reports what this machine has downloaded and serves of
 // a catalog entry; servers without a local model directory do not have it.
 type LocalModelReader interface {
-	LocalModel(id string) (*pages.LocalModel, error)
+	LocalModel(id string) *pages.LocalModel
 }
 
 // PolicyStore reads and saves the model policy.
@@ -60,10 +60,7 @@ func registerCatalog(mux *http.ServeMux, store PolicyStore, csrf string) {
 		}
 		var local *pages.LocalModel
 		if reader, ok := store.(LocalModelReader); ok {
-			if local, err = reader.LocalModel(model.ID); err != nil {
-				http.Error(w, "Unable to read the local model directory", http.StatusInternalServerError)
-				return
-			}
+			local = reader.LocalModel(model.ID)
 		}
 		_ = pages.CatalogEntry(model, policy.Evaluate(model.ID), local).Render(r.Context(), w)
 	})
