@@ -354,6 +354,22 @@ func TestCleanKeepsRetiredFilesThatAreInstalledAgain(t *testing.T) {
 	}
 }
 
+func TestPullForgetsRetiredFilesItInstallsAgain(t *testing.T) {
+	content := []byte(strings.Repeat("r", 4096))
+	_, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	store := NewStore(t.TempDir())
+	path := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	if err := store.writeRetired([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	if retired, _ := store.retired(); len(retired) != 0 {
+		t.Fatalf("a re-installed file stayed retired: %v", retired)
+	}
+}
+
 func TestOwnPartial(t *testing.T) {
 	for name, want := range map[string]bool{"a.gguf.0123456789abcdef.part": true, "a.gguf.mine.part": false, "video.mp4.part": false, "a.gguf.0123456789abcdeg.part": false, ".0123456789abcdef.part": false} {
 		if ownPartial(name) != want {
@@ -773,7 +789,8 @@ func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
 	}
 	stale := destination + ".0123456789abcdef" + partialSuffix
 	mine := destination + ".mine" + partialSuffix
-	for _, path := range []string{stale, mine} {
+	sibling := destination + ".foo.gguf.0123456789abcdef" + partialSuffix
+	for _, path := range []string{stale, mine, sibling} {
 		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -784,5 +801,8 @@ func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
 	}
 	if _, err := os.Stat(mine); err != nil {
 		t.Fatal("an unrelated .part file was removed")
+	}
+	if _, err := os.Stat(sibling); err != nil {
+		t.Fatal("a sibling file's partial download was removed")
 	}
 }

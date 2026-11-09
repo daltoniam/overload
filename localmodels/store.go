@@ -302,7 +302,7 @@ func (store Store) removeStalePartials(repository string, file File) {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(filepath.Dir(destination), name)
-		if entry.Type().IsRegular() && path != keep && strings.HasPrefix(name, prefix) && ownPartial(name) {
+		if entry.Type().IsRegular() && path != keep && len(name) == len(prefix)+16+len(partialSuffix) && strings.HasPrefix(name, prefix) && ownPartial(name) {
 			_ = os.Remove(path)
 		}
 	}
