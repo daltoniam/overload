@@ -177,7 +177,7 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
-	resolved, err := resolveWorkflow(ctx, tx, workflowName)
+	resolved, err := resolveRunnableWorkflow(ctx, tx, workflowName)
 	if errors.Is(err, ErrWorkflowUnavailable) {
 		return skip(overload.TruncateUTF8(skipWorkflowBroken+": "+strings.TrimPrefix(err.Error(), ErrWorkflowUnavailable.Error()+": "), 300), nil)
 	}

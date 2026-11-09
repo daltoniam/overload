@@ -1,0 +1,400 @@
+[
+  {
+    "id": "recursive-flint",
+    "name": "Recursive Flint",
+    "publisher": "Recursive",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Mixture of experts, 40B total, 2.5B active; 14 of 49 layers use full attention",
+    "trained_from_scratch": true,
+    "licence": {"name": "Apache 2.0", "commercial": "yes"},
+    "context_tokens": 262144,
+    "weights": [
+      {"quant": "Q4_K_M", "repository": "lmstudio-community/flint-GGUF", "size_gb": 24, "format": "gguf"},
+      {"quant": "Q6_K", "repository": "lmstudio-community/flint-GGUF", "size_gb": 33, "format": "gguf"},
+      {"quant": "Q8_0", "repository": "lmstudio-community/flint-GGUF", "size_gb": 42, "format": "gguf"}
+    ],
+    "runtime": {"engine": "llama.cpp", "min_build": 11801, "server_args": ["-ngl", "99", "-c", "262144", "--jinja", "--reasoning-format", "deepseek"], "served_name": "flint"},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b11803, 256k context", "found": 15, "possible": 20, "runs": 4},
+      {"setup": "Q4_K_M, llama.cpp b11803, 256k context", "found": 14, "possible": 20, "runs": 4},
+      {"setup": "Q4_K_M, llama.cpp b11803, 64k context", "found": 13, "possible": 20, "runs": 4}
+    ],
+    "tier": "developer",
+    "notes": "Always thinks; its chat template takes no effort setting. Raise max output tokens rather than lowering effort if files run out. Generates about 50 tokens/s at Q4_K_M and 37 at Q8_0 on an M1 Max.",
+    "sources": ["https://huggingface.co/RecursiveSI/flint", "https://huggingface.co/lmstudio-community/flint-GGUF"]
+  },
+  {
+    "id": "ripple-65b-preview",
+    "name": "Ripple-65B Preview",
+    "publisher": "Ricursive Intelligence",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Dense 65B, mostly sliding-window attention",
+    "trained_from_scratch": true,
+    "licence": {"name": "Apache 2.0", "commercial": "yes"},
+    "weights": [
+      {"quant": "IQ3_XXS", "size_gb": 28, "format": "gguf"},
+      {"quant": "Q8_0", "size_gb": 69, "format": "gguf"},
+      {"quant": "BF16", "size_gb": 130, "format": "gguf"}
+    ],
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "65536", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "IQ3_XXS, llama.cpp master (67107ac), 64k context", "found": 14, "possible": 20, "runs": 4, "notes": "The first non-Chinese model to find all five bugs in a run."}
+    ],
+    "tier": "team_node",
+    "notes": "llama.cpp support landed on November 5, 2026 (PR 31692) and needs a build from master until a release includes it. About 2.5 tokens/s on an M1 Max; one 256 GB Mac Studio holds it at Q8 without clustering."
+  },
+  {
+    "id": "twil-8b",
+    "name": "TwIL-8B",
+    "publisher": "webAI",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Dense 8B",
+    "base_model": "IBM Granite 4.2 8B",
+    "base_origins": ["US"],
+    "licence": {"name": "webAI non-commercial licence", "commercial": "no", "notes": "Business use needs a separate licence from webAI."},
+    "context_tokens": 131072,
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "131072", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0 \"verbose\", llama.cpp b12144, 128k context", "found": 11, "possible": 20, "runs": 4},
+      {"setup": "Q4_K_M \"balanced\", llama.cpp b12144, 64k context", "found": 4, "possible": 20, "runs": 4, "notes": "One run put code in the line field and was rejected."}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "gemma-4-31b",
+    "name": "Gemma 4 31B",
+    "publisher": "Google",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Dense 31B",
+    "licence": {"commercial": ""},
+    "weights": [{"quant": "Q8_0", "size_gb": 33, "format": "gguf"}],
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "65536", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 64k context", "found": 12, "possible": 20, "runs": 4}
+    ],
+    "tier": "developer",
+    "notes": "Dense 30B models at Q8 swapped on a 64 GB Mac with normal developer apps open (about 3 tokens/s); use Q4 there or a Mac with 96 GB or more."
+  },
+  {
+    "id": "gemma-4-26b-a4b",
+    "name": "Gemma 4 26B-A4B",
+    "publisher": "Google",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Mixture of experts, 26B total, 4B active",
+    "licence": {"commercial": ""},
+    "context_tokens": 262144,
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "262144", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 256k context", "found": 0, "possible": 20, "runs": 4, "notes": "Found real bugs but cited lines 4 to 9 off, so every finding was dropped."}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "north-mini-code",
+    "name": "North Mini Code 30B-A3B",
+    "publisher": "Cohere",
+    "origin": "CA",
+    "kind": "open",
+    "architecture": "Mixture of experts, 30B total, 3B active",
+    "licence": {"commercial": ""},
+    "context_tokens": 262144,
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "262144", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 256k context", "found": 12, "possible": 20, "runs": 4, "notes": "The noisiest model measured: several findings beyond the planted bugs."}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "nemotron-3.5-lightning",
+    "name": "Nemotron 3.5 Lightning 30B-A3B",
+    "publisher": "NVIDIA",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Mixture of experts, 30B total, 3B active",
+    "training_data_origins": ["CN"],
+    "training_data_notes": "The model card lists training data generated with DeepSeek, Qwen and GLM models.",
+    "licence": {"commercial": ""},
+    "context_tokens": 262144,
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "262144", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 256k context", "found": 8, "possible": 20, "runs": 4},
+      {"setup": "MLX 4-bit, TensorFold 1.2.2, drafts off, 256k context", "found": 6, "possible": 30, "runs": 6}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "granite-4.2-30b",
+    "name": "Granite 4.2 30B",
+    "publisher": "IBM",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Dense 30B",
+    "licence": {"commercial": ""},
+    "weights": [{"quant": "Q8_0", "size_gb": 31, "format": "gguf"}],
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "65536", "--jinja", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 64k context, q8 KV cache", "found": 2, "possible": 5, "runs": 1, "notes": "Only one run finished; it swapped on a 64 GB Mac."}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "lfm2.5-24b-a2b",
+    "name": "LFM2.5-24B-A2B",
+    "publisher": "Liquid AI",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Mixture of experts, 24B total, 2B active",
+    "licence": {"name": "LFM Open License", "commercial": "revenue_cap", "revenue_cap_usd": 10000000, "notes": "Free commercial use only below $10M in annual revenue."},
+    "context_tokens": 131072,
+    "weights": [{"quant": "Q8_0", "repository": "LiquidAI/LFM2.5-24B-A2B-GGUF", "format": "gguf"}],
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "131072", "--jinja"]},
+    "settings": {"reasoning_param": "none", "temperature": 0.1},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 128k context", "found": 7, "possible": 20, "runs": 4}
+    ],
+    "tier": "developer",
+    "sources": ["https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF"]
+  },
+  {
+    "id": "lfm3-1.7b",
+    "name": "LFM3-1.7B",
+    "publisher": "Liquid AI",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Dense 1.7B",
+    "licence": {"name": "LFM Open License", "commercial": "revenue_cap", "revenue_cap_usd": 10000000, "notes": "Free commercial use only below $10M in annual revenue."},
+    "context_tokens": 262144,
+    "weights": [{"quant": "Q8_0", "repository": "LiquidAI/LFM3-1.7B-GGUF", "format": "gguf"}],
+    "runtime": {"engine": "llama.cpp", "min_build": 11960, "server_args": ["-ngl", "99", "-c", "262144", "--jinja"]},
+    "settings": {"reasoning_param": "none", "temperature": 0.1},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 256k context", "found": 5, "possible": 35, "runs": 7, "notes": "Invalid JSON in 4 of 7 runs."}
+    ],
+    "tier": "developer",
+    "sources": ["https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF"]
+  },
+  {
+    "id": "devstral-small-2",
+    "name": "Devstral Small 2 24B",
+    "publisher": "Mistral AI",
+    "origin": "FR",
+    "kind": "open",
+    "architecture": "Dense 24B",
+    "licence": {"commercial": ""},
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "65536", "--jinja"]},
+    "settings": {"reasoning_param": "none"},
+    "evals": [
+      {"setup": "Q8_0, llama.cpp b12058, 64k context", "found": 2, "possible": 45, "runs": 9, "notes": "Found real bugs but cited the wrong lines; not a reasoning model."}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "qwen3.8-flash-next",
+    "name": "Qwen3.8 Flash Next",
+    "publisher": "Qwen",
+    "origin": "CN",
+    "kind": "open",
+    "licence": {"commercial": ""},
+    "weights": [{"quant": "Q2", "format": "ds4"}],
+    "runtime": {"engine": "ds4", "server_args": ["--ctx", "32768", "--prefill-chunk", "1024"], "served_name": "qwen3.8-flash-next"},
+    "settings": {"reasoning_param": "reasoning_effort", "reasoning_effort": "high", "max_output_tokens": 28000},
+    "evals": [
+      {"setup": "Q2, DwarfStar ds4, reasoning_effort high", "found": 20, "possible": 20, "runs": 4}
+    ],
+    "tier": "developer",
+    "notes": "Uses about 44 GiB of memory at 32k context on DwarfStar and fits a 64 GB Mac; 137 GiB on disk."
+  },
+  {
+    "id": "bonsai-2-27b",
+    "name": "Bonsai 2 27B",
+    "publisher": "PrismML",
+    "kind": "open",
+    "architecture": "Dense 27B",
+    "base_model": "Qwen3.8-27B",
+    "base_origins": ["CN"],
+    "licence": {"commercial": ""},
+    "runtime": {"engine": "llama.cpp", "server_args": ["-ngl", "99", "-c", "65536", "--jinja"]},
+    "settings": {"reasoning_param": "chat_template", "reasoning_effort": "xhigh"},
+    "evals": [
+      {"setup": "llama.cpp, xhigh", "found": 8, "possible": 10, "runs": 2},
+      {"setup": "llama.cpp, medium", "found": 6, "possible": 10, "runs": 2}
+    ],
+    "tier": "developer"
+  },
+  {
+    "id": "deepseek-v4-flash",
+    "name": "DeepSeek V4 Flash",
+    "publisher": "DeepSeek",
+    "origin": "CN",
+    "kind": "open",
+    "licence": {"commercial": ""},
+    "runtime": {"engine": "ds4"},
+    "settings": {},
+    "tier": "team_node",
+    "notes": "Q2 needs 96 to 128 GB of memory on DwarfStar."
+  },
+  {
+    "id": "reflection-beam-1.0",
+    "name": "Beam 1.0",
+    "publisher": "Reflection AI",
+    "origin": "US",
+    "kind": "open",
+    "architecture": "Mixture of experts, 501B total, 23B active",
+    "licence": {"commercial": ""},
+    "tier": "team_cluster",
+    "notes": "About 1 TB at BF16 and about 300 GB at 4 bits: a Mac Studio cluster."
+  },
+  {
+    "id": "arcee-trinity-large-thinking",
+    "name": "Trinity-Large-Thinking",
+    "publisher": "Arcee",
+    "origin": "US",
+    "kind": "open",
+    "licence": {"commercial": ""},
+    "tier": "team_node",
+    "notes": "Needs a Mac Studio or a cluster."
+  },
+  {
+    "id": "gpt-oss-120b",
+    "name": "gpt-oss-120b",
+    "publisher": "OpenAI",
+    "origin": "US",
+    "kind": "open",
+    "licence": {"commercial": ""},
+    "tier": "team_node",
+    "notes": "Needs a Mac Studio or a cluster."
+  },
+  {
+    "id": "gpt-6-sol",
+    "name": "GPT-6 Sol",
+    "publisher": "OpenAI",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {"max_output_tokens": 16384},
+    "evals": [{"setup": "Hosted, default settings", "found": 70, "possible": 70, "runs": 14}],
+    "tier": "hosted",
+    "notes": "Counts hidden reasoning against the output limit."
+  },
+  {
+    "id": "gpt-6.1-sol",
+    "name": "GPT-6.1 Sol",
+    "publisher": "OpenAI",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {},
+    "evals": [
+      {"setup": "Hosted, default effort", "found": 20, "possible": 20, "runs": 4},
+      {"setup": "Hosted, effort high", "found": 19, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "gpt-6.1-terra",
+    "name": "GPT-6.1 Terra",
+    "publisher": "OpenAI",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "settings": {},
+    "evals": [
+      {"setup": "Hosted, default effort", "found": 20, "possible": 20, "runs": 4},
+      {"setup": "Hosted, effort high", "found": 19, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "gpt-6-luna",
+    "name": "GPT-6 Luna",
+    "publisher": "OpenAI",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, default effort", "found": 18, "possible": 20, "runs": 4},
+      {"setup": "Hosted, effort high", "found": 15, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "claude-opus-5.5",
+    "name": "Claude Opus 5.5",
+    "publisher": "Anthropic",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 20, "possible": 20, "runs": 4},
+      {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 20, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "claude-sonnet-5.5",
+    "name": "Claude Sonnet 5.5",
+    "publisher": "Anthropic",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 9, "possible": 20, "runs": 4, "notes": "Cited lines one or two off."},
+      {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 14, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted",
+    "notes": "Needs native Anthropic support to think; through OpenAI-compatible endpoints it runs without thinking."
+  },
+  {
+    "id": "claude-haiku-5.5",
+    "name": "Claude Haiku 5.5",
+    "publisher": "Anthropic",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, OpenAI-compatible endpoint, no thinking", "found": 19, "possible": 20, "runs": 4},
+      {"setup": "Hosted, native Anthropic endpoint, effort high, adaptive thinking", "found": 20, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "gemini-4-argon",
+    "name": "Gemini 4 Argon",
+    "publisher": "Google",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, default effort", "found": 20, "possible": 20, "runs": 4},
+      {"setup": "Hosted, effort high", "found": 19, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted"
+  },
+  {
+    "id": "grok-4.7",
+    "name": "Grok 4.7",
+    "publisher": "xAI",
+    "origin": "US",
+    "kind": "hosted",
+    "licence": {"name": "Provider terms", "commercial": "provider_terms"},
+    "evals": [
+      {"setup": "Hosted, default effort", "found": 18, "possible": 20, "runs": 4},
+      {"setup": "Hosted, effort high", "found": 20, "possible": 20, "runs": 4}
+    ],
+    "tier": "hosted",
+    "notes": "The slowest hosted model measured (1.2 to 2.8 minutes per file)."
+  }
+]

@@ -77,6 +77,66 @@ of an API key's environment variable is stored, never the key, and names of
 overload's own secrets (`DATABASE_URL`, `OVERLOAD_*`, `GITHUB_*`, `PG*`) are
 refused.
 
+### Catalog and model policy
+
+Overload ships a catalog of most of the models measured in this file and
+other open models a team might run: publisher and country, base model and
+training-data sources, licence terms, hardware tier, known-good settings and
+planted-bug eval results. See it under Models, Catalog and policy, or with
+`overload catalog list` and `overload catalog show ID`. Fields the catalog
+has not recorded (many licences, some base models) are shown as such rather
+than guessed.
+
+Name a model connection's catalog entry (`--catalog ID`, or the Catalog
+entry field) so the model policy can check it. `overload settings set
+--catalog recursive-flint --name flint --url http://127.0.0.1:8080/v1` fills
+the model ID and reasoning settings from the entry; flags you pass win. A
+connection that names no entry is matched by its model ID when that equals
+an entry's ID or served name (`flint`, `qwen3.8-flash-next`), and a
+connection whose model ID belongs to a different entry than the one it names
+is refused.
+
+The model policy restricts which models may review code. With no policy
+every model is allowed. For example, to allow only US, Canadian and French
+publishers, apply that to base models and training data too, and require a
+licence that permits commercial use:
+
+```sh
+overload policy set --allow-origins US,CA,FR --check-lineage \
+  --require-commercial-use --annual-revenue-usd 25000000
+overload policy show    # the policy and any saved models it refuses
+```
+
+- Models whose publisher country is not recorded are refused when origins
+  are allowlisted. With `--check-lineage` and an allowlist, open models
+  whose base model is not recorded (Gemma, Granite, North and others) are
+  refused until you confirm it with `--lineage-reviewed ID`; hosted models
+  are checked by their provider's country only. Training-data sources are
+  recorded only where a model card names them.
+- Licences the catalog has not recorded count as not permitting commercial
+  use; after reading a model's terms, list it with `--licence-reviewed ID`
+  (this also covers a separately purchased licence).
+- Connections that match no catalog entry are refused under an allowlist,
+  the licence rule or `--refuse-uncataloged`. A policy that only blocks
+  countries lets them through, so use an allowlist to fail closed.
+- Every `policy set` replaces the whole policy, and `policy set` with no
+  flags clears it.
+
+A refused model cannot be saved. A workflow whose agents use one stops
+queueing runs: the webhook records why it was skipped, a due schedule
+records one failed run with the reason and is paused (it can be saved while
+paused, and enabled again once the policy allows its models; a schedule
+whose workflow is unavailable for another reason, such as a disabled agent,
+is paused the same way), and
+`overload review` fails with the reason.
+A run queued before the policy changed fails with `model_policy` when it
+starts, rather than reviewing with the refused model; GitHub only sees
+"Review refused by the model policy".
+
+The policy trusts the catalog entry a connection names unless its model ID
+is a different entry's. It keeps reviews on approved models; it is not a
+control against someone who can edit model connections and the policy.
+
 ### DwarfStar on Metal
 
 [DwarfStar](https://dwarfstar.sh/) (`github.com/antirez/ds4`, MIT) serves a
@@ -136,6 +196,15 @@ effort if files run out. Servers that leave its `<think>...</think>` block
 in the answer instead of splitting it out (no `--reasoning-format`) still
 work: overload drops the block before reading the review.
 
+Liquid AI's models
+([LFM2.5-24B-A2B](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B-GGUF),
+[LFM3-1.7B](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)) run the same
+way with `--reasoning-param none`, because their templates take no effort
+setting; LFM3 needs llama.cpp b11960 or newer. Their GGUFs carry Liquid's
+recommended sampling (temperature 0.1), which llama-server applies. They are
+under the LFM Open License, which allows free commercial use only below
+$10M in annual revenue.
+
 ### Measurements
 
 A 92-line Go file with five planted bugs (`harness/testdata/planted`), run
@@ -143,15 +212,44 @@ through the normal review path on an M1 Max with 64 GB. Rerun with
 `OVERLOAD_PLANTED_EVAL=1 go test -run TestPlantedBugEval -v ./harness/` and
 the `OVERLOAD_EVAL_*` variables described in the test.
 
-| Model | Planted bugs found | Output tokens | Time per file |
-|---|---|---|---|
-| Qwen3.8 Flash Next Q2, ds4, `reasoning_effort:high` | 5/5 in 4 of 4 runs | 7.5k to 13.5k | 8 to 12 min |
-| Bonsai 2 27B, llama.cpp, `xhigh` | 4/5 in 2 of 2 runs | 11k to 15k | 15 to 19 min |
-| Bonsai 2 27B, llama.cpp, `medium` | 3/5 in 2 of 2 runs | 2.7k to 3.5k | 3.5 to 4.5 min |
-| Recursive Flint Q4_K_M, llama.cpp b11803, 64k context | 4/5 in 1 of 4 runs, 3/5 in 3 | 12k to 17k | 5.5 to 7.5 min |
-| Recursive Flint Q4_K_M, llama.cpp b11803, 256k context | 4/5 in 2 of 4 runs, 3/5 in 2 | 7.9k to 16k | 4 to 7.5 min |
-| Recursive Flint Q8_0, llama.cpp b11803, 256k context | 4/5 in 3 of 4 runs, 3/5 in 1 | 9.6k to 17.5k | 5.5 to 10.5 min |
-| GPT-6 Sol (hosted) | 5/5 in 14 of 14 runs | 1.4k to 2.0k | 13 to 21 s |
+| Model | Origin | Planted bugs found | Output tokens | Time per file |
+|---|---|---|---|---|
+| Qwen3.8 Flash Next Q2, ds4, `reasoning_effort:high` | China | 5/5 in 4 of 4 runs | 7.5k to 13.5k | 8 to 12 min |
+| Bonsai 2 27B, llama.cpp, `xhigh` | PrismML, built on Qwen3.8-27B (China) | 4/5 in 2 of 2 runs | 11k to 15k | 15 to 19 min |
+| Bonsai 2 27B, llama.cpp, `medium` | PrismML, built on Qwen3.8-27B (China) | 3/5 in 2 of 2 runs | 2.7k to 3.5k | 3.5 to 4.5 min |
+| Recursive Flint Q4_K_M, llama.cpp b11803, 64k context | US | 4/5 in 1 of 4 runs, 3/5 in 3 | 12k to 17k | 5.5 to 7.5 min |
+| Recursive Flint Q4_K_M, llama.cpp b11803, 256k context | US | 4/5 in 2 of 4 runs, 3/5 in 2 | 7.9k to 16k | 4 to 7.5 min |
+| Recursive Flint Q8_0, llama.cpp b11803, 256k context | US | 4/5 in 3 of 4 runs, 3/5 in 1 | 9.6k to 17.5k | 5.5 to 10.5 min |
+| Ricursive Ripple-65B Preview IQ3_XXS (3-bit), llama.cpp master (67107ac), 64k context | US | 5/5 in 1 of 4 runs, 4/5 in 2, 1/5 in 1 | 5.2k to 10.5k | 36 to 72 min (2.5 tokens/s, swapping) |
+| webAI TwIL-8B Q8_0 "verbose", llama.cpp b12144, 128k context | US (Granite 4.2 8B base); non-commercial licence | 4/5 in 1 of 4 runs, 3/5 in 1, 2/5 in 2 | 5.7k to 8.9k | 8.5 to 14 min |
+| webAI TwIL-8B Q4_K_M "balanced", llama.cpp b12144, 64k context | US; non-commercial licence | 2/5 in 2 of 4 runs, 0/5 in 1, invalid output in 1 | 6.4k to 22.7k | 8 to 29 min |
+| Gemma 4 31B Q8_0, llama.cpp b12058, 64k context | US | 4/5 in 1 of 4 runs, 3/5 in 2, 2/5 in 1 | 2.9k to 6.3k | 16 to 34 min (swapping) |
+| Cohere North Mini Code 30B-A3B Q8_0, llama.cpp b12058, 256k context | Canada | 4/5 in 1 of 4 runs, 3/5 in 2, 2/5 in 1 | 11.6k to 20.6k | 12 to 24 min |
+| NVIDIA Nemotron 3.5 Lightning 30B-A3B Q8_0, llama.cpp b12058, 256k context | US (see note) | 3/5 in 2 of 4 runs, 2/5 in 1, 0/5 in 1 | 10k to 26k | 9.5 to 25 min |
+| NVIDIA Nemotron 3.5 Lightning 30B-A3B MLX 4-bit, TensorFold 1.2.2, drafts off, 256k context | US (see note) | 3/5 in 1 of 6 runs, 1/5 in 3, 0/5 in 2 | 7.4k to 23.6k | 3 to 10.5 min |
+| IBM Granite 4.2 30B Q8_0, llama.cpp b12058, 64k context, q8 KV cache | US | 2/5 in the one run that finished | 10k | 64 min (swapping) |
+| LFM2.5-24B-A2B Q8_0, llama.cpp b12058, 128k context | US | 3/5 in 1 of 4 runs, 2/5 in 1, 1/5 in 2 | 5.4k to 6.6k | 2.5 to 4 min |
+| LFM3-1.7B Q8_0, llama.cpp b12058, 256k context | US | 2/5 in 2 of 7 runs, 1/5 in 1, invalid JSON in 4 | 11k to 23k | 5 to 12 min |
+| Mistral Devstral Small 2 24B Q8_0, llama.cpp b12058, 64k context | France | 1/5 in 2 of 9 runs, 0/5 in 7 | 0.3k | 1 to 2 min |
+| Gemma 4 26B-A4B Q8_0, llama.cpp b12058, 256k context | US | 0/5 in 4 of 4 runs | 3.0k to 5.3k | 3 to 5 min |
+| Minico M1 1105 (350M) Q8_0, llama.cpp b12144, 32k context, `reasoning_effort:high` | LFM2.5-350M base (Liquid AI, US) | 0/5 in 4 of 4 runs, no findings | 0.6k to 0.7k | 2 to 3 s |
+| GPT-6 Sol (hosted) | US | 5/5 in 14 of 14 runs | 1.4k to 2.0k | 13 to 21 s |
+| Claude Opus 5.5 (hosted, default effort) | US | 5/5 in 4 of 4 runs | 2.0k to 2.1k | 17 to 18 s |
+| Gemini 4 Argon (hosted, default effort) | US | 5/5 in 4 of 4 runs | 0.7k to 0.8k | 15 to 33 s |
+| GPT-6.1 Sol (hosted, default effort) | US | 5/5 in 4 of 4 runs | 1.2k to 1.3k | 19 to 20 s |
+| GPT-6.1 Terra (hosted, default effort) | US | 5/5 in 4 of 4 runs | 1.5k to 1.7k | 19 to 21 s |
+| Claude Haiku 5.5 (hosted, default effort) | US | 5/5 in 3 of 4 runs, 4/5 in 1 | 2.1k to 2.8k | 8 to 12 s |
+| GPT-6 Luna (hosted, default effort) | US | 5/5 in 2 of 4 runs, 4/5 in 2 | 1.6k to 2.2k | 14 to 21 s |
+| Grok 4.7 (hosted, default effort) | US | 5/5 in 2 of 4 runs, 4/5 in 2 | 6.3k to 14k | 1.3 to 2.8 min |
+| Claude Sonnet 5.5 (hosted, default effort) | US | 3/5 in 2 of 4 runs, 2/5 in 1, 1/5 in 1 | 1.0k to 1.1k | 8 to 9 s |
+| Claude Opus 5.5 (hosted, effort high) | US | 5/5 in 4 of 4 runs | 1.8k to 2.3k | 16 to 20 s |
+| Claude Haiku 5.5 (hosted, effort high) | US | 5/5 in 4 of 4 runs | 2.7k to 3.4k | 11 to 14 s |
+| Grok 4.7 (hosted, effort high) | US | 5/5 in 4 of 4 runs | 5.7k to 11.9k | 1.2 to 2.7 min |
+| GPT-6.1 Sol (hosted, effort high) | US | 5/5 in 3 of 4 runs, 4/5 in 1 | 2.0k to 2.6k | 35 to 44 s |
+| GPT-6.1 Terra (hosted, effort high) | US | 5/5 in 3 of 4 runs, 4/5 in 1 | 2.2k to 3.1k | 27 to 39 s |
+| Gemini 4 Argon (hosted, effort high) | US | 5/5 in 3 of 4 runs, 4/5 in 1 | 0.7k to 0.8k | 38 to 55 s |
+| GPT-6 Luna (hosted, effort high) | US | 5/5 in 2 of 4 runs, 4/5 in 1, 1/5 in 1 | 2.2k to 6.0k | 30 to 76 s |
+| Claude Sonnet 5.5 (hosted, effort high) | US | 5/5 in 2 of 4 runs, 3/5 in 1, 1/5 in 1 | 1.0k to 2.1k | 7 to 15 s |
 
 GPT-6 Sol counts its hidden reasoning against the output limit: with the
 old 2,048-token hosted default, two runs were cut off and lost most of their
@@ -167,7 +265,110 @@ callers use a zero `Store`. Q8_0 found the mutex bug in 2 of 4 runs and the
 negative refund in 3 of 4 but missed the stale cache twice. Both flagged the
 ignored refund-amount parse error, a real bug that was not planted. The Q8_0
 runs left 5% of memory free with the Mac swapping, so its times
-are pessimistic. This is one synthetic file; treat it as
+are pessimistic. Liquid's models trail the rest: LFM2.5-24B-A2B (about 69
+tokens/s) never found the mutex or stale-cache bugs and missed the SQL
+injection once, though it reported nothing false. LFM3-1.7B (about 85
+tokens/s) returned invalid JSON in four of seven runs, even after the
+repair retry, by not escaping quotes in code it cited as evidence, and two of
+its three completed runs claimed the refund UPDATE subtracts the amount from
+itself, the first false positives in these measurements.
+
+The November 2026 batch (Gemma, Granite, Nemotron, North, Devstral) used
+each vendor's recommended sampling, thinking switched on where the template
+has a switch, and `--reasoning-param none`. Two lessons from it:
+
+- **Line numbers decide the score.** The diff has no line numbers, so a
+  model counts them from the hunk header, and overload drops any finding
+  whose evidence is not on the cited line. Gemma 4 26B-A4B and Devstral
+  Small 2 both found the SQL injection and the pagination bug in captured
+  replies but cited lines 4 to 9 off (45 or 50 instead of 41), so every
+  finding was dropped. Gemma 4 31B, Nemotron and North counted correctly.
+  Devstral is also not a reasoning model and answered in about 290 tokens.
+- **Dense 30B models at Q8 do not fit a 64 GB Mac in practice.** With an
+  IDE, language servers and a VM using about 20 GB, Gemma 4 31B (33 GB) and
+  Granite 4.2 30B (31 GB) were pushed into swap and generated about 3
+  tokens/s; Granite's second run hit the 90-minute eval limit and the rest
+  were stopped. Mixture-of-experts models (Flint, Nemotron, North) read far
+  fewer weights per token and stayed usable. On this tier use Q4 for dense
+  models, or a Mac with 96 GB or more.
+
+Gemma 4 31B and North Mini Code matched each other at 12 of 20; Flint Q8
+remains the best non-Chinese model measured (15 of 20). North was the
+noisiest, adding findings such as an uninitialized cache map, GET used for a
+state change and database errors returned to the client. Nemotron is from a
+US company, but its model card lists training data generated with DeepSeek,
+Qwen and GLM models; North (Cohere) is Canadian and Devstral (Mistral) is
+French, so check each against your own policy.
+
+TensorFold 1.2.2 (the macOS release archive, no install needed) served
+Nemotron's MLX 4-bit checkpoint at about 40 to 64 tokens/s on the M1 Max,
+roughly twice llama.cpp's Q8 speed, but found fewer bugs (6 of 30 against 8
+of 20); its replies were valid and line numbers correct, so the 4-bit
+weights, not the engine, are the likely cause. Its MTP drafter is broken on
+this M1 with sampling on: with temperature 1.0 the reasoning collapsed into
+one repeated token until the limit, and with temperature 0 it was correct
+but slower than drafts off (29 against 48 tokens/s), so these runs used
+`--no-drafts`. Gemma 4 31B could not be tested: TensorFold's Gemma path
+needs M5 tensor units and refuses M1 to M4.
+
+November 6 batch:
+
+- **Ripple-65B Preview** (Ricursive Intelligence, Palo Alto; trained from
+  scratch, Apache 2.0, a dense 65B with mostly sliding-window attention)
+  is the first non-Chinese model to find all five bugs in a run, and did
+  it at 3 bits (14 of 20, against Flint Q8's 15). It found the negative
+  refund, the stale cache and the endless loop on a non-positive page size
+  that most models miss, with no false positives. But a dense 28 GB model
+  generates about 2.5 tokens/s on the M1 Max, 36 to 72 minutes per file, so
+  it is not practical here. Support landed in llama.cpp on November 5
+  (PR 31692); no release build had it yet, so these runs used a llama.cpp
+  built from master and a community GGUF (AtomicChat, made with that PR).
+- **TwIL-8B** (webAI, Austin; Granite 4.2 8B post-trained) found 11 of 20 at
+  Q8, remarkable for 8B, but only 4 of 20 at Q4 "balanced", where one run
+  put code in the line field and was rejected. Its webAI non-commercial
+  licence rules it out for most business use without a separate licence.
+- **Minico M1 1105** is a 350M LFM2.5 fine-tune; it answered in seconds with
+  no findings. Too small for code review.
+- **Meridian Air CivoE** (webAI) has no public weights: the Hugging Face
+  repositories hold LoRA adapters for an internal Meridian-1 host model, so
+  it cannot be run locally on any hardware.
+
+Hosted baseline (November 6): every model went through the Cloudflare AI
+Gateway's OpenAI-compatible endpoint with overload's hosted defaults (no
+reasoning field sent, 16,384 output tokens), four runs each, all eight
+models in parallel. Opus 5.5, Gemini 4 Argon, GPT-6.1 Sol and GPT-6.1 Terra
+found all five bugs in every run, and Opus and Argon added nothing beyond
+the planted bugs; Sol, Terra, Grok and Luna added 4 to 7 extra findings
+across four runs (mostly the ignored parse error and the non-positive page
+size, both real). Haiku 5.5 and Luna missed only the stale cache once or
+twice; Grok missed the SQL injection twice and was the slowest by far.
+Sonnet 5.5 scored lowest (9 of 20) because it cited lines one or two off
+(42 for 41, 65 for 63), so its mutex and pagination findings were dropped
+or fell outside the scorer's window, the same placement problem as Gemma 4
+26B-A4B and Devstral locally. Reflection Beam 1.0 through Workers AI
+(`workers-ai/reflection-ai/beam-1.0-501b-a23b`) could not be measured: the
+gateway account has no unified billing credits for it.
+
+The default-effort Claude runs above had **no thinking**: the gateway's
+OpenAI-compatible endpoint ignores `reasoning_effort` for Anthropic and
+refuses adaptive thinking ("not available via the OpenAI compatibility
+endpoint"). The effort-high rerun therefore sent Claude models through a
+small local proxy to the gateway's native Anthropic endpoint with
+`output_config.effort: "high"` and `thinking: {"type": "adaptive"}`; the
+OpenAI, xAI and Google models got top-level `reasoning_effort: "high"`
+through the compatibility endpoint (reasoning tokens rose for OpenAI, and
+Argon took about 2.5 times longer). At high effort Opus 5.5, Haiku 5.5 and
+Grok 4.7 found 20 of 20; Sol, Terra and Argon 19; Luna 15 (one run found
+only the SQL injection); Sonnet 5.5 14. Sonnet was bimodal: the two runs
+where it used about 2k tokens (adaptive thinking engaged) found all five,
+and the two at about 1k tokens repeated its line-number misses. With five
+bugs the eval is near its ceiling for frontier models, so one-bug
+differences between them are noise. Overload itself reaches Claude only
+through OpenAI-compatible endpoints today, so Claude reviews in overload
+run without thinking until native Anthropic support is added.
+
+This is one
+synthetic file; treat it as
 directional. Parallel files did not help on the M1 Max (two streams gave
 10 tokens/s combined against 13 for one); it is meant for GPUs and hosted
 APIs, where eight at once cut a 21-file review from 138 s to 24 s.

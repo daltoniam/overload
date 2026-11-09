@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -43,7 +44,13 @@ func (s *Store) SaveSchedule(ctx context.Context, schedule overload.Schedule) er
 	if kind != "scheduled_prompt" {
 		return errors.New("workflow is not a scheduled prompt")
 	}
-	resolved, err := s.ResolveWorkflow(ctx, schedule.Workflow)
+	resolve := s.ResolveRunnableWorkflow
+	if !schedule.Enabled {
+		// A paused schedule queues nothing, so the model policy is checked
+		// when it is enabled again; this keeps pausing possible.
+		resolve = s.ResolveWorkflow
+	}
+	resolved, err := resolve(ctx, schedule.Workflow)
 	if err != nil {
 		return err
 	}
@@ -105,6 +112,7 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 	if err != nil {
 		return 0, err
 	}
+	queued := 0
 	for _, item := range due {
 		zone, err := time.LoadLocation(item.timezone)
 		if err != nil {
@@ -118,10 +126,18 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 		if next.IsZero() {
 			return 0, errors.New("schedule has no future occurrence")
 		}
-		resolved, err := s.ResolveWorkflow(ctx, item.workflow)
+		resolved, err := resolveRunnableWorkflow(ctx, tx, item.workflow)
+		if errors.Is(err, ErrWorkflowUnavailable) {
+			slog.Warn("scheduled run skipped", "schedule", item.name, "error", err)
+			if err := recordSkippedOccurrence(ctx, tx, item.id, item.at, item.input, next, err); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if err != nil {
 			return 0, err
 		}
+		queued++
 		if resolved.Kind != "scheduled_prompt" {
 			return 0, errors.New("schedule workflow kind changed")
 		}
@@ -150,7 +166,31 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return len(due), nil
+	return queued, nil
+}
+
+// recordSkippedOccurrence stores a due occurrence that could not run as a
+// failed run, so the Runs page shows why, and pauses the schedule so a
+// frequent one does not add a failed run on every tick. Enabling it again
+// checks the workflow first.
+func recordSkippedOccurrence(ctx context.Context, tx pgx.Tx, scheduleID int64, at time.Time, input []byte, next time.Time, cause error) error {
+	code := "workflow_unavailable"
+	if errors.Is(cause, ErrModelPolicy) {
+		code = "model_policy"
+	}
+	message := overload.TruncateUTF8("Schedule paused: "+cause.Error(), 1000)
+	var runID int64
+	if err := tx.QueryRow(ctx, `INSERT INTO runs(kind,pr_number,trigger,status,dry_run,input_snapshot,schedule_id,scheduled_for,error_code,error_message,finished_at) VALUES ('scheduled_prompt',NULL,'cron','failed',true,$1,$2,$3,$4,$5,now()) RETURNING id`, input, scheduleID, at, code, message).Scan(&runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'error', 'skipped', $2)`, runID, message); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO schedule_occurrences(schedule_id,scheduled_for,run_id) VALUES ($1,$2,$3)`, scheduleID, at, runID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE schedules SET enabled=false, next_run_at=$2, updated_at=now() WHERE id=$1`, scheduleID, next)
+	return err
 }
 
 type ScheduleArgs struct {
@@ -177,7 +217,7 @@ func (s *Store) RunScheduleNow(ctx context.Context, client *river.Client[pgx.Tx]
 	if err != nil {
 		return 0, err
 	}
-	resolved, err := resolveWorkflow(ctx, tx, workflowName)
+	resolved, err := resolveRunnableWorkflow(ctx, tx, workflowName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: workflow %s is disabled or missing", ErrWorkflowUnavailable, workflowName)
 	}

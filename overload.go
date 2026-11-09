@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/daltoniam/overload/catalog"
 )
 
 type RunStatus string
@@ -84,6 +86,9 @@ type ModelProfile struct {
 	// API is the request style: "" for Chat Completions, APIResponses for
 	// OpenAI's Responses API.
 	API string `json:",omitempty"`
+	// Catalog is the model's catalog entry, if the connection names one;
+	// the model policy is checked against it.
+	Catalog string `json:",omitempty"`
 }
 
 type ReviewSettings struct {
@@ -100,6 +105,8 @@ type ReviewSettings struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	API             string `json:"api,omitempty"`
+	// Catalog names the model's catalog entry (see package catalog).
+	Catalog string `json:"catalog,omitempty"`
 }
 
 // APIResponses selects OpenAI's Responses API instead of Chat Completions.
@@ -224,6 +231,11 @@ func (settings ReviewSettings) Validate() error {
 	default:
 		return errors.New("API must be empty (Chat Completions) or responses")
 	}
+	if settings.Catalog != "" {
+		if _, _, err := catalog.Identify(settings.Catalog, settings.Model); err != nil {
+			return err
+		}
+	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {
 		return errors.New("invalid model base URL")
@@ -232,7 +244,7 @@ func (settings ReviewSettings) Validate() error {
 }
 
 func (settings ReviewSettings) Profile() ModelProfile {
-	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API}
+	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API, Catalog: settings.Catalog}
 }
 
 type ReviewSpec struct {

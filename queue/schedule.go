@@ -40,14 +40,20 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 	}
 	var workflow overload.ResolvedWorkflow
 	if err := json.Unmarshal(snapshot, &workflow); err != nil || workflow.Kind != "scheduled_prompt" || workflow.Verify() != nil {
-		return worker.fail(ctx, runID, "The run's workflow snapshot is invalid")
+		return worker.fail(ctx, runID, "schedule_failed", "The run's workflow snapshot is invalid")
+	}
+	if err := worker.Store.CheckModelPolicy(ctx, workflow); err != nil {
+		if errors.Is(err, postgres.ErrModelPolicy) {
+			return worker.fail(ctx, runID, "model_policy", overload.TruncateUTF8(err.Error(), 500))
+		}
+		return err
 	}
 	if len(input) > 4096 {
-		return worker.fail(ctx, runID, "Scheduled input is larger than 4096 bytes")
+		return worker.fail(ctx, runID, "schedule_failed", "Scheduled input is larger than 4096 bytes")
 	}
 	var payload map[string]any
 	if json.Unmarshal(input, &payload) != nil || payload == nil {
-		return worker.fail(ctx, runID, "Scheduled input must be a JSON object")
+		return worker.fail(ctx, runID, "schedule_failed", "Scheduled input must be a JSON object")
 	}
 	command, err := worker.Store.Pool.Exec(ctx, `UPDATE runs SET status='running',started_at=now() WHERE id=$1 AND status='queued'`, runID)
 	if err != nil {
@@ -65,7 +71,7 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return worker.fail(ctx, runID, fmt.Sprintf("Agent %s failed: %s", agent.Name, err))
+			return worker.fail(ctx, runID, "schedule_failed", fmt.Sprintf("Agent %s failed: %s", agent.Name, err))
 		}
 		outputs = append(outputs, output)
 	}
@@ -166,10 +172,10 @@ func (worker *ScheduleWorker) event(ctx context.Context, runID int64, event post
 	_ = worker.Store.AddRunEvent(context.WithoutCancel(ctx), runID, event)
 }
 
-func (worker *ScheduleWorker) fail(ctx context.Context, runID int64, message string) error {
+func (worker *ScheduleWorker) fail(ctx context.Context, runID int64, code, message string) error {
 	message = overload.TruncateUTF8(message, 1000)
 	ctx = context.WithoutCancel(ctx)
-	_, err := worker.Store.Pool.Exec(ctx, `UPDATE runs SET status='failed',error_code='schedule_failed',error_message=$2,finished_at=now() WHERE id=$1`, runID, message)
+	_, err := worker.Store.Pool.Exec(ctx, `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1`, runID, code, message)
 	worker.event(ctx, runID, postgres.RunEvent{Level: "error", Step: "failed", Message: message})
 	return err
 }

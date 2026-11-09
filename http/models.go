@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -65,6 +67,7 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 		}
 		setting := overload.ReviewSettings{Name: name, Provider: "openaicompat", ConnectionKind: kind, BaseURL: r.PostForm.Get("base_url"), Model: r.PostForm.Get("model"), APIKeyEnv: r.PostForm.Get("api_key_env"), PromptProfile: "context", IsDefault: r.PostForm.Get("is_default") == "true", Concurrency: 1}
 		setting.API = r.PostForm.Get("api")
+		setting.Catalog = strings.TrimSpace(r.PostForm.Get("catalog"))
 		setting.ReasoningParam = r.PostForm.Get("reasoning_param")
 		setting.ReasoningEffort = strings.TrimSpace(r.PostForm.Get("reasoning_effort"))
 		if setting.ReasoningParam == "" || setting.ReasoningParam == "none" {
@@ -94,6 +97,10 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 			return
 		}
 		if err := reader.SaveReviewSettings(r.Context(), setting); err != nil {
+			if errors.Is(err, postgres.ErrModelPolicy) {
+				http.Error(w, "Model not saved: "+strings.TrimPrefix(err.Error(), postgres.ErrModelPolicy.Error()+": ")+".", http.StatusConflict)
+				return
+			}
 			http.Error(w, "Unable to save model", http.StatusInternalServerError)
 			return
 		}

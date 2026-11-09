@@ -301,7 +301,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		var tools []byte
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &entryID, &tools)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,m.catalog_id,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &agent.Model.Catalog, &entryID, &tools)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return result, fmt.Errorf("%w: agent %s is disabled, missing or for a different job type", ErrWorkflowUnavailable, agentName)
 		}
@@ -320,6 +320,27 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		return result, errors.New("workflow has no agents")
 	}
 	return result, nil
+}
+
+// ResolveRunnableWorkflow resolves a workflow that is about to queue a run:
+// as ResolveWorkflow, and every agent's model must pass the model policy.
+func (s *Store) ResolveRunnableWorkflow(ctx context.Context, name string) (overload.ResolvedWorkflow, error) {
+	return resolveRunnableWorkflow(ctx, s.Pool, name)
+}
+
+func resolveRunnableWorkflow(ctx context.Context, q querier, name string) (overload.ResolvedWorkflow, error) {
+	resolved, err := resolveWorkflow(ctx, q, name)
+	if err != nil {
+		return resolved, err
+	}
+	policy, err := loadModelPolicy(ctx, q)
+	if err != nil {
+		return resolved, err
+	}
+	if err := checkWorkflowPolicy(policy, resolved); err != nil {
+		return resolved, fmt.Errorf("%w: %w", ErrWorkflowUnavailable, err)
+	}
+	return resolved, nil
 }
 
 func loadPromptRevision(ctx context.Context, q querier, id int64, prompt *overload.PromptTemplate) error {
