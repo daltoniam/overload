@@ -298,7 +298,44 @@ type ReviewSpec struct {
 	// PullRequest is the pull request's title and description, already
 	// stripped of links, HTML and mentions; they are untrusted text.
 	PullRequest *PullRequestInfo `json:"pull_request,omitempty"`
+	// Incremental makes this a re-review of what changed since an earlier
+	// review.
+	Incremental *Incremental `json:"incremental,omitempty"`
 }
+
+// Incremental describes a re-review: the files whose diff is the same as
+// at the earlier review (they are not reviewed again unless linked to a
+// changed file), and the earlier review's open findings.
+type Incremental struct {
+	SinceRunID int64          `json:"since_run_id"`
+	Unchanged  []string       `json:"unchanged,omitempty"`
+	Prior      []PriorFinding `json:"prior,omitempty"`
+}
+
+// PriorFinding is an open finding from an earlier review of the pull
+// request, with replies people left on its thread (untrusted text,
+// stripped of links, HTML and mentions).
+type PriorFinding struct {
+	ID       int64    `json:"id"`
+	Path     string   `json:"path"`
+	Line     int      `json:"line"`
+	Severity string   `json:"severity"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Replies  []string `json:"replies,omitempty"`
+}
+
+// PriorVerdict is a re-review's judgment of an earlier finding.
+type PriorVerdict struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+// Prior finding statuses.
+const (
+	PriorResolved     = "resolved"
+	PriorStillPresent = "still_present"
+)
 
 // PullRequestInfo is what a pull request says about itself.
 type PullRequestInfo struct {
@@ -307,9 +344,11 @@ type PullRequestInfo struct {
 }
 
 type ReviewResult struct {
-	Findings []Finding      `json:"findings"`
-	Dropped  []Finding      `json:"dropped,omitempty"`
-	Summary  string         `json:"summary"`
-	Metrics  map[string]any `json:"metrics,omitempty"`
-	Error    string         `json:"error,omitempty"`
+	Findings []Finding `json:"findings"`
+	Dropped  []Finding `json:"dropped,omitempty"`
+	// Prior judges earlier findings in an incremental re-review.
+	Prior   []PriorVerdict `json:"prior,omitempty"`
+	Summary string         `json:"summary"`
+	Metrics map[string]any `json:"metrics,omitempty"`
+	Error   string         `json:"error,omitempty"`
 }

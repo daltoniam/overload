@@ -231,6 +231,17 @@ func (store serverStore) RequestReview(ctx context.Context, repositoryID int64, 
 	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again)
 }
 
+// ReviewCommand queues a review of a pull request's current head for an
+// "/overload review" comment. Like "Review now", it skips the workflow's
+// re-review limit and reviews a head that was already reviewed.
+func (store serverStore) ReviewCommand(ctx context.Context, event github.CommentEvent) (int64, error) {
+	reader, err := queue.AppClient(ctx, store.Store)
+	if err != nil {
+		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
+	}
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, event.Repository.FullName, event.Issue.Number, true)
+}
+
 // RunScheduleNow queues a schedule's workflow on this server's job queue.
 func (store serverStore) RunScheduleNow(ctx context.Context, name string) (int64, error) {
 	return store.Store.RunScheduleNow(ctx, store.jobs, name)

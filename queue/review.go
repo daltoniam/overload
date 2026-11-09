@@ -83,9 +83,10 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		}
 		source = client
 	}
-	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved}
+	again := w.rereviewBase(ctx, run, resolved, source, repoName)
+	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved, Rereview: again}
 	if w.Sandbox != nil {
-		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models}
+		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models, Rereview: again}
 	}
 	spec, result, sha, reviewErr := runner.Review(ctx, repoName, run.PRNumber)
 	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
@@ -113,6 +114,51 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		return err
 	}
 	return nil
+}
+
+// replySource reads replies to overload's earlier review comments.
+type replySource interface {
+	PriorReplies(ctx context.Context, repository string, number int, prior []overload.PriorFinding) (map[int64][]string, error)
+}
+
+// rereviewBase prepares an incremental re-review when the workflow asks for
+// one and the pull request has an earlier completed review with the same
+// workflow revision. Replies to earlier findings are read when the source
+// can; any failure falls back to a full review or no replies.
+func (w *ReviewWorker) rereviewBase(ctx context.Context, run overload.Run, workflow overload.ResolvedWorkflow, source reviewpkg.PullRequestSource, repository string) *reviewpkg.Rereview {
+	if !workflow.Rereview.IncrementalReviews() || run.ID == 0 {
+		return nil
+	}
+	sinceID, previous, prior, err := w.Store.RereviewBase(ctx, run, workflow)
+	if err != nil {
+		slog.Warn("re-review base unavailable; reviewing in full", "run_id", run.ID, "error", err)
+		return nil
+	}
+	if sinceID == 0 {
+		return nil
+	}
+	if replies, ok := source.(replySource); ok && len(prior) > 0 {
+		byFinding, err := replies.PriorReplies(ctx, repository, run.PRNumber, prior)
+		if err != nil {
+			slog.Warn("replies to earlier findings unavailable", "run_id", run.ID, "error", err)
+		}
+		for index := range prior {
+			for _, reply := range byFinding[prior[index].ID] {
+				prior[index].Replies = append(prior[index].Replies, reviewpkg.Sanitize(reply, 1000))
+			}
+		}
+	}
+	if _, err := w.Store.Pool.Exec(ctx, `UPDATE runs SET since_run_id=$2 WHERE id=$1`, run.ID, sinceID); err != nil {
+		slog.Warn("re-review base not recorded", "run_id", run.ID, "error", err)
+	}
+	w.event(ctx, run.ID, fmt.Sprintf("Re-review of the changes since run %d", sinceID))
+	return &reviewpkg.Rereview{SinceRunID: sinceID, PreviousDiff: previous, Prior: prior}
+}
+
+func (w *ReviewWorker) event(ctx context.Context, runID int64, message string) {
+	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'rereview', $2)`, runID, message); err != nil {
+		slog.Warn("run event not recorded", "run_id", runID, "error", err)
+	}
 }
 
 // AppClient returns the GitHub App client from the environment or the
@@ -173,6 +219,9 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	}
 	plan := planPosting(run.DryRun, PostingEnabled())
 	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, append(result.Findings, result.Dropped...)); err != nil {
+		return err
+	}
+	if _, err := postgres.ResolveFindings(ctx, finalTx, runID, resolvedPrior(spec, result)); err != nil {
 		return err
 	}
 	if plan.enqueue {
@@ -239,4 +288,23 @@ func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbo
 		Workers:    workers,
 		JobTimeout: time.Duration(timeoutSeconds) * time.Second,
 	})
+}
+
+// resolvedPrior returns the earlier findings a re-review judged fixed,
+// among those it was shown.
+func resolvedPrior(spec overload.ReviewSpec, result overload.ReviewResult) []int64 {
+	if spec.Incremental == nil {
+		return nil
+	}
+	shown := map[int64]bool{}
+	for _, finding := range spec.Incremental.Prior {
+		shown[finding.ID] = true
+	}
+	var ids []int64
+	for _, verdict := range result.Prior {
+		if verdict.Status == overload.PriorResolved && shown[verdict.ID] {
+			ids = append(ids, verdict.ID)
+		}
+	}
+	return ids
 }

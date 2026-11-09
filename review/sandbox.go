@@ -26,6 +26,8 @@ type SandboxRunner struct {
 	// Models lets agents whose models need an API key reach them through
 	// overload's model proxy; without it such agents cannot run sandboxed.
 	Models ModelGrants
+	// Rereview, when set, makes this an incremental re-review.
+	Rereview *Rereview
 }
 
 // ModelGrants issues short-lived model URLs for sandboxes, so API keys stay
@@ -72,7 +74,7 @@ func (runner SandboxRunner) Review(ctx context.Context, repo string, prNumber in
 		return overload.ReviewSpec{}, overload.ReviewResult{}, "", err
 	}
 	defer revoke()
-	spec, archive, sha, err := fetchPR(ctx, runner.Source, workflow, repo, prNumber)
+	spec, archive, sha, err := fetchPR(ctx, runner.Source, workflow, repo, prNumber, runner.Rereview)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}

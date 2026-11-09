@@ -39,6 +39,10 @@ type PostTarget struct {
 	// Superseded is set when a newer commit of the pull request has its own
 	// review, so comments on this commit would be stale.
 	Superseded bool
+	// Fixed are earlier findings this re-review found fixed, and
+	// ResolveThreads whether their GitHub threads should be resolved.
+	Fixed          []overload.Finding
+	ResolveThreads bool
 }
 
 var ErrNothingToPost = errors.New("run is not awaiting posting")
@@ -57,6 +61,33 @@ func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, er
 	}
 	if installation != nil {
 		target.InstallationID = *installation
+	}
+	// Earlier findings a re-review carried over (their file did not
+	// change) or still sees count toward the decision, unless this run
+	// found them again.
+	carried, err := s.Pool.Query(ctx, `SELECT f.severity FROM runs r JOIN findings f ON f.id IN (SELECT value::bigint FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(r.metrics->'carried_finding_ids') = 'array' THEN r.metrics->'carried_finding_ids' ELSE '[]'::jsonb END)) JOIN runs fr ON fr.id = f.run_id WHERE r.id = $1 AND fr.repository_id = r.repository_id AND fr.pr_number = r.pr_number AND f.resolved_by_run_id IS NULL AND f.fingerprint NOT IN (SELECT fingerprint FROM findings WHERE run_id = $1)`, runID)
+	if err != nil {
+		return target, err
+	}
+	severities, err := pgx.CollectRows(carried, pgx.RowTo[string])
+	if err != nil {
+		return target, err
+	}
+	target.DuplicateSeverities = append(target.DuplicateSeverities, severities...)
+	if err := s.Pool.QueryRow(ctx, `SELECT COALESCE((config_snapshot->'rereview'->>'resolve_threads')::boolean, false) FROM runs WHERE id = $1`, runID).Scan(&target.ResolveThreads); err != nil {
+		return target, err
+	}
+	fixed, err := s.Pool.Query(ctx, `SELECT path, line, title, severity FROM findings WHERE resolved_by_run_id = $1 ORDER BY id`, runID)
+	if err != nil {
+		return target, err
+	}
+	target.Fixed, err = pgx.CollectRows(fixed, func(row pgx.CollectableRow) (overload.Finding, error) {
+		var finding overload.Finding
+		err := row.Scan(&finding.Path, &finding.Line, &finding.Title, &finding.Severity)
+		return finding, err
+	})
+	if err != nil {
+		return target, err
 	}
 	rows, err := s.Pool.Query(ctx, `SELECT f.id, f.path, f.line, f.side, f.severity, f.category, f.title, f.body, f.confidence, f.evidence,
 EXISTS (SELECT 1 FROM findings p JOIN runs pr ON pr.id = p.run_id WHERE p.status = 'posted' AND p.fingerprint = f.fingerprint AND pr.repository_id = r.repository_id AND pr.pr_number = r.pr_number)

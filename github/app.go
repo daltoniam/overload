@@ -83,7 +83,7 @@ func Manifest(name, baseURL, webhookURL string) (string, error) {
 			"pull_requests": "write",
 			"statuses":      "write",
 		},
-		DefaultEvents: []string{"pull_request"},
+		DefaultEvents: []string{"pull_request", "issue_comment"},
 	})
 	return string(data), err
 }

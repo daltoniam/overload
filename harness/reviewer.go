@@ -136,7 +136,16 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if len(routing.TooLarge) > 0 {
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
-	paths := reviewablePaths(reviewable, routing.Skipped)
+	var shared prContext
+	wholePR := slices.ContainsFunc(routing.Agents, func(agent overload.AgentFiles) bool { return agent.WholePR && len(agent.Files) > 0 })
+	if workflow.Context != nil || wholePR || spec.Incremental != nil {
+		shared = buildPRContext(ctx, spec, parsed, repo)
+		result.Metrics["pr_context_chars"] = len(shared.text)
+		result.Metrics["contracts_symbols"] = len(shared.index.Changes)
+	}
+	again := planRereview(spec.Incremental, reviewablePaths(reviewable, routing.Skipped), shared.index.linked())
+	again.carry(&routing)
+	paths := slices.DeleteFunc(reviewablePaths(reviewable, routing.Skipped), func(name string) bool { return again != nil && again.carried[name] })
 	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())
 	fileIndex := make(map[string]int, len(paths))
 	for index, path := range paths {
@@ -153,13 +162,6 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			return result, err
 		}
 		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
-	}
-	var shared prContext
-	wholePR := slices.ContainsFunc(routing.Agents, func(agent overload.AgentFiles) bool { return agent.WholePR && len(agent.Files) > 0 })
-	if workflow.Context != nil || wholePR {
-		shared = buildPRContext(ctx, spec, parsed, repo)
-		result.Metrics["pr_context_chars"] = len(shared.text)
-		result.Metrics["contracts_symbols"] = len(shared.index.Changes)
 	}
 	fileShared := ""
 	if workflow.Context != nil {
@@ -184,7 +186,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			}
 		}
 		wholeWait.Go(func() {
-			if err := runWholePR(ctx, workflow, position, agent, plan, wholeGroups, shared.text, parsed, fileIndex, runs, agentMeters[position]); err != nil {
+			if err := runWholePR(ctx, workflow, position, agent, plan, wholeGroups, shared.text, parsed, fileIndex, runs, agentMeters[position], again); err != nil {
 				wholeMu.Lock()
 				wholeErr = preferError(wholeErr, err)
 				wholeMu.Unlock()
@@ -195,7 +197,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
-		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], reviewCall(plans[task.agent], fileShared, batches[task.file]), paths[task.file], parsed.patchFor(paths[task.file]), agentMeters[task.agent])
+		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], reviewCall(plans[task.agent], fileShared, batches[task.file]+again.priorText(paths[task.file])), paths[task.file], parsed.patchFor(paths[task.file]), agentMeters[task.agent])
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -282,7 +284,20 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		}
 	}
 	result.Metrics["reviewed_files"] = len(batches)
+	if again != nil {
+		var verdicts []overload.PriorVerdict
+		for index := range runs.outcomes {
+			for _, outcome := range runs.outcomes[index] {
+				verdicts = append(verdicts, outcome.prior...)
+			}
+		}
+		result.Prior = again.verdicts(verdicts)
+		again.record(result.Metrics, len(batches), result.Prior)
+	}
 	result.Summary = summarize(result.Findings, summaries, len(batches))
+	if again != nil && len(batches) == 0 && len(again.carried) > 0 {
+		result.Summary = "No file changed since the last review; its findings stay open."
+	}
 	return result, nil
 }
 

@@ -114,6 +114,8 @@ type fileOutcome struct {
 	raw       int
 	validated int
 	fallback  bool
+	// prior judges earlier findings in a re-review.
+	prior []overload.PriorVerdict
 }
 
 // reviewFile reviews one changed file, repairing malformed JSON once, and
@@ -151,6 +153,7 @@ func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, ca
 	if err != nil {
 		return outcome, err
 	}
+	outcome.prior = fileResult.Prior
 	outcome.raw = len(fileResult.Findings)
 	outcome.validated = len(validated)
 	outcome.summary = fileResult.Summary

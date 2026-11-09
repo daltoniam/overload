@@ -199,7 +199,11 @@ type Routing struct {
 	Skipped []string `json:"skipped,omitempty"`
 	// TooLarge lists changed files whose diff alone exceeds the review
 	// context budget; no agent reviews them.
-	TooLarge []string     `json:"too_large,omitempty"`
+	TooLarge []string `json:"too_large,omitempty"`
+	// Carried lists changed files an incremental re-review did not review
+	// again: their diff is the same as at the earlier review, and their
+	// earlier findings stay open.
+	Carried  []string     `json:"carried,omitempty"`
 	Agents   []AgentFiles `json:"agents"`
 	Planner  string       `json:"planner,omitempty"`
 	Degraded []string     `json:"degraded,omitempty"`

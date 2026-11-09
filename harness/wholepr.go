@@ -127,6 +127,7 @@ type wholePRRequest struct {
 	shared string
 	files  []string
 	diff   string
+	prior  string
 }
 
 func newWholePRRequest(shared string, parsed reviewDiff, files []string) wholePRRequest {
@@ -142,7 +143,7 @@ func newWholePRRequest(shared string, parsed reviewDiff, files []string) wholePR
 // files.
 func reviewWholePR(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, request wholePRRequest, toolSteps int, meter *meter) (fileOutcome, error) {
 	var outcome fileOutcome
-	call := reviewCall(plan, request.shared, wholePRHeader+request.diff)
+	call := reviewCall(plan, request.shared, wholePRHeader+request.diff+request.prior)
 	if toolSteps > 0 {
 		call.StopWhen = []fantasy.StopCondition{fantasy.StepCountIs(toolSteps)}
 		call.PrepareStep = func(ctx context.Context, step fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
@@ -182,7 +183,7 @@ func reviewWholePR(ctx context.Context, agent fantasy.Agent, plan reasoningPlan,
 	if err != nil {
 		return outcome, err
 	}
-	outcome.raw, outcome.validated, outcome.summary, outcome.findings = len(result.Findings), len(validated), result.Summary, validated
+	outcome.raw, outcome.validated, outcome.summary, outcome.findings, outcome.prior = len(result.Findings), len(validated), result.Summary, validated, result.Prior
 	return outcome, nil
 }
 
@@ -190,7 +191,7 @@ func reviewWholePR(ctx context.Context, agent fantasy.Agent, plan reasoningPlan,
 // at most the model's concurrency at once. Findings are recorded under
 // the file they are on, so capping, merging and the verifier treat them
 // like per-file findings.
-func runWholePR(ctx context.Context, workflow overload.ResolvedWorkflow, position int, agent fantasy.Agent, plan reasoningPlan, groups [][]string, shared string, parsed reviewDiff, fileIndex map[string]int, runs *agentRuns, meter *meter) error {
+func runWholePR(ctx context.Context, workflow overload.ResolvedWorkflow, position int, agent fantasy.Agent, plan reasoningPlan, groups [][]string, shared string, parsed reviewDiff, fileIndex map[string]int, runs *agentRuns, meter *meter, again *rereview) error {
 	settings := workflow.Context
 	toolSteps := 0
 	if settings != nil && settings.RepoTools {
@@ -198,6 +199,7 @@ func runWholePR(ctx context.Context, workflow overload.ResolvedWorkflow, positio
 	}
 	return forEachFile(ctx, len(groups), workflow.Agents[position].Model.Concurrency, func(ctx context.Context, group int) error {
 		request := newWholePRRequest(shared, parsed, groups[group])
+		request.prior = again.priorText(groups[group]...)
 		outcome, err := reviewWholePR(ctx, agent, plan, request, toolSteps, meter)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -221,7 +223,7 @@ func runWholePR(ctx context.Context, workflow overload.ResolvedWorkflow, positio
 			file := fileIndex[name]
 			fileOutcome := fileOutcome{findings: byFile[name]}
 			if count == 0 {
-				fileOutcome.raw, fileOutcome.validated, fileOutcome.summary, fileOutcome.fallback = outcome.raw, outcome.validated, outcome.summary, outcome.fallback
+				fileOutcome.raw, fileOutcome.validated, fileOutcome.summary, fileOutcome.fallback, fileOutcome.prior = outcome.raw, outcome.validated, outcome.summary, outcome.fallback, outcome.prior
 			}
 			runs.outcomes[position][file] = fileOutcome
 			runs.done[position][file] = true

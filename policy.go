@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 )
 
 // ReviewPolicy holds a PR workflow's cost and re-review settings. It is
@@ -16,6 +17,77 @@ type ReviewPolicy struct {
 	// Context adds a shared pull request bundle to every review call; nil
 	// sends each file on its own.
 	Context *ContextSettings `json:"context,omitempty"`
+	// Rereview makes reviews of new pushes incremental, debounced and
+	// limited; nil reviews every push in full.
+	Rereview *RereviewSettings `json:"rereview,omitempty"`
+}
+
+// RereviewSettings shape reviews of pull requests overload has reviewed
+// before. With the block present, re-reviews are incremental, a push is
+// held DefaultDebounceMinutes so a quick follow-up push replaces it, and
+// a pull request gets at most DefaultMaxReviews webhook reviews.
+type RereviewSettings struct {
+	// Incremental reviews only files whose diff changed since the last
+	// completed review (and files linked to them), shows the model the
+	// earlier findings with replies, and keeps findings on unchanged
+	// files. Nil means true.
+	Incremental *bool `json:"incremental,omitempty"`
+	// DebounceMinutes holds a review of a new push; nil means
+	// DefaultDebounceMinutes, 0 means no wait.
+	DebounceMinutes *int `json:"debounce_minutes,omitempty"`
+	// MaxReviewsPerPR bounds webhook reviews of one pull request; nil
+	// means DefaultMaxReviews, 0 means no limit. "Review now" and an
+	// "/overload review" comment always review.
+	MaxReviewsPerPR *int `json:"max_reviews_per_pr,omitempty"`
+	// ResolveThreads resolves overload's GitHub review thread when a
+	// re-review finds its finding fixed.
+	ResolveThreads bool `json:"resolve_threads,omitempty"`
+}
+
+// Re-review defaults.
+const (
+	DefaultDebounceMinutes = 5
+	DefaultMaxReviews      = 3
+)
+
+// IncrementalReviews reports whether re-reviews are incremental.
+func (settings *RereviewSettings) IncrementalReviews() bool {
+	return settings != nil && (settings.Incremental == nil || *settings.Incremental)
+}
+
+// Debounce is how long a review of a new push waits.
+func (settings *RereviewSettings) Debounce() time.Duration {
+	switch {
+	case settings == nil:
+		return 0
+	case settings.DebounceMinutes == nil:
+		return DefaultDebounceMinutes * time.Minute
+	}
+	return time.Duration(*settings.DebounceMinutes) * time.Minute
+}
+
+// ReviewLimit is the most webhook reviews of one pull request, 0 for none.
+func (settings *RereviewSettings) ReviewLimit() int {
+	switch {
+	case settings == nil:
+		return 0
+	case settings.MaxReviewsPerPR == nil:
+		return DefaultMaxReviews
+	}
+	return *settings.MaxReviewsPerPR
+}
+
+func (settings *RereviewSettings) validate() error {
+	if settings == nil {
+		return nil
+	}
+	if settings.DebounceMinutes != nil && (*settings.DebounceMinutes < 0 || *settings.DebounceMinutes > 120) {
+		return errors.New("rereview.debounce_minutes must be between 0 and 120")
+	}
+	if settings.MaxReviewsPerPR != nil && (*settings.MaxReviewsPerPR < 0 || *settings.MaxReviewsPerPR > 100) {
+		return errors.New("rereview.max_reviews_per_pr must be between 0 (no limit) and 100")
+	}
+	return nil
 }
 
 // ContextSettings shape the pull request context bundle: the title and
@@ -114,6 +186,9 @@ func (policy ReviewPolicy) checkPolicy(kind string) error {
 	}
 	if math.IsNaN(policy.MaxRunCostUSD) || policy.MaxRunCostUSD < 0 || policy.MaxRunCostUSD > MaxRunCostLimit {
 		return fmt.Errorf("max_run_cost_usd must be between 0 and %d", MaxRunCostLimit)
+	}
+	if err := policy.Rereview.validate(); err != nil {
+		return err
 	}
 	return policy.Context.validate()
 }
