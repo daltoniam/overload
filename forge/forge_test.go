@@ -566,3 +566,25 @@ func TestForgejoEndlessReviewHistoryIsAnError(t *testing.T) {
 		t.Fatalf("truncated history treated as complete: %v", err)
 	}
 }
+
+func TestForgejoDiffMatchesItsHead(t *testing.T) {
+	host, server := newFakeHost(t, "Authorization", "token fj-test")
+	newer := strings.Repeat("c", 40)
+	reads, diffs := 0, 0
+	host.routes["GET "+forgejoRepoPath+"/pulls/3"] = func(w http.ResponseWriter, _ *http.Request) {
+		reads++
+		sha := headSHA
+		if reads > 1 {
+			sha = newer
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 3, "state": "open", "head": map[string]any{"sha": sha}, "base": map[string]any{"sha": baseSHA}})
+	}
+	host.routes["GET "+forgejoRepoPath+"/pulls/3.diff"] = func(w http.ResponseWriter, _ *http.Request) {
+		diffs++
+		_, _ = fmt.Fprintf(w, "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+read%d\n", diffs)
+	}
+	pr, patch, err := forgejoClient(t, server).PullRequestWithDiff(context.Background(), "acme/api", 3)
+	if err != nil || pr.HeadSHA != newer || !strings.Contains(patch, "+read2") {
+		t.Fatalf("head %s with diff %q: %v", pr.HeadSHA, patch, err)
+	}
+}

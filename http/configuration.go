@@ -287,8 +287,11 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 					return
 				}
 				found := false
+				// The repository ID decides the host; without one, the
+				// repository must be on the host the form names.
+				id := r.PostForm.Get("repository_id")
 				for _, repo := range repos {
-					if repo.FullName == repository && (r.PostForm.Get("repository_id") == "" || r.PostForm.Get("repository_id") == strconv.FormatInt(repo.ID, 10)) {
+					if repo.FullName == repository && ((id == "" && repo.Host() == source) || id == strconv.FormatInt(repo.ID, 10)) {
 						found, source = true, repo.Host()
 						break
 					}

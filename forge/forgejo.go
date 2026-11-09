@@ -89,13 +89,31 @@ func (forgejo *Forgejo) PullRequestWithDiff(ctx context.Context, repository stri
 	if _, err := forgejo.api.do(ctx, http.MethodGet, path, nil, &raw); err != nil {
 		return overload.PullRequest{}, "", err
 	}
+	// The diff is a separate request, so the pull request is read again
+	// afterwards and the diff fetched again if a push moved either commit.
+	for range diffAttempts {
+		patch, err := forgejo.api.text(ctx, path+".diff", maxDiffBytes)
+		if err != nil {
+			return overload.PullRequest{}, "", err
+		}
+		var after forgejoPullRequest
+		if _, err := forgejo.api.do(ctx, http.MethodGet, path, nil, &after); err != nil {
+			return overload.PullRequest{}, "", err
+		}
+		if after.Head.SHA == raw.Head.SHA && after.Base.SHA == raw.Base.SHA {
+			return forgejoPR(raw), patch, nil
+		}
+		raw = after
+	}
+	return overload.PullRequest{}, "", fmt.Errorf("pull request #%d kept changing while its diff was read", number)
+}
+
+func forgejoPR(raw forgejoPullRequest) overload.PullRequest {
 	state := raw.State
 	if raw.Merged {
 		state = "merged"
 	}
-	pr := overload.PullRequest{Number: raw.Number, State: state, Draft: raw.Draft || workInProgress(raw.Title), HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, RepositoryID: raw.Base.Repo.ID}
-	patch, err := forgejo.api.text(ctx, path+".diff", maxDiffBytes)
-	return pr, patch, err
+	return overload.PullRequest{Number: raw.Number, State: state, Draft: raw.Draft || workInProgress(raw.Title), HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, RepositoryID: raw.Base.Repo.ID}
 }
 
 func (forgejo *Forgejo) DownloadHead(ctx context.Context, repository, sha string, writer io.Writer) error {
