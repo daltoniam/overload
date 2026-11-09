@@ -591,6 +591,45 @@ How it works:
 Tests use an in-process OIDC provider. SCIM provisioning and a test
 against Dex in kind are later additions.
 
+## Model gateway and API keys
+
+Overload serves its saved models to agents and CLIs (Claude Code, OpenCode,
+Cline, Crush) through OpenAI and Anthropic compatible endpoints on the same
+address as the UI:
+
+| Endpoint | For |
+|---|---|
+| `GET /v1/models` | The saved models the model policy allows |
+| `POST /v1/chat/completions` | OpenAI-compatible model connections |
+| `POST /v1/messages` | Anthropic model connections |
+
+Clients authenticate with an overload API key (`Authorization: Bearer
+ovl_...` or `x-api-key: ovl_...`) and name a model by its name on the Models
+page. Overload swaps in the connection's model ID and API key, so provider
+keys never leave the server. OpenAI clients use `<base>/v1` as their base
+URL, Anthropic clients `<base>`.
+
+```sh
+export OPENAI_BASE_URL=https://overload.example.com/v1 OPENAI_API_KEY=ovl_...
+export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
+```
+
+- Keys are created on the API keys page (members and admins; each person
+  sees their own, admins see all) or with `overload keys create --name ci`
+  for shared keys. They have scopes (`models`, `reviews`), expire after 1
+  to 365 days, are shown once and stored only as a hash, and are revoked
+  when their owner is disabled.
+- Requests for one model share its Parallel files setting as slots. When
+  they are busy, waiting requests are served in turn per person, so one
+  agent sending many requests cannot starve the others; at most 64 wait per
+  model, then the gateway answers 429. Calls are limited to 90 minutes for
+  local models and 15 for hosted ones.
+- Every call is recorded in tokens and minutes (streamed responses
+  included); the Usage page shows the last 30 days per person and model.
+- The gateway does not translate between the two APIs; call each model
+  with its own. Reviews and scheduled jobs do not go through the gateway's
+  queue, so a model shared by both may see more requests than its slots.
+
 ## Linux servers
 
 `overload install` on Linux writes the configuration and database (with

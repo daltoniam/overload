@@ -1,0 +1,123 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+// NewKey is a key just created; its secret is shown once.
+type NewKey struct {
+	Key    overload.APIKey
+	Secret string
+}
+
+// KeysPage is what the API keys page shows.
+type KeysPage struct {
+	Keys      []overload.APIKey
+	All       bool
+	CanCreate bool
+	Endpoint  string
+	Created   *NewKey
+}
+
+templ APIKeys(page KeysPage, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "API keys", CurrentPath: "/keys"}) {
+		<div class="page-header"><div><p class="eyebrow">Access / API keys</p><h1>API keys</h1><p class="muted">Keys let agents and CLIs (Claude Code, OpenCode, Cline, Crush) call the models saved here through overload's OpenAI and Anthropic compatible endpoints. Model API keys stay on the server; usage is recorded per key.</p></div><a href="/usage">Usage</a></div>
+		if page.Created != nil {
+			<section class="panel" role="status"><h2>Copy your new key now</h2><p class="muted">This is the only time it is shown. Store it in your agent's configuration or a password manager.</p>
+				<pre><code>{ page.Created.Secret }</code></pre>
+				<p class="muted">Base URL: <code>{ page.Endpoint }</code> (OpenAI clients) or <code>{ strings.TrimSuffix(page.Endpoint, "/v1") }</code> (Anthropic clients). Model names are the names on the Models page.</p>
+			</section>
+		}
+		if page.CanCreate {
+			<section class="panel"><h2>New key</h2><form method="post" action="/keys"><input type="hidden" name="csrf" value={ nonce }/>
+				<label class="field"><span>Name</span><input name="name" required maxlength="100" placeholder="laptop claude code"/></label>
+				<fieldset class="field"><legend>Scopes</legend>
+					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>
+					<label class="check"><input type="checkbox" name="scopes" value="reviews"/> Request pull request reviews</label>
+				</fieldset>
+				<label class="field"><span>Expires after (days)</span><input name="days" type="number" min="1" max="365" required value="90"/></label>
+				<div class="actions"><button type="submit">Create key</button></div>
+			</form></section>
+		}
+		<section class="panel"><h2>{ keysHeading(page.All) }</h2>
+			if len(page.Keys) == 0 {
+				<div class="empty">No API keys yet.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">API keys</caption><thead><tr><th>Key</th>
+					if page.All {
+						<th>Owner</th>
+					}
+					<th>Scopes</th><th>Expires</th><th>Last used</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+					for _, key := range page.Keys {
+						<tr>
+							<td>{ key.Name }<span class="secondary-line mono">{ key.Prefix }</span></td>
+							if page.All {
+								<td>{ textOr(key.UserEmail, "shared") }</td>
+							}
+							<td>{ strings.Join(key.Scopes, ", ") }</td>
+							<td class="mono">{ key.ExpiresAt.UTC().Format("2006-01-02") }</td>
+							<td class="mono">{ lastUsed(key) }</td>
+							<td>
+								if key.RevokedAt != nil {
+									<span class="badge failed">Revoked</span>
+								} else {
+									<span class="badge enabled">Active</span>
+								}
+							</td>
+							<td>
+								if key.RevokedAt == nil && page.CanCreate {
+									<form method="post" action={ templ.URL("/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Revoke</button></form>
+								}
+							</td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ Usage(totals []overload.UsageTotal, all bool) {
+	@layouts.Base(layouts.PageData{Title: "Usage", CurrentPath: "/keys"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/keys">API keys</a> / Usage</p><h1>Model usage</h1><p class="muted">Calls through the gateway in the last 30 days, in tokens and minutes. Reviews and scheduled jobs are not included.</p></div></div>
+		<section class="panel">
+			if len(totals) == 0 {
+				<div class="empty">No gateway calls in the last 30 days.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Usage by person and model</caption><thead><tr>
+					if all {
+						<th>Person</th>
+					}
+					<th>Model</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Model minutes</th></tr></thead><tbody>
+					for _, total := range totals {
+						<tr>
+							if all {
+								<td>{ textOr(total.UserEmail, "shared keys") }</td>
+							}
+							<td><code>{ total.Model }</code></td><td>{ strconv.FormatInt(total.Calls, 10) }</td><td>{ strconv.FormatInt(total.InputTokens, 10) }</td><td>{ strconv.FormatInt(total.OutputTokens, 10) }</td><td>{ fmt.Sprintf("%.1f", total.Minutes) }</td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+func keysHeading(all bool) string {
+	if all {
+		return "All keys"
+	}
+	return "Your keys"
+}
+
+func lastUsed(key overload.APIKey) string {
+	if key.LastUsedAt == nil {
+		return "Never"
+	}
+	return key.LastUsedAt.UTC().Format("2006-01-02 15:04")
+}

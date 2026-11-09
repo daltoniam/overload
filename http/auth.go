@@ -62,6 +62,8 @@ var memberActions = []*regexp.Regexp{
 	regexp.MustCompile(`^/configure/repositories/[0-9]+/review$`),
 	regexp.MustCompile(`^/configure/schedules/[^/]+/run$`),
 	regexp.MustCompile(`^/auth/logout$`),
+	regexp.MustCompile(`^/keys$`),
+	regexp.MustCompile(`^/keys/[0-9]+/revoke$`),
 }
 
 // adminPages are pages only admins may read.

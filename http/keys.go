@@ -1,0 +1,110 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/pages"
+	"github.com/jackc/pgx/v5"
+)
+
+// KeyStore manages API keys and reports gateway usage.
+type KeyStore interface {
+	CreateAPIKey(ctx context.Context, userID int64, name string, scopes []string, lifetime time.Duration) (overload.APIKey, string, error)
+	ListAPIKeys(ctx context.Context, userID int64, all bool) ([]overload.APIKey, error)
+	RevokeAPIKey(ctx context.Context, id, userID int64, anyOwner bool) error
+	UsageTotals(ctx context.Context, since time.Time, userID int64, all bool) ([]overload.UsageTotal, error)
+}
+
+// owner returns the user a request acts for (0 without OIDC sign-in) and
+// whether they may see and manage everyone's keys and usage.
+func owner(ctx context.Context) (int64, bool) {
+	who := identityFrom(ctx)
+	return actorID(who), overload.RoleAtLeast(who.role, overload.RoleAdmin)
+}
+
+func keysPage(ctx context.Context, keys []overload.APIKey, all bool, created *pages.NewKey) pages.KeysPage {
+	base := strings.TrimRight(os.Getenv("OVERLOAD_BASE_URL"), "/")
+	if base == "" {
+		base = "http://127.0.0.1:8082"
+	}
+	return pages.KeysPage{Keys: keys, All: all, CanCreate: overload.RoleAtLeast(identityFrom(ctx).role, overload.RoleMember), Endpoint: base + "/v1", Created: created}
+}
+
+func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
+	mux.HandleFunc("GET /keys", func(w http.ResponseWriter, r *http.Request) {
+		userID, all := owner(r.Context())
+		keys, err := store.ListAPIKeys(r.Context(), userID, all)
+		if err != nil {
+			http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
+			return
+		}
+		_ = pages.APIKeys(keysPage(r.Context(), keys, all, nil), csrf).Render(r.Context(), w)
+	})
+	mux.HandleFunc("POST /keys", func(w http.ResponseWriter, r *http.Request) {
+		if !validForm(w, r, csrf) {
+			return
+		}
+		days, err := strconv.Atoi(strings.TrimSpace(r.PostForm.Get("days")))
+		if err != nil {
+			http.Error(w, "Key not created: enter how many days it lasts.", http.StatusUnprocessableEntity)
+			return
+		}
+		scopes := r.PostForm["scopes"]
+		lifetime := time.Duration(days) * 24 * time.Hour
+		name := strings.TrimSpace(r.PostForm.Get("name"))
+		if err := overload.ValidateAPIKey(name, scopes, lifetime); err != nil {
+			http.Error(w, "Key not created: "+err.Error()+".", http.StatusUnprocessableEntity)
+			return
+		}
+		userID, all := owner(r.Context())
+		key, secret, err := store.CreateAPIKey(r.Context(), userID, name, scopes, lifetime)
+		if err != nil {
+			http.Error(w, "Unable to create the key", http.StatusInternalServerError)
+			return
+		}
+		keys, err := store.ListAPIKeys(r.Context(), userID, all)
+		if err != nil {
+			http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		_ = pages.APIKeys(keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret}), csrf).Render(r.Context(), w)
+	})
+	mux.HandleFunc("POST /keys/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
+		if !validForm(w, r, csrf) {
+			return
+		}
+		id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || id < 1 {
+			http.NotFound(w, r)
+			return
+		}
+		userID, all := owner(r.Context())
+		if err := store.RevokeAPIKey(r.Context(), id, userID, all); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, "Unable to revoke the key", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/keys", http.StatusSeeOther)
+	})
+	mux.HandleFunc("GET /usage", func(w http.ResponseWriter, r *http.Request) {
+		userID, all := owner(r.Context())
+		since := time.Now().Add(-30 * 24 * time.Hour)
+		totals, err := store.UsageTotals(r.Context(), since, userID, all)
+		if err != nil {
+			http.Error(w, "Unable to load usage", http.StatusInternalServerError)
+			return
+		}
+		_ = pages.Usage(totals, all).Render(r.Context(), w)
+	})
+}

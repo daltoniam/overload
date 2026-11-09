@@ -123,7 +123,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]overload.User, error) {
 }
 
 // SetUserDisabled disables or re-enables a user. Disabling ends their
-// sessions at once.
+// sessions and revokes their API keys at once.
 func (s *Store) SetUserDisabled(ctx context.Context, id int64, disabled bool) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -139,6 +139,9 @@ func (s *Store) SetUserDisabled(ctx context.Context, id int64, disabled bool) er
 	}
 	if disabled {
 		if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, id); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE api_keys SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`, id); err != nil {
 			return err
 		}
 	}

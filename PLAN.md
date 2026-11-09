@@ -177,6 +177,7 @@ overload/
   eval/                eval sets, scoring, reports
   catalog/             model catalog (provenance, licences, settings, evals) and the model policy
   localmodels/         verified model downloads, disk accounting, llama.cpp build checks, llama-server services
+  gateway/             OpenAI and Anthropic compatible model gateway: API keys, fair per-model queue, usage
   http/                router, middleware (auth, CSRF, logging), webhook + UI handlers
   web/templates/       templ: layouts/, components/, pages/ (Switchboard pattern)
   web/static/          CSS (embedded)
@@ -1449,7 +1450,7 @@ plan and deploy/README.md.
    groups claim, logout with the provider's sign-out, and Basic Auth kept as
    break-glass access. Follow-ups: the Dex test in kind, and hiding admin
    controls from members and viewers (the server already refuses them).
-5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7): hashed,
+5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7; done): hashed,
    scoped, expiring keys; OpenAI and Anthropic compatible endpoints in front
    of saved models, with the origin policy, a fair per-model queue and usage
    in tokens and minutes per user.
