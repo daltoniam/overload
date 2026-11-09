@@ -264,7 +264,41 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if err := store.writeManifest([]Installed{old}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.writeServices([]Service{{ID: old.ID, Quant: old.Quant, Port: 8080, Files: []string{oldPath}}}); err != nil {
+		t.Fatal(err)
+	}
 	installed, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+	if err != nil || !installed.Served || installed.Freed != 0 {
+		t.Fatalf("pull while served = %+v, %v", installed, err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("a served model's files were deleted")
+	}
+	if _, err := store.Clean(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPath); err != nil {
+		t.Fatal("clean deleted files a running service loads")
+	}
+	if err := store.writeServices(nil); err != nil {
+		t.Fatal(err)
+	}
+	if freed, err := store.Clean(); err != nil || freed != 3 {
+		t.Fatalf("clean of orphaned weights = %d, %v", freed, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeServices(nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeManifest([]Installed{old}); err != nil {
+		t.Fatal(err)
+	}
+	installed, err = store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
 	if err != nil || installed.Freed != 3 {
 		t.Fatalf("pull = %+v, %v", installed, err)
 	}

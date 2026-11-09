@@ -153,7 +153,7 @@ overload models status                                # services and /health
 overload models list                                  # downloads, disk used and free
 overload models stop recursive-flint
 overload models rm recursive-flint                    # delete the weights
-overload models clean                                 # delete partial downloads
+overload models clean                                 # delete partial and unused downloads
 ```
 
 - `pull` downloads from the catalog's Hugging Face repository (or
@@ -185,7 +185,10 @@ overload models clean                                 # delete partial downloads
   log and leaves the service registered; fix the cause and serve again, or
   remove it with `stop`.
 - `rm` refuses a model that is being served, and keeps files another
-  downloaded entry uses.
+  downloaded entry uses. Pulling a model again from another repository
+  deletes the old files, unless the model is being served from them; then
+  they are kept until `serve` loads the new ones, and `clean` deletes them
+  afterwards.
 - The catalog page for a model shows what this Mac has downloaded and
   serves.
 

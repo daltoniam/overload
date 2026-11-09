@@ -47,6 +47,9 @@ type Installed struct {
 	// Freed is the bytes a pull deleted from the entry it replaced; it is
 	// not stored.
 	Freed int64 `json:"-"`
+	// Served is set when a pull replaced an entry a model service uses;
+	// the old files are kept until it is served again.
+	Served bool `json:"-"`
 }
 
 // Size is the bytes the installed files take.
@@ -147,6 +150,18 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	manifest = append(manifest, installed)
 	if err := store.writeManifest(manifest); err != nil {
 		return Installed{}, err
+	}
+	services, err := store.Services()
+	if err != nil {
+		return Installed{}, err
+	}
+	// A running service's agent still names the old files; deleting them
+	// would make its next restart fail. Keep them until it is re-served.
+	if slices.ContainsFunc(services, func(service Service) bool {
+		return service.ID == installed.ID && strings.EqualFold(service.Quant, installed.Quant)
+	}) {
+		installed.Served = len(replaced) > 0
+		return installed, nil
 	}
 	installed.Freed = store.removeUnused(manifest, replaced)
 	return installed, nil
@@ -498,13 +513,34 @@ func (store Store) removeEmptyParents(dir string) {
 	}
 }
 
-// Clean removes partial downloads and returns the bytes freed.
+// Clean removes partial downloads, and GGUF files that no download lists
+// and no model service loads (left by updates of a served model), and
+// returns the bytes freed.
 func (store Store) Clean() (int64, error) {
 	unlock, err := store.lock(".lock")
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
+	manifest, err := store.readManifest()
+	if err != nil {
+		return 0, err
+	}
+	services, err := store.Services()
+	if err != nil {
+		return 0, err
+	}
+	keep := map[string]bool{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			keep[store.Path(entry.Repository, file.Path)] = true
+		}
+	}
+	for _, service := range services {
+		for _, path := range service.Files {
+			keep[path] = true
+		}
+	}
 	var freed int64
 	err = filepath.WalkDir(store.Dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -513,7 +549,8 @@ func (store Store) Clean() (int64, error) {
 			}
 			return err
 		}
-		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), partialSuffix) {
+		orphan := strings.HasSuffix(strings.ToLower(entry.Name()), ".gguf") && !keep[path]
+		if entry.Type().IsRegular() && (strings.HasSuffix(entry.Name(), partialSuffix) || orphan) {
 			info, err := entry.Info()
 			if err != nil {
 				return err

@@ -29,6 +29,9 @@ type Service struct {
 	Parallel int    `json:"parallel"`
 	// ModelName is the name requests use (llama-server --alias).
 	ModelName string `json:"model_name"`
+	// Files are the weights the service loads, so clean-up keeps them
+	// while it runs even after a newer download replaced them.
+	Files []string `json:"files,omitempty"`
 }
 
 // BaseURL is the service's OpenAI-compatible endpoint.
@@ -93,6 +96,9 @@ func (store Store) ServiceAgent(model catalog.Model, installed Installed, option
 		name = model.Runtime.ServedName
 	}
 	service := Service{ID: model.ID, Quant: installed.Quant, Label: options.LabelPrefix + ".model." + model.ID, Port: options.Port, Parallel: options.Parallel, ModelName: name}
+	for _, file := range installed.Files {
+		service.Files = append(service.Files, store.Path(installed.Repository, file.Path))
+	}
 	args := []string{options.Binary, "-m", store.Path(installed.Repository, installed.Files[0].Path), "--host", "127.0.0.1", "--port", strconv.Itoa(options.Port), "--alias", name}
 	args = append(args, scaleContext(model.Runtime.ServerArgs, options.Parallel)...)
 	// Always set the slot count: newer llama-server builds pick several
