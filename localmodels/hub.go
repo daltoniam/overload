@@ -216,7 +216,7 @@ func safeRelative(path string) bool {
 	return !slices.Contains(parts, "..") && !slices.Contains(parts, ".") && !slices.Contains(parts, "")
 }
 
-var splitPart = regexp.MustCompile(`-(\d{5})-of-(\d{5})\.gguf$`)
+var splitPart = regexp.MustCompile(`(?i)-(\d{5})-of-(\d{5})\.gguf$`)
 
 // SelectQuant picks the GGUF files of one quantization: a single file or
 // every part of a split model, in order. Vision projector files are left
@@ -225,10 +225,10 @@ func SelectQuant(files []File, quant string) ([]File, error) {
 	if !quantPattern.MatchString(quant) {
 		return nil, errors.New("choose a quantization such as Q4_K_M")
 	}
-	// The quantization starts the name or follows a separator; after `_`
-	// only when a letter precedes it (model_Q4_K_M), so XS does not match
-	// the end of IQ4_XS.
-	token := regexp.MustCompile(`(?i)(^|[-./]|[a-z]_)` + regexp.QuoteMeta(quant) + `([-./]|$)`)
+	// The quantization starts the name or follows a separator. Names
+	// are validated to start like a quantization (Q, IQ, BF16 and so on),
+	// so a fragment such as XS cannot match the end of IQ4_XS.
+	token := regexp.MustCompile(`(?i)(^|[-._/])` + regexp.QuoteMeta(quant) + `([-./]|$)`)
 	var selected []File
 	for _, file := range files {
 		name := strings.ToLower(file.Path)

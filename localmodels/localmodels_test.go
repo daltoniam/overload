@@ -137,6 +137,11 @@ func (hub *fakeHub) handler() http.Handler {
 	})
 }
 
+// at names a repository revision for file paths.
+func at(repository, revision string) Installed {
+	return Installed{Repository: repository, Revision: revision}
+}
+
 func testModel() catalog.Model {
 	model, _ := catalog.Lookup("recursive-flint")
 	model.Weights = []catalog.Weights{{Quant: "Q4_K_M", Repository: "test/flint-GGUF", Format: "gguf"}}
@@ -162,7 +167,7 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if _, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", nil); err == nil || !strings.Contains(err.Error(), "resume") {
 		t.Fatalf("interrupted pull: %v", err)
 	}
-	partial, err := os.Stat(store.partialPath("test/flint-GGUF", file))
+	partial, err := os.Stat(store.partialPath(at("test/flint-GGUF", testRevision), file))
 	if err != nil || partial.Size() != 1000 {
 		t.Fatalf("partial file: %v %v", partial, err)
 	}
@@ -170,7 +175,7 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if _, err := store.Pull(ctx, hub, testModel(), "q4_k_m", "", nil); err == nil || !strings.Contains(err.Error(), "resume") {
 		t.Fatalf("short response: %v", err)
 	}
-	if partial, err := os.Stat(store.partialPath("test/flint-GGUF", file)); err != nil || partial.Size() <= 1000 {
+	if partial, err := os.Stat(store.partialPath(at("test/flint-GGUF", testRevision), file)); err != nil || partial.Size() <= 1000 {
 		t.Fatalf("a short response discarded the partial file: %v", err)
 	}
 	fake.stall.Store(true)
@@ -186,13 +191,12 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if last != int64(len(content)) || installed.Quant != "Q4_K_M" || installed.Revision != testRevision || installed.Size() != int64(len(content)) {
 		t.Fatalf("installed %+v, last %d", installed, last)
 	}
-	data, err := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf"))
+	data, err := os.ReadFile(store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf"}))
 	if err != nil || string(data) != string(content) {
 		t.Fatal("downloaded file differs")
 	}
 	ranges := fake.ranges.Load()
-	verified := false
-	if _, err := store.Pull(ctx, hub, testModel(), "Q4_K_M", "", func(_ string, _, _ int64, verifying bool) { verified = verifying }); err != nil || fake.ranges.Load() != ranges || !verified {
+	if _, err := store.Pull(ctx, hub, testModel(), "Q4_K_M", "", nil); err != nil || fake.ranges.Load() != ranges {
 		t.Fatalf("second pull downloaded again: %v", err)
 	}
 
@@ -241,7 +245,7 @@ func TestFailedUpdateKeepsTheInstalledRevision(t *testing.T) {
 	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err == nil {
 		t.Fatal("an update with a corrupt part succeeded")
 	}
-	if data, _ := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M-00001-of-00002.gguf")); string(data) != string(first) {
+	if data, _ := os.ReadFile(store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M-00001-of-00002.gguf"})); string(data) != string(first) {
 		t.Fatal("a failed update replaced an installed part")
 	}
 	if installed, err := store.Find(testModel().ID, ""); err != nil || installed.Revision != testRevision {
@@ -254,7 +258,7 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	_, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
 	store := NewStore(t.TempDir())
 	old := Installed{ID: testModel().ID, Quant: "Q4_K_M", Repository: "old/flint-GGUF", Files: []File{{Path: "flint-Q4_K_M.gguf", Size: 3}}}
-	oldPath := store.Path(old.Repository, old.Files[0].Path)
+	oldPath := store.FilePath(old, old.Files[0])
 	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -330,7 +334,7 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 func TestCleanKeepsRetiredFilesThatAreInstalledAgain(t *testing.T) {
 	store := NewStore(t.TempDir())
 	entry := Installed{ID: "recursive-flint", Quant: "Q4_K_M", Repository: "a/flint", Files: []File{{Path: "flint-Q4_K_M.gguf", Size: 1}}}
-	path := store.Path(entry.Repository, entry.Files[0].Path)
+	path := store.FilePath(entry, entry.Files[0])
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +362,7 @@ func TestPullForgetsRetiredFilesItInstallsAgain(t *testing.T) {
 	content := []byte(strings.Repeat("r", 4096))
 	_, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
 	store := NewStore(t.TempDir())
-	path := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	path := store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf"})
 	if err := store.writeRetired([]string{path}); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +412,7 @@ func TestPartialFromAnotherRevisionIsNotResumed(t *testing.T) {
 	if _, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil); err != nil {
 		t.Fatalf("pull after the repository changed: %v", err)
 	}
-	if data, _ := os.ReadFile(store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")); string(data) != string(current) {
+	if data, _ := os.ReadFile(store.FilePath(at("test/flint-GGUF", strings.Repeat("f", 40)), File{Path: "flint-Q4_K_M.gguf"})); string(data) != string(current) {
 		t.Fatal("mixed revisions")
 	}
 }
@@ -417,12 +421,12 @@ func TestPullFailsOnUnexpectedStatus(t *testing.T) {
 	content := []byte(strings.Repeat("x", 4096))
 	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
 	store := NewStore(t.TempDir())
-	destination := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	destination := store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf"})
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stale := destination + ".00000000deadbeef" + partialSuffix
-	odd := store.Path("test/flint-GGUF", "[odd].gguf") + ".00000000deadbeef" + partialSuffix
+	odd := store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "[odd].gguf"}) + ".00000000deadbeef" + partialSuffix
 	if err := os.WriteFile(odd, []byte("other file"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +466,7 @@ func TestPullRestartsWithoutRangeSupport(t *testing.T) {
 	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
 	fake.noRange = true
 	store := NewStore(t.TempDir())
-	partial := store.partialPath("test/flint-GGUF", File{Path: "flint-Q4_K_M.gguf", SHA256: digestOf(content)})
+	partial := store.partialPath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf", SHA256: digestOf(content)})
 	if err := os.MkdirAll(filepath.Dir(partial), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -615,14 +619,14 @@ func TestServices(t *testing.T) {
 	t.Cleanup(func() { PortInUse = probe })
 	store := NewStore(t.TempDir())
 	model := testModel()
-	installed := Installed{ID: model.ID, Quant: "Q4_K_M", Repository: "test/flint-GGUF", Files: []File{{Path: "flint-Q4_K_M.gguf"}}}
+	installed := Installed{ID: model.ID, Quant: "Q4_K_M", Repository: "test/flint-GGUF", Revision: testRevision, Files: []File{{Path: "flint-Q4_K_M.gguf"}}}
 	options := ServeOptions{Binary: "/opt/llama/llama-server", LabelPrefix: "dev.overload", Port: 8080, Parallel: 2, LogDir: "/tmp/logs"}
 	agent, service, err := store.ServiceAgent(model, installed, options)
 	if err != nil {
 		t.Fatal(err)
 	}
 	args := strings.Join(agent.Args, " ")
-	for _, want := range []string{"/opt/llama/llama-server -m " + store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf"), "--host 127.0.0.1 --port 8080 --alias flint", "-c 524288", "--reasoning-format deepseek", "-np 2"} {
+	for _, want := range []string{"/opt/llama/llama-server -m " + store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf"}), "--host 127.0.0.1 --port 8080 --alias flint", "-c 524288", "--reasoning-format deepseek", "-np 2"} {
 		if !strings.Contains(args, want) {
 			t.Errorf("args %q missing %q", args, want)
 		}
@@ -642,7 +646,7 @@ func TestServices(t *testing.T) {
 	if _, _, err := NewStore("models").ServiceAgent(model, installed, ServeOptions{Binary: "/b", LogDir: "/l", Port: 8080, Parallel: 1}); err == nil {
 		t.Error("a relative model directory was accepted")
 	}
-	weights := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	weights := store.FilePath(at("test/flint-GGUF", testRevision), File{Path: "flint-Q4_K_M.gguf"})
 	if err := os.MkdirAll(filepath.Dir(weights), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -700,7 +704,7 @@ func TestServices(t *testing.T) {
 
 func TestRemoveKeepsSharedFiles(t *testing.T) {
 	store := NewStore(t.TempDir())
-	path := store.Path("test/shared", "model.gguf")
+	path := store.FilePath(at("test/shared", testRevision), File{Path: "model.gguf"})
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -783,7 +787,7 @@ func TestHTTPSDownloadsRefuseHTTPRedirects(t *testing.T) {
 func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
 	store := NewStore(t.TempDir())
 	file := File{Path: "flint-Q4_K_M.gguf", SHA256: strings.Repeat("c", 64)}
-	destination := store.Path("test/flint-GGUF", file.Path)
+	destination := store.FilePath(at("test/flint-GGUF", testRevision), file)
 	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -795,7 +799,7 @@ func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	store.removeStalePartials("test/flint-GGUF", file)
+	store.removeStalePartials(at("test/flint-GGUF", testRevision), file)
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatal("a partial download from another revision was kept")
 	}
@@ -804,5 +808,92 @@ func TestStalePartialsOnlyMatchDigestNames(t *testing.T) {
 	}
 	if _, err := os.Stat(sibling); err != nil {
 		t.Fatal("a sibling file's partial download was removed")
+	}
+}
+
+func TestSelectQuantNameForms(t *testing.T) {
+	if _, err := SelectQuant([]File{{Path: "Model-Q4_K_M-00001-of-00002.GGUF"}}, "Q4_K_M"); err == nil {
+		t.Error("a lone upper-case part was selected")
+	}
+	if selected, err := SelectQuant([]File{{Path: "Model-Q4_K_M-00002-of-00002.GGUF"}, {Path: "Model-Q4_K_M-00001-of-00002.GGUF"}}, "Q4_K_M"); err != nil || len(selected) != 2 {
+		t.Errorf("upper-case parts: %v", err)
+	}
+	if selected, err := SelectQuant([]File{{Path: "Qwen3_Q4_K_M.gguf"}}, "Q4_K_M"); err != nil || len(selected) != 1 {
+		t.Errorf("a digit before the underscore: %v", err)
+	}
+}
+
+func TestPresentFiles(t *testing.T) {
+	store := NewStore(t.TempDir())
+	content := []byte("weights")
+	file := File{Path: "m-Q8_0.gguf", Size: int64(len(content)), SHA256: digestOf(content)}
+	installed := Installed{ID: "m", Quant: "Q8_0", Repository: "a/m", Revision: testRevision, Files: []File{file}}
+	if present := store.presentFiles([]Installed{installed}, installed, nil); present[file.Path] {
+		t.Fatal("a recorded file that is missing counts as present")
+	}
+	path := store.FilePath(installed, file)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if present := store.presentFiles(nil, installed, nil); !present[file.Path] {
+		t.Fatal("a valid file the manifest does not record yet was not recognized")
+	}
+	if err := os.WriteFile(path, []byte("WEIGHTS"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if present := store.presentFiles(nil, installed, nil); present[file.Path] {
+		t.Fatal("a corrupt unrecorded file counts as present")
+	}
+}
+
+func TestReleaseKeepsFilesAnyServiceLoads(t *testing.T) {
+	store := NewStore(t.TempDir())
+	shared := Installed{ID: "b", Quant: "Q8_0", Repository: "x/m", Revision: testRevision, Files: []File{{Path: "m-Q8_0.gguf", Size: 1}}}
+	path := store.FilePath(shared, shared.Files[0])
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeServices([]Service{{ID: "a", Quant: "Q8_0", Port: 8080, Files: []string{path}}}); err != nil {
+		t.Fatal(err)
+	}
+	freed, kept, err := store.release(nil, []Installed{shared})
+	if err != nil || freed != 0 || kept != 1 {
+		t.Fatalf("release = %d, %d, %v", freed, kept, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("a file another model's service loads was deleted")
+	}
+}
+
+func TestRemoveServicesKeepsOtherInstalls(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.writeServices([]Service{{ID: "a", Label: "dev.overload.model.a", Port: 8080}, {ID: "b", Label: "dev.other.model.b", Port: 8081}}); err != nil {
+		t.Fatal(err)
+	}
+	manager := &fakeManager{written: map[string]launchd.Agent{}}
+	removed, err := store.RemoveServices(manager, "dev.overload.model.")
+	if err != nil || len(removed) != 1 || removed[0] != "dev.overload.model.a" {
+		t.Fatalf("removed = %v, %v", removed, err)
+	}
+	if services, _ := store.Services(); len(services) != 1 || services[0].ID != "b" {
+		t.Fatalf("services = %+v", services)
+	}
+}
+
+func TestServeRefusesAnAgentBuiltForOldFiles(t *testing.T) {
+	store := NewStore(t.TempDir())
+	installed := Installed{ID: "recursive-flint", Quant: "Q4_K_M", Repository: "a/flint", Revision: strings.Repeat("e", 40), Files: []File{{Path: "flint-Q4_K_M.gguf"}}}
+	if err := store.writeManifest([]Installed{installed}); err != nil {
+		t.Fatal(err)
+	}
+	stale := Service{ID: installed.ID, Quant: installed.Quant, Label: "dev.overload.model.recursive-flint", Port: 8085, Files: []string{filepath.Join(store.Dir, "a/flint", testRevision, "flint-Q4_K_M.gguf")}}
+	if err := store.Serve(&fakeManager{written: map[string]launchd.Agent{}}, launchd.Agent{Label: stale.Label}, stale); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("served an agent built for replaced files: %v", err)
 	}
 }

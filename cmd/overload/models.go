@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -509,32 +510,25 @@ func localModelSummary(store localmodels.Store, manager localmodels.ServiceManag
 }
 
 // removeModelServices removes the launchd services models started for an
-// install, for uninstall: those recorded in the model directory and any
-// other agent under the install's label, in case the directory moved.
+// install, for uninstall: those recorded in the model directory under the
+// install's label, and any other agent under that label in case the
+// directory moved. Services of other installs are left alone.
 func removeModelServices(dir, label string) error {
-	labels := map[string]bool{}
-	services, err := localmodels.NewStore(dir).Services()
-	if err != nil {
-		fmt.Printf("Could not read %s (%v); removing model services by label instead.\n", dir, err)
-	}
-	for _, service := range services {
-		labels[service.Label] = true
-	}
-	plists, _ := filepath.Glob(filepath.Join(filepath.Dir(launchd.Path(label)), label+".model.*.plist"))
-	for _, plist := range plists {
-		labels[strings.TrimSuffix(filepath.Base(plist), ".plist")] = true
+	prefix := label + ".model."
+	removed, err := localmodels.NewStore(dir).RemoveServices(localmodels.Launchd{}, prefix)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		fmt.Printf("Could not update %s (%v); removing model services by label instead.\n", dir, err)
 	}
 	var failures []error
-	for service := range labels {
+	plists, _ := filepath.Glob(filepath.Join(filepath.Dir(launchd.Path(label)), prefix+"*.plist"))
+	for _, plist := range plists {
+		service := strings.TrimSuffix(filepath.Base(plist), ".plist")
+		if slices.Contains(removed, service) {
+			continue
+		}
 		if err := launchd.Remove(service); err != nil {
 			failures = append(failures, err)
 		}
 	}
-	if len(failures) > 0 {
-		return errors.Join(failures...)
-	}
-	if err := os.Remove(filepath.Join(dir, "services.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return err
-	}
-	return nil
+	return errors.Join(failures...)
 }

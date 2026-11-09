@@ -97,9 +97,9 @@ func (store Store) ServiceAgent(model catalog.Model, installed Installed, option
 	}
 	service := Service{ID: model.ID, Quant: installed.Quant, Label: options.LabelPrefix + ".model." + model.ID, Port: options.Port, Parallel: options.Parallel, ModelName: name}
 	for _, file := range installed.Files {
-		service.Files = append(service.Files, store.Path(installed.Repository, file.Path))
+		service.Files = append(service.Files, store.FilePath(installed, file))
 	}
-	args := []string{options.Binary, "-m", store.Path(installed.Repository, installed.Files[0].Path), "--host", "127.0.0.1", "--port", strconv.Itoa(options.Port), "--alias", name}
+	args := []string{options.Binary, "-m", service.Files[0], "--host", "127.0.0.1", "--port", strconv.Itoa(options.Port), "--alias", name}
 	args = append(args, scaleContext(model.Runtime.ServerArgs, options.Parallel)...)
 	// Always set the slot count: newer llama-server builds pick several
 	// slots on their own, which would divide the context.
@@ -196,16 +196,24 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 	return nil
 }
 
-// filesPresent checks, under the services lock that rm also takes, that
-// the weights the service will load are still downloaded.
+// filesPresent checks, under the services lock that rm, pull and clean
+// also take, that the weights the agent was built to load are still the
+// installed ones.
 func (store Store) filesPresent(service Service) error {
 	installed, err := store.Find(service.ID, service.Quant)
 	if err != nil {
 		return err
 	}
+	current := make([]string, 0, len(installed.Files))
 	for _, file := range installed.Files {
-		if _, err := os.Stat(store.Path(installed.Repository, file.Path)); err != nil {
-			return fmt.Errorf("%s is missing; run overload models pull %s again", file.Path, service.ID)
+		current = append(current, store.FilePath(installed, file))
+	}
+	if len(service.Files) == 0 || !slices.Equal(current, service.Files) {
+		return fmt.Errorf("%s changed while the service was being prepared; run the command again", service.ID)
+	}
+	for _, path := range service.Files {
+		if _, err := os.Stat(path); err != nil {
+			return fmt.Errorf("%s is missing; run overload models pull %s again", path, service.ID)
 		}
 	}
 	return nil
@@ -230,6 +238,38 @@ func (store Store) StopService(manager ServiceManager, id string) error {
 		return err
 	}
 	return store.writeServices(slices.Delete(services, index, index+1))
+}
+
+// RemoveServices removes the services whose launchd label starts with
+// prefix (one install's), keeping other installs' services that share the
+// directory, and returns the labels it removed.
+func (store Store) RemoveServices(manager ServiceManager, prefix string) ([]string, error) {
+	unlock, err := store.lock(".services.lock")
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	services, err := store.Services()
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	var failures []error
+	kept := slices.DeleteFunc(services, func(service Service) bool {
+		if !strings.HasPrefix(service.Label, prefix) {
+			return false
+		}
+		if err := manager.Remove(service.Label); err != nil {
+			failures = append(failures, err)
+			return false
+		}
+		removed = append(removed, service.Label)
+		return true
+	})
+	if err := store.writeServices(kept); err != nil {
+		failures = append(failures, err)
+	}
+	return removed, errors.Join(failures...)
 }
 
 // Services lists recorded model services.

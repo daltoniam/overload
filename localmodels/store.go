@@ -112,35 +112,42 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	defer unlock()
+	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected}
 	for _, file := range selected {
-		store.removeStalePartials(repository, file)
+		store.removeStalePartials(installed, file)
 	}
 	manifest, err := store.readManifest()
 	if err != nil {
 		return Installed{}, err
 	}
-	if err := store.checkSpace(manifest, repository, selected); err != nil {
+	present := store.presentFiles(manifest, installed, progress)
+	if err := store.checkSpace(installed, present); err != nil {
 		return Installed{}, err
 	}
-	// Every file is downloaded and verified before any installed file is
-	// replaced, so a failed update leaves the previous revision usable.
-	type move struct{ from, to string }
-	var staged []move
+	// Each revision has its own directory, so a new revision never
+	// overwrites the files an installed entry or a running service uses;
+	// the manifest switches to it only after every file is in place.
 	for _, file := range selected {
-		partial, err := store.download(ctx, hub, repository, revision, file, progress)
+		if present[file.Path] {
+			continue
+		}
+		partial, err := store.download(ctx, hub, installed, file, progress)
 		if err != nil {
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
-		if partial != "" {
-			staged = append(staged, move{partial, store.Path(repository, file.Path)})
+		if err := os.Rename(partial, store.FilePath(installed, file)); err != nil {
+			return Installed{}, err
 		}
 	}
-	for _, step := range staged {
-		if err := os.Rename(step.from, step.to); err != nil {
-			return Installed{}, fmt.Errorf("move %s into place (the files of this model may now be mixed; run the pull again): %w", step.to, err)
-		}
+	unlockServices, err := store.lock(".services.lock")
+	if err != nil {
+		return Installed{}, err
 	}
-	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected, DownloadedAt: store.now().UTC()}
+	defer unlockServices()
+	if manifest, err = store.readManifest(); err != nil {
+		return Installed{}, err
+	}
+	installed.DownloadedAt = store.now().UTC()
 	var replaced []Installed
 	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool {
 		if entry.ID == installed.ID && strings.EqualFold(entry.Quant, quant) {
@@ -153,57 +160,100 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	if err := store.writeManifest(manifest); err != nil {
 		return Installed{}, err
 	}
-	services, err := store.Services()
+	freed, retired, err := store.release(manifest, replaced)
+	installed.Freed, installed.Served = freed, retired > 0
 	if err != nil {
-		return Installed{}, err
-	}
-	// A running service's agent still names the old files; deleting them
-	// would make its next restart fail. Keep them until it is re-served.
-	if slices.ContainsFunc(services, func(service Service) bool {
-		return service.ID == installed.ID && strings.EqualFold(service.Quant, installed.Quant)
-	}) {
-		added, err := store.retire(manifest, replaced)
-		if err != nil {
-			installed.Warning = "the download succeeded, but the old files could not be recorded for clean-up: " + err.Error()
-		}
-		installed.Served = added > 0
-		return installed, nil
-	}
-	installed.Freed = store.removeUnused(manifest, replaced)
-	if _, err := store.retire(manifest, nil); err != nil {
-		installed.Warning = "the download succeeded, but the clean-up record could not be updated: " + err.Error()
+		installed.Warning = "the download succeeded, but cleaning up the previous files failed: " + err.Error()
 	}
 	return installed, nil
 }
 
-// retire records files of replaced entries that a service still loads, so
-// clean deletes exactly those once no service loads them, and forgets any
-// retired file the manifest lists again. Files overload did not write are
-// never deleted. It returns how many files it added.
-func (store Store) retire(manifest, replaced []Installed) (int, error) {
-	inUse := store.manifestPaths(manifest)
+// presentFiles reports which selected files are already in place and
+// valid: recorded in the manifest with the same digest and size, or
+// checked against their digest.
+func (store Store) presentFiles(manifest []Installed, installed Installed, progress Progress) map[string]bool {
+	recorded := map[string]string{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			recorded[store.FilePath(entry, file)] = file.SHA256
+		}
+	}
+	present := map[string]bool{}
+	for _, file := range installed.Files {
+		path := store.FilePath(installed, file)
+		info, err := os.Stat(path)
+		if err != nil || info.Size() != file.Size {
+			continue
+		}
+		if recorded[path] == file.SHA256 {
+			present[file.Path] = true
+			continue
+		}
+		if progress != nil {
+			progress(file.Path, 0, file.Size, true)
+		}
+		if sum, err := fileDigest(path); err == nil && sum == file.SHA256 {
+			present[file.Path] = true
+		}
+	}
+	return present
+}
+
+// release deals with the files of replaced entries that no installed entry
+// lists any more: files a model service still loads are recorded for
+// clean to delete later, the rest are deleted now. It returns the bytes
+// freed and how many files it kept for services. The caller holds both
+// locks.
+func (store Store) release(manifest, replaced []Installed) (int64, int, error) {
+	installed := store.manifestPaths(manifest)
+	services, err := store.Services()
+	if err != nil {
+		return 0, 0, err
+	}
+	loaded := loadedPaths(services)
 	retired, err := store.retired()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	retired = slices.DeleteFunc(retired, func(path string) bool { return inUse[path] })
-	added := 0
+	retired = slices.DeleteFunc(retired, func(path string) bool { return installed[path] })
+	var freed int64
+	kept := 0
 	for _, entry := range replaced {
 		for _, file := range entry.Files {
-			if path := store.Path(entry.Repository, file.Path); !inUse[path] && !slices.Contains(retired, path) {
-				retired = append(retired, path)
-				added++
+			path := store.FilePath(entry, file)
+			switch {
+			case installed[path]:
+			case loaded[path]:
+				if !slices.Contains(retired, path) {
+					retired = append(retired, path)
+					kept++
+				}
+			default:
+				if os.Remove(path) == nil {
+					freed += file.Size
+					store.removeEmptyParents(filepath.Dir(path))
+				}
 			}
 		}
 	}
-	return added, store.writeRetired(retired)
+	return freed, kept, store.writeRetired(retired)
+}
+
+func loadedPaths(services []Service) map[string]bool {
+	loaded := map[string]bool{}
+	for _, service := range services {
+		for _, path := range service.Files {
+			loaded[path] = true
+		}
+	}
+	return loaded
 }
 
 func (store Store) manifestPaths(manifest []Installed) map[string]bool {
 	paths := map[string]bool{}
 	for _, entry := range manifest {
 		for _, file := range entry.Files {
-			paths[store.Path(entry.Repository, file.Path)] = true
+			paths[store.FilePath(entry, file)] = true
 		}
 	}
 	return paths
@@ -232,49 +282,15 @@ func (store Store) retired() ([]string, error) {
 	return paths, json.Unmarshal(data, &paths)
 }
 
-// removeUnused deletes files of replaced entries that no installed entry
-// uses any more, such as weights from a different repository, and returns
-// the bytes freed. A failure only leaves the file for clean-up later.
-func (store Store) removeUnused(manifest, replaced []Installed) int64 {
-	inUse := map[string]bool{}
-	for _, entry := range manifest {
-		for _, file := range entry.Files {
-			inUse[store.Path(entry.Repository, file.Path)] = true
-		}
-	}
-	var freed int64
-	for _, entry := range replaced {
-		for _, file := range entry.Files {
-			path := store.Path(entry.Repository, file.Path)
-			if inUse[path] {
-				continue
-			}
-			if os.Remove(path) == nil {
-				freed += file.Size
-				store.removeEmptyParents(filepath.Dir(path))
-			}
-		}
-	}
-	return freed
-}
-
 // checkSpace refuses a download that would leave less than freeMargin.
-// Installed files count as already downloaded only when the manifest
-// records them with the same digest, since only then were they verified.
-func (store Store) checkSpace(manifest []Installed, repository string, files []File) error {
-	verified := map[string]string{}
-	for _, entry := range manifest {
-		for _, file := range entry.Files {
-			verified[store.Path(entry.Repository, file.Path)] = file.SHA256
-		}
-	}
+func (store Store) checkSpace(installed Installed, present map[string]bool) error {
 	var needed int64
-	for _, file := range files {
-		if verified[store.Path(repository, file.Path)] == file.SHA256 {
+	for _, file := range installed.Files {
+		if present[file.Path] {
 			continue
 		}
 		needed += file.Size
-		if info, err := os.Stat(store.partialPath(repository, file)); err == nil {
+		if info, err := os.Stat(store.partialPath(installed, file)); err == nil {
 			needed -= min(info.Size(), file.Size)
 		}
 	}
@@ -288,12 +304,12 @@ func (store Store) checkSpace(manifest []Installed, repository string, files []F
 	return nil
 }
 
-// removeStalePartials deletes unfinished downloads of file from other
-// revisions. Names are matched literally, since repository paths may
-// contain glob characters.
-func (store Store) removeStalePartials(repository string, file File) {
-	destination := store.Path(repository, file.Path)
-	keep := store.partialPath(repository, file)
+// removeStalePartials deletes unfinished downloads of file with another
+// digest. Names are matched literally, since repository paths may contain
+// glob characters.
+func (store Store) removeStalePartials(installed Installed, file File) {
+	destination := store.FilePath(installed, file)
+	keep := store.partialPath(installed, file)
 	entries, err := os.ReadDir(filepath.Dir(destination))
 	if err != nil {
 		return
@@ -319,37 +335,28 @@ func ownPartial(name string) bool {
 	return err == nil
 }
 
-// Path is where a repository file is stored.
-func (store Store) Path(repository, path string) string {
-	return filepath.Join(store.Dir, filepath.FromSlash(repository), filepath.FromSlash(path))
+// FilePath is where one of an installed entry's files is stored: each
+// repository revision has its own directory.
+func (store Store) FilePath(installed Installed, file File) string {
+	return filepath.Join(store.Dir, filepath.FromSlash(installed.Repository), installed.Revision, filepath.FromSlash(file.Path))
 }
 
 // partialPath names an unfinished download after the digest it should
-// end with, so a partial file from another revision is never resumed.
-func (store Store) partialPath(repository string, file File) string {
-	return store.Path(repository, file.Path) + "." + file.SHA256[:16] + partialSuffix
+// end with.
+func (store Store) partialPath(installed Installed, file File) string {
+	return store.FilePath(installed, file) + "." + file.SHA256[:16] + partialSuffix
 }
 
 // download fetches and verifies one file into its partial file and
-// returns that file's path, for Pull to move into place once every file
-// verified; it returns "" when the installed file already matches.
-func (store Store) download(ctx context.Context, hub Hub, repository, revision string, file File, progress Progress) (string, error) {
-	if !safeRelative(file.Path) || !digestPattern.MatchString(file.SHA256) {
+// returns that file's path, for Pull to move into place.
+func (store Store) download(ctx context.Context, hub Hub, installed Installed, file File, progress Progress) (string, error) {
+	if !safeRelative(file.Path) || !digestPattern.MatchString(file.SHA256) || !revisionPattern.MatchString(installed.Revision) {
 		return "", errors.New("invalid file entry")
 	}
-	destination := store.Path(repository, file.Path)
-	if info, err := os.Stat(destination); err == nil && info.Size() == file.Size {
-		if progress != nil {
-			progress(file.Path, 0, file.Size, true)
-		}
-		if sum, err := fileDigest(destination); err == nil && sum == file.SHA256 {
-			return "", nil
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	partial := store.partialPath(installed, file)
+	if err := os.MkdirAll(filepath.Dir(partial), 0o755); err != nil {
 		return "", err
 	}
-	partial := store.partialPath(repository, file)
 	if info, err := os.Stat(partial); err == nil && info.Size() > 0 && progress != nil {
 		progress(file.Path, info.Size(), file.Size, true)
 	}
@@ -370,7 +377,7 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 		offset = 0
 	}
 	if offset < file.Size {
-		offset, err = fetch(ctx, hub, hub.fileURL(repository, revision, file.Path), file, output, digest, offset, progress)
+		offset, err = fetch(ctx, hub, hub.fileURL(installed.Repository, installed.Revision, file.Path), file, output, digest, offset, progress)
 		if err != nil {
 			return "", err
 		}
@@ -523,8 +530,8 @@ func (store Store) Find(id, quant string) (Installed, error) {
 }
 
 // Remove deletes an installed quantization's files, keeping any another
-// installed entry still uses. A model that is being served cannot be
-// removed.
+// installed entry still uses or a model service still loads. A model that
+// is being served cannot be removed.
 func (store Store) Remove(id, quant string) (Installed, error) {
 	unlock, err := store.lock(".lock")
 	if err != nil {
@@ -556,23 +563,12 @@ func (store Store) Remove(id, quant string) (Installed, error) {
 	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool {
 		return entry.ID == installed.ID && entry.Quant == installed.Quant
 	})
-	inUse := map[string]bool{}
-	for _, entry := range manifest {
-		for _, file := range entry.Files {
-			inUse[store.Path(entry.Repository, file.Path)] = true
-		}
+	if err := store.writeManifest(manifest); err != nil {
+		return Installed{}, err
 	}
-	for _, file := range installed.Files {
-		path := store.Path(installed.Repository, file.Path)
-		if inUse[path] {
-			continue
-		}
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return Installed{}, err
-		}
-		store.removeEmptyParents(filepath.Dir(path))
-	}
-	return installed, store.writeManifest(manifest)
+	freed, _, err := store.release(manifest, []Installed{installed})
+	installed.Freed = freed
+	return installed, err
 }
 
 // removeEmptyParents deletes empty directories up to, but not including,
@@ -609,12 +605,7 @@ func (store Store) Clean() (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	loaded := map[string]bool{}
-	for _, service := range services {
-		for _, path := range service.Files {
-			loaded[path] = true
-		}
-	}
+	loaded := loadedPaths(services)
 	retired, err := store.retired()
 	if err != nil {
 		return 0, err
