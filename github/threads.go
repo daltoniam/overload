@@ -17,6 +17,13 @@ import (
 const maxRepliesPerFinding = 3
 
 // commentTitle is how a posted finding's comment starts; see PostReview.
+// Page limits for reading a pull request's review comments and threads,
+// 100 per page.
+const (
+	maxCommentPages = 20
+	maxThreadPages  = 30
+)
+
 func commentTitle(title string) string {
 	return "**" + title + "**"
 }
@@ -41,13 +48,15 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 	}
 	var comments []*gh.PullRequestComment
 	options := &gh.PullRequestListCommentsOptions{ListOptions: gh.ListOptions{PerPage: 100}}
-	for page := 0; page < 20; page++ {
+	complete := false
+	for page := 0; page < maxCommentPages; page++ {
 		batch, response, err := api.PullRequests.ListComments(ctx, owner, repo, number, options)
 		if err != nil {
 			return nil, err
 		}
 		comments = append(comments, batch...)
 		if response.NextPage == 0 {
+			complete = true
 			break
 		}
 		options.Page = response.NextPage
@@ -62,8 +71,10 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 	}
 	// Older findings are matched only when exactly one of overload's
 	// comments fits, so replies about another issue are never attached.
+	// With comments left unread past the page limit, uniqueness cannot be
+	// known, so they get none.
 	for _, finding := range prior {
-		if finding.CommentID != 0 {
+		if finding.CommentID != 0 || !complete {
 			continue
 		}
 		var candidates []int64
@@ -186,7 +197,8 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 	}
 	var open []openThread
 	var after *string
-	for page := 0; page < 10; page++ {
+	complete := false
+	for page := 0; page < maxThreadPages; page++ {
 		var data struct {
 			Repository struct {
 				PullRequest struct {
@@ -230,10 +242,16 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 			open = append(open, openThread{id: thread.ID, commentID: first.DatabaseID, path: first.Path, originalLine: first.OriginalLine, body: first.Body})
 		}
 		if !page.PageInfo.HasNextPage {
+			complete = true
 			break
 		}
 		cursor := page.PageInfo.EndCursor
 		after = &cursor
+	}
+	// Matching against part of the threads could pick the wrong one, so
+	// nothing is resolved when the page limit cut the list short.
+	if !complete {
+		return 0, fmt.Errorf("more than %d review threads; not resolving any", maxThreadPages*100)
 	}
 	// A finding that recorded its comment resolves that thread. One
 	// without (posted before comment IDs were kept) resolves a thread

@@ -176,6 +176,7 @@ func TestResolvedFindingsStayResolvedAcrossCopies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() { _ = tx.Rollback(ctx) }()
 	resolved, err := ResolveFindings(ctx, tx, current, []int64{newer})
 	if err != nil || len(resolved) != 2 {
 		t.Fatalf("resolved %v: %v", resolved, err)

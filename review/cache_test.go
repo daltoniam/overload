@@ -53,3 +53,37 @@ func TestCachedSourceDownloadsEachHeadOnce(t *testing.T) {
 		t.Fatalf("invalid commit went through the cache: %d downloads", inner.count)
 	}
 }
+
+type cancelAfterWrite struct {
+	cancel  context.CancelFunc
+	written int
+}
+
+func (writer *cancelAfterWrite) Write(data []byte) (int, error) {
+	writer.written += len(data)
+	writer.cancel()
+	return len(data), nil
+}
+
+func TestCacheHitHonorsCancellation(t *testing.T) {
+	inner := &countingDownloads{fakePRSource: fakePRSource{archive: bytes.Repeat([]byte("a"), 200_000)}}
+	source := CachedSource{PullRequestSource: inner, Cache: &ArchiveCache{Dir: t.TempDir()}}
+	sha := strings.Repeat("e", 40)
+	if err := source.DownloadHead(context.Background(), "acme/api", sha, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := source.DownloadHead(canceled, "acme/api", sha, io.Discard); err == nil {
+		t.Fatal("a canceled request copied the cached archive")
+	}
+	// Canceled mid-copy: the copy stops after the current read.
+	ctx, cancel := context.WithCancel(context.Background())
+	writer := &cancelAfterWrite{cancel: cancel}
+	if err := source.DownloadHead(ctx, "acme/api", sha, writer); err == nil || writer.written >= 200_000 {
+		t.Fatalf("copy went on after cancellation: %d bytes, %v", writer.written, err)
+	}
+	if inner.count != 1 {
+		t.Fatalf("downloads = %d", inner.count)
+	}
+}

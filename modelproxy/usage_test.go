@@ -140,3 +140,16 @@ func TestInterruptedAnthropicStreamEstimatesItsOutput(t *testing.T) {
 		t.Fatalf("complete stream = %+v exact = %v", usage, exact)
 	}
 }
+
+func TestUsageFromMultilineEvents(t *testing.T) {
+	// One event whose JSON spans two data lines, joined by a newline.
+	usage, ok := parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\n\ndata: {\"usage\":\ndata: {\"prompt_tokens\":100,\"completion_tokens\":10}}\n\n"))
+	if !ok || usage.Input != 100 || usage.Output != 10 {
+		t.Fatalf("multi-line event usage = %+v %v", usage, ok)
+	}
+	// Streams that skip the blank line between events still read.
+	usage, ok = parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\ndata: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n"))
+	if !ok || usage.Input != 7 || usage.Output != 3 {
+		t.Fatalf("events without blank lines = %+v %v", usage, ok)
+	}
+}

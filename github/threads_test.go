@@ -135,3 +135,40 @@ func TestFindingsFollowTheirOwnComment(t *testing.T) {
 		t.Fatalf("resolved %d %v: %v", count, resolved, err)
 	}
 }
+
+func TestResolveThreadsRefusesAPartialThreadList(t *testing.T) {
+	mutations := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/user":
+			_, _ = io.WriteString(w, `{"login":"overload-bot"}`)
+		case "/graphql":
+			var request struct {
+				Query string `json:"query"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if strings.HasPrefix(request.Query, "mutation") {
+				mutations++
+				_, _ = io.WriteString(w, `{"data":{"resolveReviewThread":{"thread":{"id":"x"}}}}`)
+				return
+			}
+			// Every page says there is another.
+			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":true,"endCursor":"next"},"nodes":[
+				{"id":"T1","isResolved":false,"comments":{"nodes":[{"databaseId":1,"path":"a.go","originalLine":3,"body":"**Nil map** (high)","author":{"login":"overload-bot"}}]}}
+			]}}}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := NewTokenClient("test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.api.BaseURL, _ = url.Parse(server.URL + "/")
+	count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map", CommentID: 1}})
+	if err == nil || count != 0 || mutations != 0 {
+		t.Fatalf("resolved %d threads (%d mutations) from a partial list: %v", count, mutations, err)
+	}
+}

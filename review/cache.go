@@ -50,9 +50,12 @@ func (source CachedSource) DownloadHead(ctx context.Context, repository, sha str
 	name := source.Cache.path(repository, sha)
 	if file, err := os.Open(name); err == nil {
 		defer func() { _ = file.Close() }()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		now := time.Now()
 		_ = os.Chtimes(name, now, now)
-		_, err := io.Copy(writer, file)
+		_, err := io.Copy(writer, contextReader{ctx: ctx, reader: file})
 		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
@@ -72,6 +75,19 @@ func (source CachedSource) DownloadHead(ctx context.Context, repository, sha str
 		source.Cache.trim()
 	}
 	return nil
+}
+
+// contextReader stops a copy once its context is done.
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (reader contextReader) Read(buf []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.reader.Read(buf)
 }
 
 // bestEffort writes to the cache file until a write fails (a full disk),

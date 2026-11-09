@@ -89,6 +89,11 @@ type usageMeter struct {
 	body     bytes.Buffer
 	line     []byte
 	skipping bool
+	// data holds the data lines of the event being read; an event ends
+	// at a blank line. dataSize bounds it like a single line.
+	data     []string
+	dataSize int
+	dataSkip bool
 	total    wireUsage
 	found    bool
 	// final is set by usage that comes with or after the answer (OpenAI's
@@ -125,28 +130,68 @@ func (meter *usageMeter) write(data []byte) {
 		if newline < 0 {
 			return
 		}
-		if !meter.skipping {
-			meter.event(string(meter.line))
+		if meter.skipping {
+			meter.dataSkip = true
+		} else {
+			meter.eventLine(string(meter.line))
 		}
 		meter.line, meter.skipping = meter.line[:0], false
 		data = data[newline+1:]
 	}
 }
 
-func (meter *usageMeter) event(line string) {
-	data, ok := strings.CutPrefix(strings.TrimSuffix(line, "\r"), "data:")
+// eventLine reads one line of a server-sent event stream: data lines are
+// gathered, and a blank line ends the event.
+func (meter *usageMeter) eventLine(line string) {
+	line = strings.TrimSuffix(line, "\r")
+	if line == "" {
+		meter.dispatch()
+		return
+	}
+	data, ok := strings.CutPrefix(line, "data:")
 	if !ok {
 		return
 	}
+	data = strings.TrimPrefix(data, " ")
+	if meter.dataSize+len(data) > maxEventLine {
+		meter.dataSkip = true
+		return
+	}
+	meter.data = append(meter.data, data)
+	meter.dataSize += len(data) + 1
+}
+
+// dispatch reads the usage of the event gathered so far. Its data lines
+// are joined with newlines as server-sent events define; streams that
+// put one JSON object on each data line without blank lines between
+// them are read line by line.
+func (meter *usageMeter) dispatch() {
+	lines, skipped := meter.data, meter.dataSkip
+	meter.data, meter.dataSize, meter.dataSkip = nil, 0, false
+	if len(lines) == 0 {
+		return
+	}
+	if !skipped && meter.parse(strings.Join(lines, "\n")) {
+		return
+	}
+	if len(lines) > 1 {
+		for _, line := range lines {
+			meter.parse(line)
+		}
+	}
+}
+
+func (meter *usageMeter) parse(data string) bool {
 	var envelope usageEnvelope
 	if json.Unmarshal([]byte(strings.TrimSpace(data)), &envelope) != nil || envelope.usage() == nil {
-		return
+		return false
 	}
 	meter.total.merge(*envelope.usage())
 	meter.found = true
 	if envelope.Message == nil || envelope.Message.Usage == nil || envelope.Usage != nil {
 		meter.final = true
 	}
+	return true
 }
 
 // estimatedCharsPerToken turns an answer's size into output tokens when
@@ -158,8 +203,10 @@ const estimatedCharsPerToken = 3
 func (meter *usageMeter) usage() (overload.Usage, bool) {
 	if meter.stream {
 		if len(meter.line) > 0 && !meter.skipping {
-			meter.event(string(meter.line))
+			meter.eventLine(string(meter.line))
+			meter.line = meter.line[:0]
 		}
+		meter.dispatch()
 		if meter.found && meter.final {
 			return meter.total.toUsage(meter.provider), true
 		}
