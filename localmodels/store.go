@@ -161,10 +161,50 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return service.ID == installed.ID && strings.EqualFold(service.Quant, installed.Quant)
 	}) {
 		installed.Served = len(replaced) > 0
-		return installed, nil
+		return installed, store.retire(manifest, replaced)
 	}
 	installed.Freed = store.removeUnused(manifest, replaced)
 	return installed, nil
+}
+
+// retire records files of replaced entries that a service still loads, so
+// clean deletes exactly those once no service loads them. Files overload
+// did not write are never deleted.
+func (store Store) retire(manifest, replaced []Installed) error {
+	inUse := map[string]bool{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			inUse[store.Path(entry.Repository, file.Path)] = true
+		}
+	}
+	retired, err := store.retired()
+	if err != nil {
+		return err
+	}
+	for _, entry := range replaced {
+		for _, file := range entry.Files {
+			if path := store.Path(entry.Repository, file.Path); !inUse[path] && !slices.Contains(retired, path) {
+				retired = append(retired, path)
+			}
+		}
+	}
+	data, err := json.MarshalIndent(retired, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeFileAtomic(filepath.Join(store.Dir, "retired.json"), data)
+}
+
+func (store Store) retired() ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(store.Dir, "retired.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var paths []string
+	return paths, json.Unmarshal(data, &paths)
 }
 
 // removeUnused deletes files of replaced entries that no installed entry
@@ -513,35 +553,51 @@ func (store Store) removeEmptyParents(dir string) {
 	}
 }
 
-// Clean removes partial downloads, and GGUF files that no download lists
-// and no model service loads (left by updates of a served model), and
-// returns the bytes freed.
+// Clean removes partial downloads, and weights a newer download replaced
+// once no model service loads them, and returns the bytes freed. Other
+// files in the directory are left alone.
 func (store Store) Clean() (int64, error) {
 	unlock, err := store.lock(".lock")
 	if err != nil {
 		return 0, err
 	}
 	defer unlock()
-	manifest, err := store.readManifest()
-	if err != nil {
-		return 0, err
-	}
 	services, err := store.Services()
 	if err != nil {
 		return 0, err
 	}
-	keep := map[string]bool{}
-	for _, entry := range manifest {
-		for _, file := range entry.Files {
-			keep[store.Path(entry.Repository, file.Path)] = true
-		}
-	}
+	loaded := map[string]bool{}
 	for _, service := range services {
 		for _, path := range service.Files {
-			keep[path] = true
+			loaded[path] = true
 		}
 	}
+	retired, err := store.retired()
+	if err != nil {
+		return 0, err
+	}
 	var freed int64
+	var still []string
+	for _, path := range retired {
+		if loaded[path] {
+			still = append(still, path)
+			continue
+		}
+		if info, err := os.Stat(path); err == nil {
+			if err := os.Remove(path); err != nil {
+				return freed, err
+			}
+			freed += info.Size()
+			store.removeEmptyParents(filepath.Dir(path))
+		}
+	}
+	data, err := json.MarshalIndent(still, "", "  ")
+	if err != nil {
+		return freed, err
+	}
+	if err := writeFileAtomic(filepath.Join(store.Dir, "retired.json"), data); err != nil {
+		return freed, err
+	}
 	err = filepath.WalkDir(store.Dir, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -549,8 +605,7 @@ func (store Store) Clean() (int64, error) {
 			}
 			return err
 		}
-		orphan := strings.HasSuffix(strings.ToLower(entry.Name()), ".gguf") && !keep[path]
-		if entry.Type().IsRegular() && (strings.HasSuffix(entry.Name(), partialSuffix) || orphan) {
+		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), partialSuffix) {
 			info, err := entry.Info()
 			if err != nil {
 				return err

@@ -283,8 +283,18 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if err := store.writeServices(nil); err != nil {
 		t.Fatal(err)
 	}
+	unrelated := filepath.Join(store.Dir, "mine", "notes.gguf")
+	if err := os.MkdirAll(filepath.Dir(unrelated), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unrelated, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if freed, err := store.Clean(); err != nil || freed != 3 {
-		t.Fatalf("clean of orphaned weights = %d, %v", freed, err)
+		t.Fatalf("clean of retired weights = %d, %v", freed, err)
+	}
+	if _, err := os.Stat(unrelated); err != nil {
+		t.Fatal("clean deleted a GGUF overload did not write")
 	}
 	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
 		t.Fatal(err)

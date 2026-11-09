@@ -153,7 +153,7 @@ overload models status                                # services and /health
 overload models list                                  # downloads, disk used and free
 overload models stop recursive-flint
 overload models rm recursive-flint                    # delete the weights
-overload models clean                                 # delete partial and unused downloads
+overload models clean                                 # delete partial and replaced downloads
 ```
 
 - `pull` downloads from the catalog's Hugging Face repository (or
