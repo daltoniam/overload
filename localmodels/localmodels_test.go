@@ -249,6 +249,30 @@ func TestFailedUpdateKeepsTheInstalledRevision(t *testing.T) {
 	}
 }
 
+func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
+	content := []byte(strings.Repeat("w", 4096))
+	_, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	store := NewStore(t.TempDir())
+	old := Installed{ID: testModel().ID, Quant: "Q4_K_M", Repository: "old/flint-GGUF", Files: []File{{Path: "flint-Q4_K_M.gguf", Size: 3}}}
+	oldPath := store.Path(old.Repository, old.Files[0].Path)
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeManifest([]Installed{old}); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+	if err != nil || installed.Freed != 3 {
+		t.Fatalf("pull = %+v, %v", installed, err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, "old")); !os.IsNotExist(err) {
+		t.Fatal("the replaced repository's files were orphaned")
+	}
+}
+
 func TestPaginationStaysOnTheHub(t *testing.T) {
 	hub := Hub{BaseURL: "https://huggingface.co"}
 	for link, want := range map[string]string{

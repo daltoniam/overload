@@ -44,6 +44,9 @@ type Installed struct {
 	Revision     string    `json:"revision,omitempty"`
 	Files        []File    `json:"files"`
 	DownloadedAt time.Time `json:"downloaded_at"`
+	// Freed is the bytes a pull deleted from the entry it replaced; it is
+	// not stored.
+	Freed int64 `json:"-"`
 }
 
 // Size is the bytes the installed files take.
@@ -116,25 +119,63 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	}
 	// Every file is downloaded and verified before any installed file is
 	// replaced, so a failed update leaves the previous revision usable.
-	staged := map[string]string{}
+	type move struct{ from, to string }
+	var staged []move
 	for _, file := range selected {
 		partial, err := store.download(ctx, hub, repository, revision, file, progress)
 		if err != nil {
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
 		if partial != "" {
-			staged[partial] = store.Path(repository, file.Path)
+			staged = append(staged, move{partial, store.Path(repository, file.Path)})
 		}
 	}
-	for partial, destination := range staged {
-		if err := os.Rename(partial, destination); err != nil {
-			return Installed{}, err
+	for _, step := range staged {
+		if err := os.Rename(step.from, step.to); err != nil {
+			return Installed{}, fmt.Errorf("move %s into place (the files of this model may now be mixed; run the pull again): %w", step.to, err)
 		}
 	}
 	installed := Installed{ID: model.ID, Quant: quant, Repository: repository, Revision: revision, Files: selected, DownloadedAt: store.now().UTC()}
-	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool { return entry.ID == installed.ID && strings.EqualFold(entry.Quant, quant) })
+	var replaced []Installed
+	manifest = slices.DeleteFunc(manifest, func(entry Installed) bool {
+		if entry.ID == installed.ID && strings.EqualFold(entry.Quant, quant) {
+			replaced = append(replaced, entry)
+			return true
+		}
+		return false
+	})
 	manifest = append(manifest, installed)
-	return installed, store.writeManifest(manifest)
+	if err := store.writeManifest(manifest); err != nil {
+		return Installed{}, err
+	}
+	installed.Freed = store.removeUnused(manifest, replaced)
+	return installed, nil
+}
+
+// removeUnused deletes files of replaced entries that no installed entry
+// uses any more, such as weights from a different repository, and returns
+// the bytes freed. A failure only leaves the file for clean-up later.
+func (store Store) removeUnused(manifest, replaced []Installed) int64 {
+	inUse := map[string]bool{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			inUse[store.Path(entry.Repository, file.Path)] = true
+		}
+	}
+	var freed int64
+	for _, entry := range replaced {
+		for _, file := range entry.Files {
+			path := store.Path(entry.Repository, file.Path)
+			if inUse[path] {
+				continue
+			}
+			if os.Remove(path) == nil {
+				freed += file.Size
+				store.removeEmptyParents(filepath.Dir(path))
+			}
+		}
+	}
+	return freed
 }
 
 // checkSpace refuses a download that would leave less than freeMargin.

@@ -298,6 +298,9 @@ func (command modelsCommand) pull(ctx context.Context, args []string) error {
 		return err
 	}
 	_, err = fmt.Fprintf(command.out, "Downloaded %s %s (%s, revision %.12s) to %s\n", installed.ID, installed.Quant, gigabytes(installed.Size()), installed.Revision, store.Dir)
+	if err == nil && installed.Freed > 0 {
+		_, err = fmt.Fprintf(command.out, "Deleted %s of files the previous download used. A running model service keeps them open until it restarts (overload models serve %s).\n", gigabytes(installed.Freed), installed.ID)
+	}
 	return err
 }
 

@@ -20,6 +20,8 @@ import (
 // Hub reads model repositories from Hugging Face.
 type Hub struct {
 	// BaseURL is https://huggingface.co unless a test or mirror sets it.
+	// It must be an origin (scheme and host, no path): API and file paths
+	// are appended to it.
 	BaseURL string
 	// Token is an optional Hugging Face access token for gated models. It
 	// is sent only to BaseURL's host and its subdomains.
