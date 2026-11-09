@@ -680,7 +680,8 @@ func (store Store) removeEmptyParents(dir string) {
 }
 
 // Clean removes partial downloads, and weights a newer download replaced
-// once no model service loads them, and returns the bytes freed. Other
+// once no model service loads them, and returns the bytes freed (a file
+// still linked from an installed revision frees nothing). Other
 // files in the directory are left alone.
 func (store Store) Clean(ctx context.Context) (int64, error) {
 	unlock, err := store.lock(".lock")
@@ -718,10 +719,13 @@ func (store Store) Clean(ctx context.Context) (int64, error) {
 			continue
 		}
 		if info, err := os.Stat(path); err == nil {
+			last := linkCount(path) <= 1
 			if err := os.Remove(path); err != nil {
 				return freed, err
 			}
-			freed += info.Size()
+			if last {
+				freed += info.Size()
+			}
 			store.removeEmptyParents(filepath.Dir(path))
 		}
 	}
@@ -740,10 +744,13 @@ func (store Store) Clean(ctx context.Context) (int64, error) {
 			if err != nil {
 				return err
 			}
+			last := linkCount(path) <= 1
 			if err := os.Remove(path); err != nil {
 				return err
 			}
-			freed += info.Size()
+			if last {
+				freed += info.Size()
+			}
 		}
 		return nil
 	})

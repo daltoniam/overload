@@ -374,6 +374,32 @@ func TestPullForgetsRetiredFilesItInstallsAgain(t *testing.T) {
 	}
 }
 
+func TestCleanCountsSharedFilesOnce(t *testing.T) {
+	store := NewStore(t.TempDir())
+	installed := filepath.Join(store.Dir, "a/m", strings.Repeat("e", 40), "m-Q8_0.gguf")
+	retired := filepath.Join(store.Dir, "a/m", testRevision, "m-Q8_0.gguf")
+	for _, path := range []string{installed, retired} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(installed, []byte("weights"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(installed, retired); err != nil {
+		t.Skip("no hard links here")
+	}
+	if err := store.writeRetired([]string{retired}); err != nil {
+		t.Fatal(err)
+	}
+	if freed, err := store.Clean(context.Background()); err != nil || freed != 0 {
+		t.Fatalf("clean of a file still linked = %d, %v", freed, err)
+	}
+	if _, err := os.Stat(installed); err != nil {
+		t.Fatal("clean removed the installed link")
+	}
+}
+
 func TestOwnPartial(t *testing.T) {
 	for name, want := range map[string]bool{"a.gguf.0123456789abcdef.part": true, "a.gguf.mine.part": false, "video.mp4.part": false, "a.gguf.0123456789abcdeg.part": false, ".0123456789abcdef.part": false} {
 		if ownPartial(name) != want {
