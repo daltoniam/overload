@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/web/templates/layouts"
 	"github.com/daltoniam/overload/web/templates/pages"
-	"github.com/jackc/pgx/v5"
 )
 
 // KeyStore manages API keys and reports gateway usage.
@@ -23,6 +21,7 @@ type KeyStore interface {
 	CreateAPIKey(ctx context.Context, userID int64, name string, scopes []string, lifetime time.Duration) (overload.APIKey, string, error)
 	ListAPIKeys(ctx context.Context, userID int64, all bool) ([]overload.APIKey, error)
 	RevokeAPIKey(ctx context.Context, id, userID int64, anyOwner bool) error
+	GetAPIKey(ctx context.Context, id, userID int64, anyOwner bool) (overload.APIKey, error)
 	UsageTotals(ctx context.Context, since time.Time, userID int64, all bool) ([]overload.UsageTotal, error)
 }
 
@@ -112,7 +111,7 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			return
 		}
 		if err := store.RevokeAPIKey(r.Context(), id, userID, all); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, overload.ErrInvalidAPIKey) {
 				http.NotFound(w, r)
 				return
 			}
@@ -137,17 +136,16 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 // it stop working at once. Without JavaScript this page is the only check.
 func confirmRevoke(w http.ResponseWriter, r *http.Request, store KeyStore, csrf string, id int64) {
 	userID, all := owner(r.Context())
-	keys, err := store.ListAPIKeys(r.Context(), userID, all)
-	if err != nil {
-		http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
-		return
-	}
-	index := slices.IndexFunc(keys, func(key overload.APIKey) bool { return key.ID == id })
-	if index < 0 || keys[index].State(time.Now()) != overload.APIKeyActive {
+	key, err := store.GetAPIKey(r.Context(), id, userID, all)
+	if errors.Is(err, overload.ErrInvalidAPIKey) || err == nil && key.State(time.Now()) != overload.APIKeyActive {
 		http.NotFound(w, r)
 		return
 	}
-	prompt := pages.ConfirmPrompt{Eyebrow: "API keys / Revoke", Title: "Revoke API key " + keys[index].Name + "?", Impact: pages.RevokeImpact(keys[index]), Button: "Revoke key", Cancel: "/keys"}
+	if err != nil {
+		http.Error(w, "Unable to load the API key", http.StatusInternalServerError)
+		return
+	}
+	prompt := pages.ConfirmPrompt{Eyebrow: "API keys / Revoke", Title: "Revoke API key " + key.Name + "?", Impact: pages.RevokeImpact(key), Button: "Revoke key", Cancel: "/keys"}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = layouts.Base(layouts.PageData{Title: "Revoke API key", CurrentPath: "/keys"}).Render(templ.WithChildren(r.Context(), pages.Confirmation(r.URL.Path, formTokenFor(r, csrf), r.PostForm, prompt)), w)
 }

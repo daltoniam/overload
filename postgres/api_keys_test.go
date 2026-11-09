@@ -52,8 +52,17 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	if err != nil || len(all) != 2 {
 		t.Fatalf("all keys: %+v %v", all, err)
 	}
-	if err := store.RevokeAPIKey(ctx, shared.ID, user.ID, false); err == nil {
-		t.Fatal("revoked someone else's key")
+	if err := store.RevokeAPIKey(ctx, shared.ID, user.ID, false); !errors.Is(err, overload.ErrInvalidAPIKey) {
+		t.Fatalf("revoked someone else's key: %v", err)
+	}
+	if got, err := store.GetAPIKey(ctx, key.ID, user.ID, false); err != nil || got.Name != "laptop" {
+		t.Fatalf("own key: %+v %v", got, err)
+	}
+	if _, err := store.GetAPIKey(ctx, shared.ID, user.ID, false); !errors.Is(err, overload.ErrInvalidAPIKey) {
+		t.Fatalf("read someone else's key: %v", err)
+	}
+	if got, err := store.GetAPIKey(ctx, shared.ID, 0, true); err != nil || got.Name != "ci" {
+		t.Fatalf("admin read: %+v %v", got, err)
 	}
 	if err := store.RecordUsage(ctx, overload.Usage{KeyID: key.ID, UserID: user.ID, Model: "flint", Endpoint: "/v1/chat/completions", Status: 200, InputTokens: 10, OutputTokens: 4, Duration: 3 * time.Minute}); err != nil {
 		t.Fatal(err)

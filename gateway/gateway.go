@@ -325,6 +325,17 @@ type usageFields struct {
 	CompletionTokens int64 `json:"completion_tokens"`
 	InputTokens      int64 `json:"input_tokens"`
 	OutputTokens     int64 `json:"output_tokens"`
+	// Anthropic counts cached input apart from input_tokens; OpenAI's
+	// prompt_tokens already includes it.
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+}
+
+// add takes the larger of the counts seen so far and usage's, since
+// streamed counts are cumulative.
+func (count *tokenCount) add(usage usageFields) {
+	count.input = max(count.input, usage.PromptTokens, usage.InputTokens+usage.CacheReadInputTokens+usage.CacheCreationInputTokens)
+	count.output = max(count.output, usage.CompletionTokens, usage.OutputTokens)
 }
 
 // observe reads usage from one JSON response or event: OpenAI's usage
@@ -346,11 +357,9 @@ func (count *tokenCount) observe(data []byte) {
 		usages = append(usages, event.Message.Usage)
 	}
 	for _, usage := range usages {
-		if usage == nil {
-			continue
+		if usage != nil {
+			count.add(*usage)
 		}
-		count.input = max(count.input, usage.PromptTokens, usage.InputTokens)
-		count.output = max(count.output, usage.CompletionTokens, usage.OutputTokens)
 	}
 }
 
@@ -369,8 +378,7 @@ func (count *tokenCount) observeTail(tail []byte) {
 		slog.Warn("model answer too large to count its tokens", "bytes_kept", len(tail))
 		return
 	}
-	count.input = max(count.input, usage.PromptTokens, usage.InputTokens)
-	count.output = max(count.output, usage.CompletionTokens, usage.OutputTokens)
+	count.add(usage)
 }
 
 const (
@@ -464,8 +472,8 @@ func (filter *usageFilter) Finish() []byte {
 	return filter.release(out)
 }
 
-// keepJSON keeps a JSON answer to read usage from, or only its end once it
-// is larger than maxObservedBytes.
+// keepJSON keeps a JSON answer to read usage from, or only its last
+// tailBytes once it is larger than maxObservedBytes.
 func (filter *usageFilter) keepJSON(chunk []byte) {
 	if !filter.overflowed && filter.pending.Len()+len(chunk) <= maxObservedBytes {
 		filter.pending.Write(chunk)
@@ -473,13 +481,23 @@ func (filter *usageFilter) keepJSON(chunk []byte) {
 	}
 	if !filter.overflowed {
 		filter.overflowed = true
-		filter.tail = append(filter.tail, filter.pending.Bytes()...)
-		filter.pending.Reset()
+		filter.tail = make([]byte, 0, 2*tailBytes)
+		filter.tail = appendTail(filter.tail, filter.pending.Bytes())
+		filter.pending = bytes.Buffer{}
 	}
-	filter.tail = append(filter.tail, chunk...)
-	if len(filter.tail) > tailBytes {
-		filter.tail = append(filter.tail[:0], filter.tail[len(filter.tail)-tailBytes:]...)
+	filter.tail = appendTail(filter.tail, chunk)
+}
+
+// appendTail appends data to tail, keeping only the last tailBytes, within
+// tail's own buffer.
+func appendTail(tail, data []byte) []byte {
+	if len(data) >= tailBytes {
+		return append(tail[:0], data[len(data)-tailBytes:]...)
 	}
+	if excess := len(tail) + len(data) - tailBytes; excess > 0 {
+		tail = append(tail[:0], tail[excess:]...)
+	}
+	return append(tail, data...)
 }
 
 // release sends a held usage line that turned out not to be a whole event.

@@ -228,7 +228,7 @@ func enhanceHTML(r *http.Request, body []byte, state pages.UIState) ([]byte, err
 		main.InsertBefore(notice, main.FirstChild)
 	}
 	walk(main, func(node *html.Node) {
-		if node.Data == "form" && attr(node, "method") == "post" && !strings.HasSuffix(attr(node, "action"), "/delete") && attr(node, "data-confirm") == "" {
+		if node.Data == "form" && attr(node, "method") == "post" && !strings.HasSuffix(attr(node, "action"), "/delete") && attr(node, "data-confirm") == "" && attr(node, "data-full-page") == "" {
 			setAttr(node, "data-enhance", "true")
 		}
 	})

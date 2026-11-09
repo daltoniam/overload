@@ -36,7 +36,7 @@ templ APIKeys(page KeysPage, nonce string) {
 			</section>
 		}
 		if page.CanCreate {
-			<section class="panel"><h2>New key</h2><form method="post" action="/keys"><input type="hidden" name="csrf" value={ nonce }/>
+			<section class="panel"><h2>New key</h2><form method="post" action="/keys" data-full-page="true"><input type="hidden" name="csrf" value={ nonce }/>
 				<label class="field"><span>Name</span><input name="name" required maxlength="100" placeholder="laptop claude code"/></label>
 				<fieldset class="field"><legend>Scopes</legend>
 					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>

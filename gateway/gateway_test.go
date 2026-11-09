@@ -100,7 +100,7 @@ func newFakeUpstream(t *testing.T) *fakeUpstream {
 			http.Redirect(w, r, elsewhere.URL+"/v1/chat/completions", http.StatusTemporaryRedirect)
 		case r.URL.Path == "/v1/messages" && body["stream"] == true:
 			w.Header().Set("Content-Type", "text/event-stream")
-			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":30,\"output_tokens\":1}}}\n\n")
+			_, _ = io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":30,\"cache_read_input_tokens\":900,\"cache_creation_input_tokens\":70,\"output_tokens\":1}}}\n\n")
 			_, _ = io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":12}}\n\n")
 		case r.URL.Path == "/v1/messages":
 			w.Header().Set("Content-Type", "application/json")
@@ -233,7 +233,7 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("messages without streaming: %d %v", response.Code, headers)
 	}
 
-	want := []string{"gpt 9/3", "flint 11/5", "flint 11/5", "flint 11/5", "claude 30/12", "claude 20/7"}
+	want := []string{"gpt 9/3", "flint 11/5", "flint 11/5", "flint 11/5", "claude 1000/12", "claude 20/7"}
 	usage := store.recorded()[beforeUsage:]
 	if len(usage) != len(want) {
 		t.Fatalf("usage = %+v", usage)
@@ -357,6 +357,10 @@ func TestUsageFilter(t *testing.T) {
 		"line too long to inspect": {
 			sse: true, drop: true, chunks: []string{"data: {\"choices\":[{\"delta\":\"" + strings.Repeat("x", maxObservedBytes), strings.Repeat("y", 10), "\"}]}\n\n", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9}}\n\n", "data: [DONE]\n\n"},
 			want: "data: {\"choices\":[{\"delta\":\"" + strings.Repeat("x", maxObservedBytes) + strings.Repeat("y", 10) + "\"}]}\n\ndata: [DONE]\n\n", in: 5, out: 9,
+		},
+		"anthropic cached input": {
+			chunks: []string{`{"usage":{"input_tokens":20,"cache_read_input_tokens":5000,"cache_creation_input_tokens":300,"output_tokens":7}}`},
+			want:   `{"usage":{"input_tokens":20,"cache_read_input_tokens":5000,"cache_creation_input_tokens":300,"output_tokens":7}}`, in: 5320, out: 7,
 		},
 		"whole body too large to keep": {
 			chunks: []string{`{"content":"` + strings.Repeat("x", maxObservedBytes), `","usage":{"prompt_tokens":40,"completion_tokens":12}}`},

@@ -107,15 +107,25 @@ func (s *Store) ListAPIKeys(ctx context.Context, userID int64, all bool) ([]over
 	return keys, rows.Err()
 }
 
+// GetAPIKey returns key id; unless anyOwner is set it must belong to
+// userID. A missing key is overload.ErrInvalidAPIKey.
+func (s *Store) GetAPIKey(ctx context.Context, id, userID int64, anyOwner bool) (overload.APIKey, error) {
+	key, err := scanAPIKey(s.Pool.QueryRow(ctx, apiKeySelect+` WHERE k.id = $1 AND ($3 OR COALESCE(k.user_id, 0) = $2)`, id, userID, anyOwner))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return overload.APIKey{}, overload.ErrInvalidAPIKey
+	}
+	return key, err
+}
+
 // RevokeAPIKey revokes key id; unless anyOwner is set it must belong to
-// userID.
+// userID. A missing or already revoked key is overload.ErrInvalidAPIKey.
 func (s *Store) RevokeAPIKey(ctx context.Context, id, userID int64, anyOwner bool) error {
 	command, err := s.Pool.Exec(ctx, `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL AND ($3 OR COALESCE(user_id, 0) = $2)`, id, userID, anyOwner)
 	if err != nil {
 		return err
 	}
 	if command.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+		return overload.ErrInvalidAPIKey
 	}
 	return nil
 }

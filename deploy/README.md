@@ -633,7 +633,8 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
 - Every forwarded call is recorded in tokens and minutes (streamed
   responses included: overload always asks OpenAI-compatible servers for
   stream usage and drops that chunk again for clients that did not ask for
-  it). Requests refused before reaching a model (bad key, unknown model,
+  it). Anthropic's cached input (cache reads and writes) counts as input,
+  as OpenAI's cached prompt tokens already do. Requests refused before reaching a model (bad key, unknown model,
   full queue) are not recorded. The Usage page shows the last 30 days per
   person and model.
 - Callers' own credentials and `anthropic-beta` headers are never passed
@@ -649,9 +650,9 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
 - `/v1/*` is authenticated by API keys alone: it skips the UI's sign-in,
   Cloudflare Access and host check, so in-cluster agents can call
   `http://overload.overload.svc:8082/v1` (the cloudflare overlay's network
-  policy admits only cloudflared, so allow them there too). When Cloudflare Access guards the
-  hostname, add a bypass policy for `/v1/*` at the edge, or agents cannot
-  reach the gateway.
+  policy admits only cloudflared, so allow them there too). When Cloudflare
+  Access guards the hostname, add a bypass policy for `/v1/*` at the edge,
+  or agents cannot reach the gateway.
 
 ## Linux servers
 

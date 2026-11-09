@@ -12,7 +12,6 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
-	"github.com/jackc/pgx/v5"
 )
 
 type fakeKeyStore struct {
@@ -31,11 +30,17 @@ func (store *fakeKeyStore) ListAPIKeys(context.Context, int64, bool) ([]overload
 }
 func (store *fakeKeyStore) RevokeAPIKey(_ context.Context, id, _ int64, _ bool) error {
 	if id < 1 || int(id) > len(store.keys) {
-		return pgx.ErrNoRows
+		return overload.ErrInvalidAPIKey
 	}
 	now := time.Now()
 	store.keys[id-1].RevokedAt = &now
 	return nil
+}
+func (store *fakeKeyStore) GetAPIKey(_ context.Context, id, _ int64, _ bool) (overload.APIKey, error) {
+	if id < 1 || int(id) > len(store.keys) {
+		return overload.APIKey{}, overload.ErrInvalidAPIKey
+	}
+	return store.keys[id-1], nil
 }
 func (store *fakeKeyStore) UsageTotals(context.Context, time.Time, int64, bool) ([]overload.UsageTotal, error) {
 	return []overload.UsageTotal{{UserEmail: "a@example.com", Model: "flint", Calls: 2, InputTokens: 10, OutputTokens: 4, Minutes: 1.5}}, nil
@@ -84,6 +89,10 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 		return response
 	}
 	page := get("/keys")
+	createForm := regexp.MustCompile(`<form[^>]*action="/keys"[^>]*>`).FindString(page)
+	if !strings.Contains(createForm, `data-full-page="true"`) || strings.Contains(createForm, "data-enhance") {
+		t.Fatalf("the create form would be swapped into the error area by HTMX: %s", createForm)
+	}
 	if !strings.Contains(page, "No API keys yet") || !strings.Contains(page, `action="/keys"`) {
 		t.Fatal("keys page wrong")
 	}
