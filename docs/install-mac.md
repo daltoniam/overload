@@ -132,8 +132,9 @@ Smaller models find fewer bugs; see the measurements in
 
 Any provider with an OpenAI-compatible API works: OpenAI, OpenRouter,
 Together, Groq, Fireworks, Cloudflare AI Gateway, LiteLLM or vLLM. Claude
-and Gemini work through a gateway that offers an OpenAI-compatible API (for
-example OpenRouter or Cloudflare AI Gateway).
+models can also use Anthropic's own API (`--provider anthropic`, below),
+and Gemini works through a gateway that offers an OpenAI-compatible API
+(for example OpenRouter or Cloudflare AI Gateway).
 
 Overload never stores API keys. Put the key in `overload.env` under a name
 starting with `OVERLOAD_MODEL_`, and give overload only the name:
@@ -146,6 +147,20 @@ overload settings set --name openai --connection-kind hosted \
   --api-key-env OVERLOAD_MODEL_OPENAI_KEY \
   --reasoning-param reasoning_effort --reasoning-effort medium --concurrency 8
 ```
+
+For Anthropic's Messages API (adaptive thinking at the given effort):
+
+```sh
+overload settings set --name sonnet --provider anthropic --connection-kind hosted \
+  --url https://api.anthropic.com --model claude-sonnet-5-5 \
+  --api-key-env OVERLOAD_MODEL_ANTHROPIC_KEY \
+  --reasoning-param reasoning_effort --reasoning-effort high --concurrency 8 \
+  --price-input 3 --price-cached-input 0.30 --price-cache-write 3.75 --price-output 15
+```
+
+The `--price-…` flags (US dollars per million tokens, from your
+provider's price list) let overload show what each review costs and
+enforce budgets; see [workflows.md](workflows.md#costs-and-budgets).
 
 Use any model ID your account can call. For OpenRouter use
 `--url https://openrouter.ai/api/v1` with its model IDs (for example

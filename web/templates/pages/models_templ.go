@@ -49,7 +49,7 @@ func Models(models []overload.ReviewSettings, budget *postgres.Budget, nonce str
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Automation / Models</p><h1>Model connections</h1><p class=\"muted\">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class=\"button\" href=\"/settings/new\" hx-get=\"/settings/new\" hx-target=\"#modal-root\" hx-swap=\"innerHTML\" data-open-model=\"true\">New model</a></div><section class=\"panel\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<div class=\"page-header\"><div><p class=\"eyebrow\">Automation / Models</p><h1>Model connections</h1><p class=\"muted\">Connect local or hosted models (any OpenAI-compatible API, or Anthropic). Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class=\"button\" href=\"/settings/new\" hx-get=\"/settings/new\" hx-target=\"#modal-root\" hx-swap=\"innerHTML\" data-open-model=\"true\">New model</a></div><section class=\"panel\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
