@@ -121,6 +121,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if len(routing.TooLarge) > 0 {
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
+	applyRiskTier(workflow, parsed, &routing)
 	paths := reviewablePaths(reviewable, routing.Skipped)
 	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())
 	fileIndex := make(map[string]int, len(paths))
@@ -141,11 +142,18 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	}
 	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
 	runs := newAgentRuns(len(workflow.Agents), len(batches))
+	var spent atomic.Int64
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
 		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
+		if budget := int64(workflow.MaxReviewTokens); budget > 0 && spent.Load() >= budget {
+			message := fmt.Sprintf("the review's token budget of %d was used up", budget)
+			runs.failures[task.agent].CompareAndSwap(nil, &message)
+			return nil
+		}
 		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], parsed.patchFor(paths[task.file]))
+		spent.Add(outcome.inputTokens + outcome.outputTokens)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -216,6 +224,49 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	result.Metrics["reviewed_files"] = len(batches)
 	result.Summary = summarize(result.Findings, summaries, len(batches))
 	return result, nil
+}
+
+// applyRiskTier sets the pull request's risk tier when the workflow uses
+// one (sensitive paths, or sub-agents limited to tiers) and takes files
+// away from sub-agents whose tiers exclude it. The main agent always
+// reviews.
+func applyRiskTier(workflow overload.ResolvedWorkflow, parsed reviewDiff, routing *overload.Routing) {
+	tiered := len(workflow.SensitivePaths) > 0
+	for _, agent := range workflow.Agents {
+		tiered = tiered || len(agent.Scope.Tiers) > 0
+	}
+	if !tiered {
+		return
+	}
+	sensitive, err := overload.CompileGlobs(workflow.SensitivePaths)
+	if err != nil {
+		return
+	}
+	lines, touched := 0, false
+	for _, path := range routing.ChangedFiles() {
+		if slices.Contains(routing.Skipped, path) {
+			continue
+		}
+		lines += changedLines(parsed.patchFor(path))
+		touched = touched || sensitive.Match(path)
+	}
+	routing.Tier = overload.AssessRisk(lines, touched)
+	for index := 1; index < len(workflow.Agents); index++ {
+		if tiers := workflow.Agents[index].Scope.Tiers; len(tiers) > 0 && !slices.Contains(tiers, routing.Tier) {
+			routing.Agents[index].Files, routing.Agents[index].Planned, routing.Agents[index].OutOfTier = []string{}, nil, true
+		}
+	}
+}
+
+// changedLines counts added and removed lines in a file's patch.
+func changedLines(patch string) int {
+	count := 0
+	for _, line := range strings.Split(patch, "\n") {
+		if (strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++")) || (strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---")) {
+			count++
+		}
+	}
+	return count
 }
 
 // routeFiles routes the changed files of a diff. Files too large to review

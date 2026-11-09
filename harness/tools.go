@@ -94,6 +94,12 @@ func ConnectTools(ctx context.Context, servers []overload.ToolServer, sessionID 
 // Tools returns the model-facing tools.
 func (set *Toolset) Tools() []fantasy.AgentTool { return set.tools }
 
+// NewLocalToolset wraps tools that run in this process, such as a fixer's
+// file tools, so RunAgent can offer them like MCP tools.
+func NewLocalToolset(tools []fantasy.AgentTool) *Toolset {
+	return &Toolset{tools: tools, maxCalls: 1 << 30}
+}
+
 // Calls reports how many tool calls the run made.
 func (set *Toolset) Calls() int { return int(set.calls.Load()) }
 

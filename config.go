@@ -120,6 +120,12 @@ type Workflow struct {
 	// may approve on its own; see GateOutcome.
 	HumanReviewPaths []string `json:"human_review_paths,omitempty"`
 	ApprovePaths     []string `json:"approve_paths,omitempty"`
+	// SensitivePaths are globs (schema, auth, CI) that make any pull
+	// request touching them full risk; see AssessRisk. MaxReviewTokens
+	// bounds the tokens one review may use; files left when it runs out are
+	// unreviewed and the review partial. 0 means no limit.
+	SensitivePaths  []string `json:"sensitive_paths,omitempty"`
+	MaxReviewTokens int      `json:"max_review_tokens,omitempty"`
 	// MaxFileChars caps the characters of diff and file content sent in one
 	// file review; larger diffs are skipped as too large. 0 picks a default
 	// for the workflow's models (see FileCharBudget).
@@ -155,6 +161,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateGatePaths(workflow.Kind, workflow.ReviewDecision, workflow.HumanReviewPaths, workflow.ApprovePaths); err != nil {
+		return err
+	}
+	if err := validateCohort(workflow.Kind, workflow.SensitivePaths, workflow.MaxReviewTokens); err != nil {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
@@ -227,6 +236,9 @@ type ResolvedWorkflow struct {
 	// paths; see GateOutcome.
 	HumanReviewPaths []string `json:"human_review_paths,omitempty"`
 	ApprovePaths     []string `json:"approve_paths,omitempty"`
+	// SensitivePaths and MaxReviewTokens size the review; see Workflow.
+	SensitivePaths  []string `json:"sensitive_paths,omitempty"`
+	MaxReviewTokens int      `json:"max_review_tokens,omitempty"`
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -260,6 +272,9 @@ func (workflow ResolvedWorkflow) Verify() error {
 		return err
 	}
 	if err := validateGatePaths(workflow.Kind, workflow.ReviewDecision, workflow.HumanReviewPaths, workflow.ApprovePaths); err != nil {
+		return err
+	}
+	if err := validateCohort(workflow.Kind, workflow.SensitivePaths, workflow.MaxReviewTokens); err != nil {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {

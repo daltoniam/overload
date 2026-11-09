@@ -97,6 +97,15 @@ func validateGatePaths(kind, decision string, human, approve []string) error {
 	return nil
 }
 
+// SeverityRank orders severities, critical first (0); low is 3.
+func SeverityRank(severity string) (int, error) {
+	rank, ok := severityOrder[severity]
+	if !ok {
+		return 0, errors.New("severity must be critical, high, medium or low")
+	}
+	return rank, nil
+}
+
 // Commit status states for a review's merge gate.
 const (
 	GateSuccess = "success"

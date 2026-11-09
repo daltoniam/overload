@@ -216,3 +216,15 @@ func TestWorkflowFormGatePaths(t *testing.T) {
 		t.Fatalf("approve paths hidden with another decision must not block saving: %+v %v", workflow, err)
 	}
 }
+
+func TestWorkflowFormCohortSettings(t *testing.T) {
+	values := url.Values{"name": {"cohort"}, "kind": {"pr_review"}, "main_agent": {"lead"}, "sub_0_agent": {"security"}, "sub_0_tiers": {"lite", "full"}, "sensitive_paths": {"**/migrations/**"}, "max_review_tokens": {"200000"}}
+	workflow, err := workflowFromForm(values)
+	if err != nil || strings.Join(workflow.Scopes["security"].Tiers, ",") != "lite,full" || workflow.SensitivePaths[0] != "**/migrations/**" || workflow.MaxReviewTokens != 200000 || workflow.Validate() != nil {
+		t.Fatalf("workflow %+v err %v", workflow, err)
+	}
+	values.Set("sub_0_tiers", "huge")
+	if workflow, _ := workflowFromForm(values); workflow.Validate() == nil {
+		t.Fatal("an unknown tier was accepted")
+	}
+}

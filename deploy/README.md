@@ -539,6 +539,49 @@ overload bakeoff show 4
   reviews run in sandboxes: a case is a few files held in memory that the
   reviewer only reads, and no repository code or tool runs.
 
+## Multi-agent review on your machine
+
+A team of reviewers on one machine, with hosted or local models: a main
+reviewer, specialists limited by path and pull request size, and a
+coordinator that drops duplicates and speculation.
+
+```sh
+overload workflows starter --model opus --name review-cohort
+overload review --checkout . --base main --workflow review-cohort
+overload fix --workflow review-cohort --base main --test "make test" --rounds 3
+```
+
+- `workflows starter` saves five agents on one model connection (main,
+  security, schema, performance, tests) and a workflow with a coordinator
+  (the verifier), sensitive paths and skip paths. Edit them like any other
+  agent or workflow; give specialists other models from the Agents page.
+- **Risk tiers.** A pull request is trivial up to 20 changed lines, lite up
+  to 400 and full beyond that or when it touches a workflow's sensitive
+  paths (migrations, auth, CI by default). A sub-agent can be limited to
+  tiers (Pull request sizes in its scope), so a typo fix gets one reviewer
+  and a migration gets the whole cohort. The run shows the tier and which
+  agents sat out.
+- **Budget.** `max_review_tokens` (Token budget per review) caps a
+  review's input and output tokens across agents; files not started when
+  it runs out are unreviewed, the review is partial and the overload check
+  fails.
+- `review --checkout DIR --base main` reviews the committed and
+  uncommitted changes to tracked files since the branch left `main`,
+  reading files from the working tree, and prints a report; nothing is
+  stored or posted. `--check` exits with status 1 when the overload check
+  would fail, for a pre-push hook.
+- `fix` (opt-in) creates a branch `overload/fix-<time>` in a separate
+  worktree under `.git/overload-fix/`, starting from the last commit, and
+  repeats: review, then a fixer agent (the main agent's model, or
+  `--fixer`) edits files to fix findings at or above `--until` (default
+  high), running `--test` when given, and the round is committed on the
+  branch. It stops when the review is clean, after `--rounds`, or when the
+  fixer changes nothing. The fixer can only read and write files inside
+  that worktree and run the test command. Nothing is pushed, and the
+  original working tree is never touched; review the branch before using
+  it. Review findings come from pull request text, so treat the fixer's
+  changes as untrusted until a person has read them.
+
 ## GitHub
 
 ### Pull requests without an App

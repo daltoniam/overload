@@ -52,6 +52,7 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 			Mode:        values.Get(prefix + "mode"),
 			Description: values.Get(prefix + "description"),
 			MaxFindings: number(values.Get(prefix+"max_findings"), "max findings for "+name+" must be a number"),
+			Tiers:       values[prefix+"tiers"],
 		}
 	}
 	if pr {
@@ -63,6 +64,8 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.MaxFileChars = number(values.Get("max_file_chars"), "the largest file size must be a number")
 		workflow.ReviewDecision = values.Get("review_decision")
 		workflow.HumanReviewPaths = strings.Split(values.Get("human_review_paths"), "\n")
+		workflow.SensitivePaths = strings.Split(values.Get("sensitive_paths"), "\n")
+		workflow.MaxReviewTokens = number(values.Get("max_review_tokens"), "the token budget must be a number")
 		if workflow.ReviewDecision != "" && workflow.ReviewDecision != overload.ReviewDecisionComment {
 			workflow.BlockSeverity = values.Get("block_severity")
 		}

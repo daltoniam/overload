@@ -18,6 +18,19 @@ import (
 )
 
 func manageConfiguration(resource string, args []string) error {
+	if resource == "workflows" && len(args) > 0 && args[0] == "starter" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		store, err := database(ctx)
+		if err != nil {
+			return err
+		}
+		defer store.Pool.Close()
+		if err := store.Migrate(ctx); err != nil {
+			return err
+		}
+		return createStarterCohort(ctx, store, args[1:], os.Stdout)
+	}
 	if len(args) == 0 || len(args) > 4 {
 		return errors.New("usage: overload RESOURCE list|show|apply [path], overload workflows preview NAME [files|-], overload schedules run NAME, or overload tools check|delete NAME")
 	}
