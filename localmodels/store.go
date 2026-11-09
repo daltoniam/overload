@@ -398,7 +398,10 @@ func (store Store) retired() ([]string, error) {
 		return nil, err
 	}
 	var paths []string
-	return paths, json.Unmarshal(data, &paths)
+	if err := json.Unmarshal(data, &paths); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 // checkSpace refuses a download that would leave less than freeMargin.

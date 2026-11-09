@@ -196,6 +196,9 @@ func (store Store) Serve(ctx context.Context, manager ServiceManager, agent laun
 	// Record the service before starting it, so a running agent is never
 	// missing from the registry; undo the record if it cannot start.
 	if err := store.writeServices(append(services, service)); err != nil {
+		if replacing {
+			_ = manager.Start(agent.Label)
+		}
 		return err
 	}
 	restore := func(cause error) error {
