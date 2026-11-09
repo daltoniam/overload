@@ -1,0 +1,120 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overload.Placement, now time.Time, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Nodes", CurrentPath: "/nodes"}) {
+		<div class="page-header"><div><p class="eyebrow">Models / Nodes</p><h1>Nodes</h1><p class="muted">Macs and servers that run models report their hardware, runtime versions and model services with <code>overload node report</code>. Clusters need the same versions on every node, so differences are flagged.</p></div></div>
+		if len(drift) > 0 {
+			<section class="panel"><h2>Version drift</h2><ul>
+				for _, field := range driftFields(drift) {
+					<li>{ driftLabel(field) } differs on { strings.Join(drift[field], ", ") }</li>
+				}
+			</ul></section>
+		}
+		<section class="panel">
+			if len(nodes) == 0 {
+				<div class="empty">No nodes have reported. Create an API key with the nodes scope and run <code>overload node install --server URL</code> on each machine.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Nodes</caption><thead><tr><th>Node</th><th>Hardware</th><th>Versions</th><th>Model services</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+					for _, node := range nodes {
+						<tr>
+							<td>{ node.Report.Name }<span class="secondary-line">{ node.Report.OS } { node.Report.OSVersion }</span></td>
+							<td>{ textOr(node.Report.Chip, "Unknown chip") }<span class="secondary-line">{ bytesText(node.Report.MemoryBytes) } memory, { bytesText(node.Report.DiskFreeBytes) } free</span></td>
+							<td class="mono">overload { textOr(node.Report.OverloadVersion, "?") }<span class="secondary-line">{ runtimeText(node.Report) }</span></td>
+							<td>
+								if len(node.Report.Services) == 0 {
+									<span class="muted">None</span>
+								}
+								for _, service := range node.Report.Services {
+									<span class="secondary-line">{ service.Model }: { service.Health }</span>
+								}
+							</td>
+							<td>
+								if node.Online(now) {
+									<span class="badge enabled">Online</span>
+								} else {
+									<span class="badge disabled">Offline</span>
+								}
+								<span class="secondary-line mono">{ node.LastSeen.UTC().Format("2006-01-02 15:04") }</span>
+							</td>
+							<td><form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit">Forget</button></form></td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+		<section class="panel"><h2>Placements</h2>
+			<p class="muted">Models sharded across nodes with MLX over Thunderbolt 5 RDMA. Overload records the placement and generates the launcher configuration; start it from a machine that can reach every node over SSH. Define placements with <code>overload cluster place</code>.</p>
+			if len(placements) == 0 {
+				<div class="empty">No placements.</div>
+			}
+			for _, placement := range placements {
+				<h3>{ placement.Name }: <span class="mono">{ placement.Model }</span></h3>
+				<p class="muted">{ strconv.Itoa(len(placement.Nodes)) } nodes: { strings.Join(placement.Nodes, ", ") }</p>
+				<pre><code>{ placement.Command("hostfile.json") }</code></pre>
+				<pre><code>{ hostfileText(placement) }</code></pre>
+			}
+		</section>
+	}
+}
+
+func driftFields(drift map[string][]string) []string {
+	var fields []string
+	for _, field := range []string{"os_version", "overload_version", "llama_build", "mlx_version"} {
+		if len(drift[field]) > 0 {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+func driftLabel(field string) string {
+	switch field {
+	case "os_version":
+		return "The operating system version"
+	case "overload_version":
+		return "The overload version"
+	case "llama_build":
+		return "The llama.cpp build"
+	default:
+		return "The MLX version"
+	}
+}
+
+func bytesText(size int64) string {
+	if size == 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%.0f GB", float64(size)/1e9)
+}
+
+func runtimeText(report overload.NodeReport) string {
+	var parts []string
+	if report.LlamaBuild > 0 {
+		parts = append(parts, fmt.Sprintf("llama.cpp b%d", report.LlamaBuild))
+	}
+	if report.MLXVersion != "" {
+		parts = append(parts, "MLX "+report.MLXVersion)
+	}
+	if len(parts) == 0 {
+		return "No model runtime found"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func hostfileText(placement overload.Placement) string {
+	data, err := placement.Hostfile()
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
+}

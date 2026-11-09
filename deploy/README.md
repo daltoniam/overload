@@ -539,6 +539,40 @@ overload bakeoff show 4
   reviews run in sandboxes: a case is a few files held in memory that the
   reviewer only reads, and no repository code or tool runs.
 
+## Nodes and clusters
+
+Every machine that runs models can report its hardware, runtime versions,
+downloads and model services to one overload, which lists them under Nodes
+and flags version drift (clusters need the same macOS, llama.cpp, MLX and
+overload versions on every node).
+
+```sh
+# On the control plane: create an API key with the nodes scope.
+overload keys create --name nodes --scopes nodes
+# On each Mac: put the key in the install's configuration, then
+echo 'OVERLOAD_NODE_KEY=ovl_...' >> ~/Library/Application\ Support/overload/overload.env
+overload node install --server https://overload.example.com   # reports every minute
+```
+
+`overload node report --server URL` reports once (add `--every 1m` to keep
+going, for example under systemd on Linux). A node that has not reported
+for five minutes is shown offline; Forget removes it until it reports
+again.
+
+Placements record a model sharded across Macs with MLX over Thunderbolt 5
+RDMA (the JACCL backend, MLX 0.30.1 or newer, macOS 26.2 with RDMA enabled
+from Recovery on each Mac). Overload stores the placement and prints the
+launcher's hostfile and command; it does not start the cluster, which
+still waits for the two-node spike in PLAN.md 16.3.
+
+```sh
+# rdma.json: rdma[i][j] is node i's RDMA device that reaches node j.
+echo '[["", "rdma_en5"], ["rdma_en5", ""]]' > rdma.json
+overload cluster place beam --model mlx-community/Beam-4bit \
+  --nodes studio-1,studio-2 --rank0-ip 192.168.1.10 --rdma rdma.json
+overload cluster config beam   # hostfile.json and the mlx.launch command
+```
+
 ## Multi-agent review on your machine
 
 A team of reviewers on one machine, with hosted or local models: a main

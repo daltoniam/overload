@@ -1507,7 +1507,7 @@ plan and deploy/README.md.
    command runs on the developer's machine with a reduced environment, so
    model-written tests are not confined. Follow-up: run fix-loop tests in a
    sandbox.
-10. **Node inventory and cluster control** (16.4 item 4): Macs report
+10. **Node inventory and cluster control** (16.4 item 4; done): Macs report
     hardware, runtime versions, models and health; version drift is flagged;
     model placements across nodes are recorded and an MLX launch
     configuration is generated. Running models across a real Thunderbolt 5

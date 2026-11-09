@@ -316,6 +316,10 @@ func Handler(reader RunReader, opts ...Option) http.Handler {
 	if bakeoffs, ok := reader.(BakeoffStore); ok {
 		registerBakeoffs(mux, bakeoffs, csrf)
 	}
+	nodes, hasNodes := reader.(NodeStore)
+	if hasNodes {
+		registerNodes(mux, nodes, csrf)
+	}
 	var verifier *workload.Verifier
 	if rules, ok := reader.(WorkloadRuleStore); ok {
 		verifier = workload.NewVerifier(rules, options.workloadTransport)
@@ -330,6 +334,10 @@ func Handler(reader RunReader, opts ...Option) http.Handler {
 			extra = append(extra, workloadModels(verifier))
 		}
 		routes.Handle("/v1/", api(gateway.New(store, extra...)))
+	}
+	if hasNodes {
+		keys, _ := reader.(apiKeyAuthenticator)
+		routes.Handle("/api/nodes", api(nodesAPI(nodes, keys)))
 	}
 	if queuer, ok := reader.(ReviewQueuer); ok {
 		keys, _ := reader.(apiKeyAuthenticator)
