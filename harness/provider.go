@@ -127,7 +127,7 @@ func newAnthropicAuth(base http.RoundTripper, key string, own map[string]string)
 func (auth anthropicAuth) RoundTrip(request *http.Request) (*http.Response, error) {
 	request = request.Clone(request.Context())
 	for name := range request.Header {
-		if !anthropicHeaders[name] && !auth.own[name] && !strings.HasPrefix(name, "X-Stainless-") {
+		if !anthropicHeaders[name] && !auth.own[name] {
 			delete(request.Header, name)
 		}
 	}

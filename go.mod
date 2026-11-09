@@ -7,6 +7,7 @@ toolchain go1.27.2
 require (
 	charm.land/fantasy v0.45.0
 	github.com/a-h/templ v0.3.1001
+	github.com/anthropics/anthropic-sdk-go v1.68.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.12.0
 	github.com/charmbracelet/openai-go v0.0.0-20260921175203-216db9e71b83
 	github.com/google/go-github/v75 v75.0.0
@@ -53,7 +54,6 @@ require (
 	github.com/alingse/asasalint v0.0.11 // indirect
 	github.com/alingse/nilnesserr v0.2.0 // indirect
 	github.com/andybalholm/brotli v1.1.0 // indirect
-	github.com/anthropics/anthropic-sdk-go v1.68.0 // indirect
 	github.com/ashanbrown/forbidigo/v2 v2.3.1 // indirect
 	github.com/ashanbrown/makezero/v2 v2.2.1 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.45.1 // indirect

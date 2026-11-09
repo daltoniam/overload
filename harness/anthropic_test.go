@@ -45,8 +45,8 @@ data: {"type":"message_stop"}
 
 // anthropicRequest is what a fake Messages API saw.
 type anthropicRequest struct {
-	path, key, authorization, version, beta, ambient, metadata, workspace string
-	body                                                                  map[string]any
+	path, key, authorization, version, beta, ambient, metadata, workspace, telemetry string
+	body                                                                             map[string]any
 }
 
 // fakeAnthropic answers every request with anthropicStream and records the
@@ -57,7 +57,7 @@ func fakeAnthropic(t *testing.T) (*httptest.Server, func() anthropicRequest) {
 	var last anthropicRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
-		seen := anthropicRequest{path: r.URL.Path, key: r.Header.Get("X-Api-Key"), authorization: r.Header.Get("Authorization"), version: r.Header.Get("Anthropic-Version"), beta: r.Header.Get("Anthropic-Beta"), ambient: r.Header.Get("X-Ambient"), metadata: r.Header.Get("Cf-Aig-Metadata"), workspace: r.Header.Get("Anthropic-Workspace-Id")}
+		seen := anthropicRequest{path: r.URL.Path, key: r.Header.Get("X-Api-Key"), authorization: r.Header.Get("Authorization"), version: r.Header.Get("Anthropic-Version"), beta: r.Header.Get("Anthropic-Beta"), ambient: r.Header.Get("X-Ambient"), metadata: r.Header.Get("Cf-Aig-Metadata"), workspace: r.Header.Get("Anthropic-Workspace-Id"), telemetry: r.Header.Get("X-Stainless-Lang")}
 		_ = json.Unmarshal(raw, &seen.body)
 		mu.Lock()
 		last = seen
@@ -100,7 +100,7 @@ func TestAnthropicProviderThinksWithEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	seen := last()
-	if text != "looks fine" || seen.path != "/v1/messages" || seen.key != "claude-key" || seen.authorization != "" || seen.version == "" {
+	if text != "looks fine" || seen.path != "/v1/messages" || seen.key != "claude-key" || seen.authorization != "" || seen.version != "2023-06-01" || seen.telemetry != "" {
 		t.Fatalf("text=%q request=%+v", text, seen)
 	}
 	config, _ := seen.body["output_config"].(map[string]any)
