@@ -137,7 +137,9 @@ var PortInUse = func(port int) bool {
 // same model, and records it. It refuses a port another service or
 // program uses, and removes the service again if it cannot start.
 func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Service) error {
-	unlock, err := store.lock(".services.lock")
+	// A pull holds this lock briefly while it records a download; wait
+	// for it rather than fail.
+	unlock, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
 	if err != nil {
 		return err
 	}
@@ -148,6 +150,9 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 	}
 	replacing := false
 	for _, existing := range services {
+		if existing.Label == service.Label && existing.ID != service.ID {
+			return fmt.Errorf("the service name %s is already used by %s", service.Label, existing.ID)
+		}
 		if existing.Port == service.Port && existing.ID != service.ID {
 			return fmt.Errorf("port %d is already used by the %s service", service.Port, existing.ID)
 		}
@@ -189,7 +194,9 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 	}
 	if err := manager.Start(agent.Label); err != nil {
 		if removeErr := manager.Remove(agent.Label); removeErr != nil {
-			return fmt.Errorf("start %s: %w; removing its service also failed: %v", service.ID, err, removeErr)
+			// The agent is still installed: keep its record so stop can
+			// remove it later.
+			return fmt.Errorf("start %s: %w; removing its service also failed (run overload models stop %s): %v", service.ID, err, service.ID, removeErr)
 		}
 		if writeErr := store.writeServices(services); writeErr != nil {
 			return fmt.Errorf("start %s: %w; its service was removed but the service list could not be updated: %v", service.ID, err, writeErr)
@@ -224,7 +231,7 @@ func (store Store) filesPresent(service Service) error {
 
 // StopService removes the model's service.
 func (store Store) StopService(manager ServiceManager, id string) error {
-	unlock, err := store.lock(".services.lock")
+	unlock, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
 	if err != nil {
 		return err
 	}

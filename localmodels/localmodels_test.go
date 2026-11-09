@@ -692,6 +692,9 @@ func TestServices(t *testing.T) {
 	if services, _ := store.Services(); len(services) != 1 || services[0].Port != service.Port {
 		t.Fatalf("a failed rewrite changed the service list: %+v", services)
 	}
+	if err := store.Serve(manager, launchd.Agent{Label: service.Label}, Service{ID: "other-model", Label: service.Label, Port: 8099}); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Fatalf("two models under one service name: %v", err)
+	}
 	manager.writeErr = nil
 	manager.startErr = errors.New("boom")
 	if err := store.Serve(manager, agent, service); err == nil || manager.removed[len(manager.removed)-1] != agent.Label {

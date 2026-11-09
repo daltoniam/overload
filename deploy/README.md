@@ -160,7 +160,8 @@ overload models clean                                 # delete partial and repla
   `--repository OWNER/NAME`) at the commit its main branch points to, into
   `models/<owner>/<name>/<commit>/` next to the install's configuration;
   an update downloads into a new commit directory (files that did not
-  change are linked, and an unfinished download carries over) and switches
+  change are hard-linked where the volume supports it and downloaded
+  again otherwise, and an unfinished download carries over) and switches
   over only once every file has verified, so a failed update leaves the
   previous download usable. `--dir` or
   `OVERLOAD_MODELS_DIR` changes the directory; put `OVERLOAD_MODELS_DIR` in
