@@ -7,7 +7,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -17,6 +19,7 @@ import (
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/assets"
+	"github.com/daltoniam/overload/web/templates/layouts"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -271,15 +274,33 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		}
 		w.WriteHeader(http.StatusAccepted)
 	})
-	return secure(uiMiddleware(mux, csrf))
+	settings, authErr := oidcFromEnv()
+	var auth *oidcAuth
+	if settings != nil {
+		if sessions, ok := reader.(SessionStore); ok {
+			auth = &oidcAuth{settings: settings, store: sessions, client: &http.Client{Timeout: 10 * time.Second}}
+			registerAuth(mux, auth, csrf)
+		} else {
+			authErr = errors.New("OIDC sign-in needs the database store")
+		}
+	}
+	return secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
 }
 
-func secure(next http.Handler) http.Handler {
+// publicPaths answer without signing in: health checks, signed webhooks
+// and the sign-in flow itself.
+var publicPaths = map[string]bool{"/healthz": true, "/webhooks/github": true, "/auth/login": true, "/auth/callback": true, "/auth/signed-out": true}
+
+func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.Handler {
 	user := os.Getenv("OVERLOAD_UI_USER")
 	password := os.Getenv("OVERLOAD_UI_PASSWORD")
 	insecure := os.Getenv("OVERLOAD_UI_INSECURE") == "1"
 	hosts := newHostPolicy(os.Getenv("OVERLOAD_BASE_URL"))
 	access, accessErr := accessFromEnv()
+	basicAuth := func(r *http.Request) bool {
+		givenUser, givenPassword, ok := r.BasicAuth()
+		return ok && user != "" && password != "" && subtle.ConstantTimeCompare([]byte(givenUser), []byte(user)) == 1 && subtle.ConstantTimeCompare([]byte(givenPassword), []byte(password)) == 1
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -295,18 +316,41 @@ func secure(next http.Handler) http.Handler {
 			http.Error(w, "Cloudflare Access is misconfigured", http.StatusInternalServerError)
 			return
 		}
-		if access != nil {
+		if authErr != nil {
+			http.Error(w, "OIDC sign-in is misconfigured", http.StatusInternalServerError)
+			return
+		}
+		who := identity{role: overload.RoleAdmin}
+		switch {
+		case access != nil:
 			if _, err := access.verify(r.Context(), r.Header.Get(accessHeader)); err != nil {
 				http.Error(w, "Sign in through Cloudflare Access", http.StatusForbidden)
 				return
 			}
-		} else if !insecure {
-			givenUser, givenPassword, ok := r.BasicAuth()
-			if !ok || subtle.ConstantTimeCompare([]byte(givenUser), []byte(user)) != 1 || subtle.ConstantTimeCompare([]byte(givenPassword), []byte(password)) != 1 {
+		case auth != nil && publicPaths[r.URL.Path]:
+			who = identity{}
+		case auth != nil:
+			if signedIn, ok := auth.sessionUser(r); ok {
+				who = identity{user: &signedIn, role: signedIn.Role}
+			} else if basicAuth(r) {
+				who.breakGlass = true
+				if r.Method != http.MethodGet && r.Method != http.MethodHead {
+					slog.Warn("break-glass change", "method", r.Method, "path", r.URL.Path)
+				}
+			} else {
+				denySignedOut(w, r, user != "" && password != "")
+				return
+			}
+		case !insecure:
+			if !basicAuth(r) {
 				w.Header().Set("WWW-Authenticate", `Basic realm="overload"`)
 				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
+		}
+		if who.role != "" && !allowed(who.role, r) {
+			http.Error(w, "Your role ("+who.role+") cannot do this. Ask an administrator.", http.StatusForbidden)
+			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if !sameOrigin(r) {
@@ -315,10 +359,31 @@ func secure(next http.Handler) http.Handler {
 			}
 			r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
 		}
-		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(withIdentity(r.Context(), who), 10*time.Second)
 		defer cancel()
+		if who.user != nil {
+			ctx = layouts.WithViewer(ctx, layouts.Viewer{Email: who.user.Email, Role: who.role, CSRF: csrf})
+		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// denySignedOut answers a request without a session: pages go to sign-in,
+// HTMX requests are told to load the sign-in page, and
+// ?break-glass=1 asks the browser for the shared break-glass login.
+func denySignedOut(w http.ResponseWriter, r *http.Request, breakGlass bool) {
+	switch {
+	case breakGlass && r.URL.Path == "/" && r.URL.Query().Get("break-glass") == "1":
+		w.Header().Set("WWW-Authenticate", `Basic realm="overload"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+	case r.Header.Get("HX-Request") == "true":
+		w.Header().Set("HX-Redirect", "/auth/login")
+		http.Error(w, "Sign in again", http.StatusUnauthorized)
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
+	default:
+		http.Error(w, "Sign in again", http.StatusUnauthorized)
+	}
 }
 
 func ValidateAuth() error {
@@ -326,11 +391,18 @@ func ValidateAuth() error {
 	if err != nil {
 		return err
 	}
-	if access != nil {
+	settings, err := oidcFromEnv()
+	if err != nil {
+		return err
+	}
+	if access != nil && settings != nil {
+		return errors.New("use either Cloudflare Access or OIDC sign-in, not both")
+	}
+	if access != nil || settings != nil {
 		return nil
 	}
 	if os.Getenv("OVERLOAD_UI_INSECURE") != "1" && (os.Getenv("OVERLOAD_UI_USER") == "" || os.Getenv("OVERLOAD_UI_PASSWORD") == "") {
-		return errors.New("OVERLOAD_UI_USER and OVERLOAD_UI_PASSWORD required unless Cloudflare Access (OVERLOAD_ACCESS_TEAM_DOMAIN, OVERLOAD_ACCESS_AUD) or OVERLOAD_UI_INSECURE=1 is set")
+		return errors.New("OVERLOAD_UI_USER and OVERLOAD_UI_PASSWORD required unless OIDC sign-in (OVERLOAD_OIDC_ISSUER), Cloudflare Access (OVERLOAD_ACCESS_TEAM_DOMAIN, OVERLOAD_ACCESS_AUD) or OVERLOAD_UI_INSECURE=1 is set")
 	}
 	return nil
 }

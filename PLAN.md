@@ -1443,7 +1443,7 @@ plan and deploy/README.md.
 3. **Native Anthropic connections** (13, 16.10 Models; done): an `anthropic`
    provider through Fantasy, with adaptive thinking and effort, so Claude
    models can think.
-4. **OIDC sign-in, sessions and roles** (16.7 People): authorization code
+4. **OIDC sign-in, sessions and roles** (16.7 People; done): authorization code
    with PKCE, Postgres sessions, roles from a groups claim, logout, and Basic
    Auth kept as break-glass access.
 5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7): hashed,

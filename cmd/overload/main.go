@@ -82,6 +82,8 @@ func run(args []string) error {
 		return managePolicy(args[1:])
 	case "models":
 		return manageModels(args[1:])
+	case "users":
+		return manageUsers(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:

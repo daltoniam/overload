@@ -56,7 +56,7 @@ func parseUI(r *http.Request) pages.UIState {
 
 func uiMiddleware(next http.Handler, csrf string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/assets/") || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/webhooks/") || strings.Contains(r.URL.Path, "/artifacts/") || strings.HasPrefix(r.URL.Path, "/setup/") {
+		if strings.HasPrefix(r.URL.Path, "/assets/") || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/webhooks/") || strings.Contains(r.URL.Path, "/artifacts/") || strings.HasPrefix(r.URL.Path, "/setup/") || strings.HasPrefix(r.URL.Path, "/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}

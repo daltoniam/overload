@@ -525,6 +525,42 @@ the pull request is not posted again, even if its line moved. Model text is
 stripped of links, images, HTML and @mentions before it is stored, because
 the model reads untrusted pull request content.
 
+## Signing in
+
+A single-user install signs in with the generated Basic Auth login. Teams
+can sign in with any OpenID Connect provider (Okta, Entra ID, Google
+Workspace, Keycloak, Authentik, Dex) instead; Cloudflare Access remains an
+alternative front door, but not together with OIDC.
+
+| Variable | Meaning |
+|---|---|
+| `OVERLOAD_OIDC_ISSUER` | The provider's issuer URL; turns OIDC sign-in on |
+| `OVERLOAD_OIDC_CLIENT_ID`, `OVERLOAD_OIDC_CLIENT_SECRET` | The client registered for overload |
+| `OVERLOAD_BASE_URL` | The https address people use; the redirect URI is `<base>/auth/callback` |
+| `OVERLOAD_OIDC_ADMIN_GROUPS`, `OVERLOAD_OIDC_MEMBER_GROUPS`, `OVERLOAD_OIDC_VIEWER_GROUPS` | Comma-separated provider groups for each role |
+| `OVERLOAD_OIDC_GROUPS_CLAIM` | The ID token claim that lists groups (default `groups`) |
+| `OVERLOAD_OIDC_SCOPES` | Extra scopes, if the provider needs one to include groups |
+| `OVERLOAD_SESSION_HOURS`, `OVERLOAD_SESSION_IDLE_HOURS` | Session length (default 12) and idle limit (default 2) |
+
+- Sign-in uses the authorization code flow with PKCE, and checks the
+  `state` (bound to the browser by a cookie) and `nonce`. ID tokens are
+  verified against the provider's discovery document and keys.
+- Sessions live in Postgres; the browser holds an opaque HttpOnly,
+  SameSite=Lax cookie (Secure over https), and only its hash is stored.
+  Signing out, or an administrator disabling the person under Users (or
+  `overload users disable ID`), ends sessions at once.
+- Roles come from the groups at every sign-in. Admins change anything;
+  members also queue reviews and run schedules; viewers only read. People
+  in no mapped group are refused.
+- Break-glass: with `OVERLOAD_UI_USER` and `OVERLOAD_UI_PASSWORD` also set,
+  open `/?break-glass=1` to sign in with that shared login as an admin
+  while the provider is down; changes made that way are logged.
+- Signing out ends the overload session; the signed-out page links to the
+  provider's own sign-out when it advertises one.
+
+Tests use an in-process OIDC provider; SCIM provisioning and checking
+against Dex in kind are later additions.
+
 ## Linux servers
 
 `overload install` on Linux writes the configuration and database (with
