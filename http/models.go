@@ -63,7 +63,11 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 			http.Error(w, "Invalid model connection type", http.StatusBadRequest)
 			return
 		}
-		setting := overload.ReviewSettings{Name: name, Provider: "openaicompat", ConnectionKind: kind, BaseURL: r.PostForm.Get("base_url"), Model: r.PostForm.Get("model"), APIKeyEnv: r.PostForm.Get("api_key_env"), PromptProfile: "context", IsDefault: r.PostForm.Get("is_default") == "true", Concurrency: 1}
+		provider := r.PostForm.Get("provider")
+		if provider == "" {
+			provider = overload.ProviderOpenAICompat
+		}
+		setting := overload.ReviewSettings{Name: name, Provider: provider, ConnectionKind: kind, BaseURL: r.PostForm.Get("base_url"), Model: r.PostForm.Get("model"), APIKeyEnv: r.PostForm.Get("api_key_env"), PromptProfile: "context", IsDefault: r.PostForm.Get("is_default") == "true", Concurrency: 1}
 		setting.API = r.PostForm.Get("api")
 		setting.ReasoningParam = r.PostForm.Get("reasoning_param")
 		setting.ReasoningEffort = strings.TrimSpace(r.PostForm.Get("reasoning_effort"))

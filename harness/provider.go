@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/charmbracelet/openai-go/option"
@@ -24,6 +25,9 @@ var modelHTTPClient = func() *http.Client {
 }()
 
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
+	if model.Provider == overload.ProviderAnthropic {
+		return anthropic.New(anthropic.WithBaseURL(model.BaseURL), anthropic.WithAPIKey(os.Getenv(model.APIKeyEnv)), anthropic.WithHeaders(model.Headers), anthropic.WithHTTPClient(modelHTTPClient))
+	}
 	if model.API == overload.APIResponses {
 		options := []openai.Option{openai.WithBaseURL(model.BaseURL), openai.WithAPIKey(os.Getenv(model.APIKeyEnv)), openai.WithHeaders(model.Headers), openai.WithUseResponsesAPI(), openai.WithResponsesAPIFunc(func(string) bool { return true })}
 		options = append(options, openai.WithHTTPClient(modelHTTPClient))

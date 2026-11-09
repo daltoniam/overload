@@ -132,6 +132,16 @@ func (settings ReviewSettings) Pricing() *Pricing {
 	return pricing
 }
 
+// Model providers: any OpenAI-compatible API, or Anthropic's Messages API.
+const (
+	ProviderOpenAICompat = "openaicompat"
+	ProviderAnthropic    = "anthropic"
+)
+
+// anthropicEfforts are the effort levels Anthropic's adaptive thinking
+// takes (output_config.effort).
+var anthropicEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
 // APIResponses selects OpenAI's Responses API instead of Chat Completions.
 // Newer OpenAI reasoning models only accept tools together with a
 // reasoning effort there.
@@ -224,8 +234,20 @@ var settingName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (settings ReviewSettings) Validate() error {
-	if !settingName.MatchString(settings.Name) || settings.Provider != "openaicompat" || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
+	if !settingName.MatchString(settings.Name) || (settings.Provider != ProviderOpenAICompat && settings.Provider != ProviderAnthropic) || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
 		return errors.New("invalid model name or provider")
+	}
+	if settings.Provider == ProviderAnthropic {
+		switch {
+		case settings.ConnectionKind != "hosted":
+			return errors.New("an Anthropic model is a hosted connection")
+		case settings.API != "":
+			return errors.New("an Anthropic model uses the Messages API; leave the API style empty")
+		case settings.ReasoningParam == ReasoningChatTemplate:
+			return errors.New("an Anthropic model takes an effort (reasoning_effort), not the chat template switch")
+		case settings.ReasoningParam == ReasoningEffortField && !anthropicEfforts[settings.ReasoningEffort]:
+			return errors.New("the Anthropic effort must be low, medium, high, xhigh or max")
+		}
 	}
 	if settings.PromptProfile != "context" && settings.PromptProfile != "switchboard-go" {
 		return errors.New("unsupported prompt profile")

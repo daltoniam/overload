@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/daltoniam/overload"
@@ -30,6 +31,7 @@ var (
 
 // reasoningPlan is how review requests to one model control thinking.
 type reasoningPlan struct {
+	provider  string
 	api       string
 	param     string
 	effort    string
@@ -43,7 +45,7 @@ type reasoningPlan struct {
 
 func planFor(model overload.ModelProfile) reasoningPlan {
 	hosted := model.ConnectionKind == "hosted"
-	plan := reasoningPlan{api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout, pricing: model.Pricing}
+	plan := reasoningPlan{provider: model.Provider, api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout, pricing: model.Pricing}
 	if hosted {
 		plan.timeout = hostedCallTimeout
 	}
@@ -69,6 +71,15 @@ func (plan reasoningPlan) label() string {
 }
 
 func (plan reasoningPlan) providerOptions(effort string) fantasy.ProviderOptions {
+	if plan.provider == overload.ProviderAnthropic {
+		// Adaptive thinking with output_config.effort; these models reject
+		// a manual budget_tokens.
+		if plan.param != overload.ReasoningEffortField {
+			return nil
+		}
+		level := anthropic.Effort(effort)
+		return anthropic.NewProviderOptions(&anthropic.ProviderOptions{Effort: &level})
+	}
 	switch plan.param {
 	case overload.ReasoningChatTemplate:
 		return openaicompat.NewProviderOptions(&openaicompat.ProviderOptions{

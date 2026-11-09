@@ -52,7 +52,8 @@ func manageSettings(args []string) error {
 	case "set":
 		flags := flag.NewFlagSet("settings set", flag.ContinueOnError)
 		name := flags.String("name", "", "profile name")
-		baseURL := flags.String("url", "", "OpenAI-compatible base URL")
+		provider := flags.String("provider", overload.ProviderOpenAICompat, "openaicompat (any OpenAI-compatible API) or anthropic (Messages API; --url https://api.anthropic.com)")
+		baseURL := flags.String("url", "", "base URL: OpenAI-compatible ending in /v1, or https://api.anthropic.com")
 		model := flags.String("model", "", "model ID")
 		keyEnv := flags.String("api-key-env", "", "environment variable name containing API key")
 		connectionKind := flags.String("connection-kind", "local", "local or hosted OpenAI-compatible connection")
@@ -76,7 +77,7 @@ func manageSettings(args []string) error {
 		if flags.NArg() != 0 {
 			return errors.New("unexpected setting arguments")
 		}
-		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api, LongContextTokens: *longContextTokens, LongContextInputMultiplier: *longContextInput, LongContextOutputMultiplier: *longContextOutput}
+		setting := overload.ReviewSettings{Name: *name, Provider: *provider, ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api, LongContextTokens: *longContextTokens, LongContextInputMultiplier: *longContextInput, LongContextOutputMultiplier: *longContextOutput}
 		for _, price := range []struct {
 			text   string
 			target **float64

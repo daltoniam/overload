@@ -85,3 +85,23 @@ func TestSpendLabelsAndPercentile(t *testing.T) {
 		t.Fatal("NaN cost accepted")
 	}
 }
+
+func TestAnthropicSettings(t *testing.T) {
+	base := ReviewSettings{Name: "sonnet", Provider: ProviderAnthropic, ConnectionKind: "hosted", BaseURL: "https://api.anthropic.com", Model: "claude-sonnet-5-5", APIKeyEnv: "OVERLOAD_MODEL_ANTHROPIC", PromptProfile: "context", ReasoningParam: ReasoningEffortField, ReasoningEffort: "high"}
+	if err := base.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, edit := range map[string]func(*ReviewSettings){
+		"local":         func(s *ReviewSettings) { s.ConnectionKind = "local" },
+		"responses API": func(s *ReviewSettings) { s.API = APIResponses },
+		"chat template": func(s *ReviewSettings) { s.ReasoningParam, s.ReasoningEffort = ReasoningChatTemplate, "high" },
+		"bad effort":    func(s *ReviewSettings) { s.ReasoningEffort = "minimal" },
+		"other":         func(s *ReviewSettings) { s.Provider = "bedrock" },
+	} {
+		settings := base
+		edit(&settings)
+		if settings.Validate() == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+}

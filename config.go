@@ -277,7 +277,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 			return fmt.Errorf("agent %q appears more than once", agent.Name)
 		}
 		seen[agent.Name] = true
-		if agent.Name == "" || agent.Model.Provider != "openaicompat" || agent.Model.Model == "" || agent.Model.BaseURL == "" {
+		if agent.Name == "" || (agent.Model.Provider != ProviderOpenAICompat && agent.Model.Provider != ProviderAnthropic) || agent.Model.Model == "" || agent.Model.BaseURL == "" {
 			return fmt.Errorf("agent %q has no usable model", agent.Name)
 		}
 		if agent.EntryPrompt.Kind != "entry" || PromptDigest(agent.EntryPrompt.Body) != agent.EntryPrompt.SHA256 {

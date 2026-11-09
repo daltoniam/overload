@@ -96,3 +96,45 @@ func TestProxyGrantsExpire(t *testing.T) {
 		t.Fatalf("GET allowed: %d", recorder.Code)
 	}
 }
+
+func TestProxyForwardsAnthropicWithAPIKeyHeader(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_ANTHROPIC", "anthropic-key")
+	var gotKey, gotAuth, gotVersion, gotPath string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotAuth, gotVersion, gotPath = r.Header.Get("X-Api-Key"), r.Header.Get("Authorization"), r.Header.Get("Anthropic-Version"), r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	base, revoke := proxy.Grant(overload.ModelProfile{Provider: overload.ProviderAnthropic, BaseURL: upstream.URL, Model: "claude-sonnet-5-5", APIKeyEnv: "OVERLOAD_MODEL_ANTHROPIC"}, time.Minute)
+	defer revoke()
+	path := strings.TrimPrefix(base, "http://overload:8083")
+	send := func(suffix string, header map[string]string) int {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodPost, server.URL+path+suffix, strings.NewReader(`{"model":"claude-sonnet-5-5","max_tokens":10,"messages":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name, value := range header {
+			request.Header.Set(name, value)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	if status := send("/v1/messages", map[string]string{"Anthropic-Version": "2023-06-01", "X-Api-Key": "sandbox-guess"}); status != http.StatusOK {
+		t.Fatalf("messages: %d", status)
+	}
+	if gotKey != "anthropic-key" || gotAuth != "" || gotVersion != "2023-06-01" || gotPath != "/v1/messages" {
+		t.Fatalf("upstream key=%q auth=%q version=%q path=%q", gotKey, gotAuth, gotVersion, gotPath)
+	}
+	if status := send("/chat/completions", nil); status != http.StatusNotFound {
+		t.Fatalf("OpenAI path on an Anthropic grant: %d", status)
+	}
+}
