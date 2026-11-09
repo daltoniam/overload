@@ -102,7 +102,8 @@ none` leaves both to the model's defaults. `--catalog claude-opus-5.5` fills
 the provider and effort; with `--provider openaicompat` it leaves the
 effort unset, since OpenAI-compatible endpoints ignore it for Claude.
 Requests stream, so long thinking is bounded only by the call timeout
-(hosted 15 minutes) and output limits above about 21,000 tokens work.
+(local 90 minutes, hosted 15) and output limits above about 21,000 tokens
+work.
 
 The key is sent as `x-api-key`, and redirects are never followed, so the
 key cannot be forwarded to another host. Requests carry only the headers
@@ -111,8 +112,8 @@ credentials, profile settings (such as a workspace ID) and
 `ANTHROPIC_CUSTOM_HEADERS` from overload's own environment are never sent;
 a connection without `--api-key-env` sends no key. In sandbox
 mode the model proxy adds the key, as for OpenAI-compatible models, and
-forwards only the `anthropic-version` header, so a sandbox cannot turn on
-beta features with the control plane's key.
+of the sandbox's Anthropic headers forwards only `anthropic-version`, so a
+sandbox cannot turn on beta features with the control plane's key.
 
 ### Catalog and model policy
 

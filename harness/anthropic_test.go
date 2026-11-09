@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	anthropicconfig "github.com/anthropics/anthropic-sdk-go/config"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/modelproxy"
 )
@@ -146,7 +147,7 @@ func TestAnthropicProviderIgnoresAmbientCredentials(t *testing.T) {
 	if _, err := Complete(context.Background(), model, "You review code.", "Review this."); err != nil {
 		t.Fatal(err)
 	}
-	if seen := last(); seen.ambient != "" || seen.metadata != "connection" || seen.version == "broken" {
+	if seen := last(); seen.ambient != "" || seen.metadata != "connection" || seen.version != "2023-06-01" {
 		t.Fatalf("ANTHROPIC_CUSTOM_HEADERS were sent: %+v", seen)
 	}
 
@@ -156,10 +157,13 @@ func TestAnthropicProviderIgnoresAmbientCredentials(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(config, "configs"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(config, "configs", "default.json"), []byte(`{"workspace_id":"wrkspc_secret","base_url":"https://elsewhere.invalid"}`), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(config, "configs", "default.json"), []byte(`{"version":"1","workspace_id":"wrkspc_secret","base_url":"https://elsewhere.invalid","authentication":{"type":"user_oauth"}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("ANTHROPIC_CONFIG_DIR", config)
+	if profile, err := anthropicconfig.LoadProfile(config, "default"); err != nil || profile.WorkspaceID != "wrkspc_secret" {
+		t.Fatalf("the test profile does not load: %+v, %v", profile, err)
+	}
 	model.Headers = nil
 	if _, err := Complete(context.Background(), model, "You review code.", "Review this."); err != nil {
 		t.Fatal(err)

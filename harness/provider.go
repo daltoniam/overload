@@ -26,10 +26,10 @@ var modelHTTPClient = func() *http.Client {
 	return &http.Client{Transport: transport}
 }()
 
-// anthropicPlaceholderKey stops the Anthropic SDK from looking for
-// credentials in overload's environment and profile files, which it does
-// whenever no key is given and which fails the request if it finds none.
-// anthropicAuth replaces it with the connection's own key, or removes it.
+// anthropicPlaceholderKey is a static key, which makes the Anthropic SDK use
+// none of the credentials it finds in overload's environment and profile
+// files, and not fail the request when it finds none. anthropicAuth
+// replaces it with the connection's own key, or removes it.
 const anthropicPlaceholderKey = "overload-placeholder"
 
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
