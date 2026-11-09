@@ -42,7 +42,7 @@ func FilePatchHashes(patch string) map[string]string {
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
 			body.WriteString("@@\n")
-		case inHunk && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ")):
+		case inHunk && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, `\`)):
 			body.WriteString(line)
 			body.WriteByte('\n')
 		}

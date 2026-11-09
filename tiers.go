@@ -39,10 +39,12 @@ const (
 // TierSkip is the trivial tier's action that skips the review.
 const TierSkip = "skip"
 
-// FileChange is one changed file's path and changed lines.
+// FileChange is one changed file's path and changed lines. OldPath is
+// the path a renamed or deleted file had.
 type FileChange struct {
-	Path  string
-	Lines int
+	Path    string
+	OldPath string
+	Lines   int
 }
 
 // TierDecision is the tier a pull request falls in and why. Skip means no
@@ -116,7 +118,7 @@ func (workflow ResolvedWorkflow) ChooseTier(changes []FileChange) TierDecision {
 		if skip.match(change.Path) {
 			continue
 		}
-		if sensitive.match(change.Path) {
+		if sensitive.match(change.Path) || (change.OldPath != "" && sensitive.match(change.OldPath)) {
 			return TierDecision{Tier: TierFull, Reason: "touches a sensitive path: " + change.Path}
 		}
 		lines += change.Lines
@@ -170,7 +172,9 @@ func (workflow ResolvedWorkflow) WithAgents(names []string) ResolvedWorkflow {
 }
 
 // DiffChanges counts the changed lines of each file in a unified diff.
-// Deleted files count under their old path.
+// A file without text hunks (binary, renamed, or a mode change) still
+// counts, with no lines; a rename lists its old path too, so moving a
+// sensitive file is noticed.
 func DiffChanges(patch string) []FileChange {
 	var changes []FileChange
 	current := -1
@@ -178,18 +182,51 @@ func DiffChanges(patch string) []FileChange {
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
-			changes = append(changes, FileChange{})
+			oldPath, newPath := gitHeaderPaths(strings.TrimPrefix(line, "diff --git "))
+			changes = append(changes, FileChange{Path: newPath, OldPath: oldPath})
 			current, inHunk = len(changes)-1, false
-		case current < 0:
-		case !inHunk && strings.HasPrefix(line, "--- a/"):
-			changes[current].Path = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t")
-		case !inHunk && strings.HasPrefix(line, "+++ b/"):
+		case current < 0 || inHunk && !strings.HasPrefix(line, "@@"):
+			if current >= 0 && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-")) {
+				changes[current].Lines++
+			}
+		case strings.HasPrefix(line, "--- a/"):
+			changes[current].OldPath = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t")
+		case strings.HasPrefix(line, "+++ b/"):
 			changes[current].Path = strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
+		case line == "+++ /dev/null":
+			changes[current].Path = ""
+		case strings.HasPrefix(line, "rename from "):
+			changes[current].OldPath = strings.TrimPrefix(line, "rename from ")
+		case strings.HasPrefix(line, "rename to "):
+			changes[current].Path = strings.TrimPrefix(line, "rename to ")
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
-		case inHunk && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-")):
-			changes[current].Lines++
+		}
+	}
+	for index := range changes {
+		if changes[index].Path == "" {
+			changes[index].Path, changes[index].OldPath = changes[index].OldPath, ""
+		}
+		if changes[index].OldPath == changes[index].Path {
+			changes[index].OldPath = ""
 		}
 	}
 	return slices.DeleteFunc(changes, func(change FileChange) bool { return change.Path == "" })
+}
+
+// gitHeaderPaths reads the paths of a "diff --git a/X b/Y" header. Paths
+// with spaces are ambiguous there, so when both halves cannot be told
+// apart the header is split where the two paths are equally long, which
+// is right for every change except a rename (whose rename lines win).
+func gitHeaderPaths(rest string) (string, string) {
+	if strings.HasPrefix(rest, `"`) {
+		return "", ""
+	}
+	if half := (len(rest) - 1) / 2; len(rest)%2 == 1 && rest[half] == ' ' && strings.HasPrefix(rest, "a/") && strings.HasPrefix(rest[half+1:], "b/") && rest[2:half] == rest[half+3:] {
+		return rest[2:half], rest[half+3:]
+	}
+	if before, after, ok := strings.Cut(rest, " b/"); ok && strings.HasPrefix(before, "a/") {
+		return before[2:], after
+	}
+	return "", ""
 }

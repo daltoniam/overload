@@ -90,3 +90,27 @@ func TestDiffChanges(t *testing.T) {
 		t.Fatalf("changes = %+v", changes)
 	}
 }
+
+func TestDiffChangesKeepsFilesWithoutHunks(t *testing.T) {
+	patch := "diff --git a/db/migrations/0001.py b/db/old/0001.py\nsimilarity index 100%\nrename from db/migrations/0001.py\nrename to db/old/0001.py\n" +
+		"diff --git a/assets/logo.png b/assets/logo.png\nindex 1..2 100644\nBinary files a/assets/logo.png and b/assets/logo.png differ\n" +
+		"diff --git a/bin/run.sh b/bin/run.sh\nold mode 100644\nnew mode 100755\n" +
+		"diff --git a/a b c.go b/a b c.go\n--- a/a b c.go\n+++ b/a b c.go\n@@ -1 +1 @@\n-x\n+++y\n"
+	changes := DiffChanges(patch)
+	want := []FileChange{{Path: "db/old/0001.py", OldPath: "db/migrations/0001.py"}, {Path: "assets/logo.png"}, {Path: "bin/run.sh"}, {Path: "a b c.go", Lines: 2}}
+	if len(changes) != len(want) {
+		t.Fatalf("changes = %+v", changes)
+	}
+	for index := range want {
+		if changes[index] != want[index] {
+			t.Fatalf("change %d = %+v, want %+v", index, changes[index], want[index])
+		}
+	}
+	// Moving a migration out of its folder is still a sensitive change.
+	if decision := tieredWorkflow().ChooseTier(changes[:1]); decision.Tier != TierFull {
+		t.Fatalf("renamed sensitive file: %+v", decision)
+	}
+	if decision := tieredWorkflow().ChooseTier(changes[1:2]); decision.Tier != TierTrivial || decision.Reason != "0 changed lines in 1 file" {
+		t.Fatalf("binary change: %+v", decision)
+	}
+}

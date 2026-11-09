@@ -310,7 +310,9 @@ func reviewLimit(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], w
 		return "", nil
 	}
 	var reviews int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id=$1 AND pr_number=$2 AND trigger='webhook' AND status IN ('queued', 'running', 'completed')`, repo.id, delivery.PR).Scan(&reviews); err != nil {
+	// Queued reviews of other heads are about to be superseded by this
+	// one, so they do not count.
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id=$1 AND pr_number=$2 AND trigger='webhook' AND (status IN ('running', 'completed') OR (status = 'queued' AND head_sha = $3))`, repo.id, delivery.PR, delivery.HeadSHA).Scan(&reviews); err != nil {
 		return "", err
 	}
 	if reviews < limit {

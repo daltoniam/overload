@@ -66,14 +66,19 @@ func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt str
 
 // Complete sends one prompt to a model with the same connection, reasoning
 // and output settings reviews use, and returns the reply text.
-func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, prompt string) (string, error) {
+//
+// It also returns what the calls cost; a call to a model without prices
+// counts as unpriced.
+func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, prompt string) (string, overload.Spend, error) {
 	agent, plan, err := newAgent(ctx, model, systemPrompt)
 	if err != nil {
-		return "", err
+		return "", overload.Spend{}, err
 	}
-	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt}, nil)
+	meter := newMeter(nil)
+	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt}, meter)
+	_, spend := meter.totals()
 	if err != nil {
-		return "", err
+		return "", spend, err
 	}
-	return response.Response.Content.Text(), nil
+	return response.Response.Content.Text(), spend, nil
 }

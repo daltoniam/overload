@@ -69,3 +69,11 @@ func TestBuildReportIsDeterministic(t *testing.T) {
 		t.Fatalf("csv:\n%s", csvOut.String())
 	}
 }
+
+func TestFailedRunsCatchNothing(t *testing.T) {
+	runs := []RunResult{{PR: 1, Workflow: "w", Status: "failed", Findings: []overload.Finding{{Path: "a.go", Line: 3}}}}
+	report := BuildReport("acme/app", []int{1}, []string{"w"}, runs, []Label{{PR: 1, Path: "a.go", Line: 3}})
+	if report.Summary[0].Caught != 0 || len(report.Labels[0].CaughtBy) != 0 {
+		t.Fatalf("failed run credited: %+v", report.Summary[0])
+	}
+}

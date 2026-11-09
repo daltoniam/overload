@@ -42,8 +42,9 @@ func TestDebounceAndReviewLimit(t *testing.T) {
 	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Model: name, Prompt: "Review.", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	// Defaults: a 5-minute debounce and 3 webhook reviews per pull request.
-	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true, ReviewPolicy: overload.ReviewPolicy{Rereview: &overload.RereviewSettings{}}}); err != nil {
+	// The default 5-minute debounce and 2 webhook reviews per pull request.
+	limit := 2
+	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true, ReviewPolicy: overload.ReviewPolicy{Rereview: &overload.RereviewSettings{MaxReviewsPerPR: &limit}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveRepository(ctx, repo, true, true); err != nil {
@@ -97,18 +98,78 @@ func TestDebounceAndReviewLimit(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, first).Scan(&status); err != nil || status != overload.RunSuperseded || second == first {
 		t.Fatalf("first push status %s, second run %d: %v", status, second, err)
 	}
-	complete(second)
+	// One review done and one held push queued: with a limit of two, a new
+	// push replaces the held one instead of counting it.
 	outcome, _, third := push("synchronize", 'd', false)
-	if outcome != "queued" {
-		t.Fatalf("third review: %s", outcome)
+	if outcome != "queued" || third == second {
+		t.Fatalf("push replacing a held review: %s", outcome)
 	}
 	complete(third)
-	// Three webhook reviews ran (the superseded one does not count).
+	// Two webhook reviews ran (superseded ones do not count).
 	outcome, reason, _ := push("synchronize", 'e', false)
 	if outcome != "skipped" || !strings.HasPrefix(reason, SkipReviewLimit) {
 		t.Fatalf("fourth review: %s %s", outcome, reason)
 	}
 	if outcome, reason, _ := push("opened", 'e', true); outcome != "queued" {
 		t.Fatalf("a review asked for by hand skips the limit: %s %s", outcome, reason)
+	}
+}
+
+func TestResolvedFindingsStayResolvedAcrossCopies(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := fmt.Sprintf("test-copies-%d/api", time.Now().UnixNano())
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `UPDATE findings SET resolved_by_run_id=NULL WHERE run_id IN (SELECT id FROM runs WHERE repository_id=$1)`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM findings WHERE run_id IN (SELECT id FROM runs WHERE repository_id=$1)`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM run_artifacts WHERE run_id IN (SELECT id FROM runs WHERE repository_id=$1)`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	workflow := overload.ResolvedWorkflow{Name: "copies", Revision: 1}
+	snapshot := `{"name":"copies","revision":1}`
+	newRun := func(status string) int64 {
+		var id int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, config_snapshot) VALUES ($1, 4, '', '', 'webhook', $2, $3) RETURNING id`, repoID, status, snapshot).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Pool.Exec(ctx, `INSERT INTO run_artifacts (run_id, name, content) VALUES ($1, 'spec.json', '{"diff":"x"}')`, id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	finding := func(runID int64, status string) int64 {
+		var id int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO findings (run_id, path, line, side, severity, category, title, body, confidence, evidence, status, fingerprint) VALUES ($1, 'a.go', 1, 'RIGHT', 'high', 'bug', 'Nil map', 'b', 0.9, 'x', $2, 'same-fingerprint') RETURNING id`, runID, status).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	first, second := newRun("completed"), newRun("completed")
+	finding(first, "posted")
+	newer := finding(second, "suppressed")
+	current := newRun("running")
+	_, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: current, RepositoryID: repoID, PRNumber: 4}, workflow)
+	if err != nil || len(prior) != 1 || prior[0].ID != newer {
+		t.Fatalf("prior = %+v %v", prior, err)
+	}
+	tx, err := store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveFindings(ctx, tx, current, []int64{newer})
+	if err != nil || len(resolved) != 2 {
+		t.Fatalf("resolved %v: %v", resolved, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	later := newRun("running")
+	if _, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: later, RepositoryID: repoID, PRNumber: 4}, workflow); err != nil || len(prior) != 0 {
+		t.Fatalf("fixed finding resurfaced: %+v %v", prior, err)
 	}
 }

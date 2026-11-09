@@ -211,7 +211,7 @@ func TestGroupWholePR(t *testing.T) {
 }
 
 func TestRepoToolsStayInsideTheRepository(t *testing.T) {
-	tools := newRepoTools(renameRepo(), 4)
+	tools := newRepoTools(renameRepo(), 5)
 	byName := map[string]func(string) (string, bool){}
 	for _, tool := range tools.agentTools() {
 		byName[tool.Info().Name] = func(input string) (string, bool) {
@@ -231,11 +231,14 @@ func TestRepoToolsStayInsideTheRepository(t *testing.T) {
 	if text, _ := byName["search"](`{"pattern":"fetch_user","glob":"**/*.py"}`); text != "api/handlers.py:6: return users.fetch_user(user_id)\n" {
 		t.Fatalf("search = %q", text)
 	}
+	if text, _ := byName["search"](`{"pattern":"^def helper\\(\\):$"}`); text != "svc/util.py:1: def helper():\n" {
+		t.Fatalf("anchored search = %q", text)
+	}
 	if text, _ := byName["list_dir"](`{"path":"svc"}`); text != "svc/users.py\nsvc/util.py" {
 		t.Fatalf("list_dir = %q", text)
 	}
 	if text, isError := byName["list_dir"](`{}`); !isError || !strings.Contains(text, "limit reached") {
-		t.Fatalf("fifth call = %q %v", text, isError)
+		t.Fatalf("sixth call = %q %v", text, isError)
 	}
 }
 
@@ -289,5 +292,12 @@ func TestWholePRAgentCanReadTheRepository(t *testing.T) {
 	// Two steps of 1,000 input x $2 + 50 output x $10 per million.
 	if len(result.Findings) != 1 || agent.Calls != 2 || agent.CostUSD < 0.004999 || agent.CostUSD > 0.005001 {
 		t.Fatalf("findings = %d, agent = %+v", len(result.Findings), agent)
+	}
+}
+
+func TestIdentifiersInFindsAdjacentNames(t *testing.T) {
+	symbols := map[string]int{"First": 0, "Second": 1, "load": 2}
+	if got := fmt.Sprint(identifiersIn("x := First(Second()) + loader(load)", symbols)); got != "[First Second load]" {
+		t.Fatalf("identifiers = %s", got)
 	}
 }

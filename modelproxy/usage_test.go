@@ -87,3 +87,25 @@ func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
 		t.Fatalf("revoked grant still pending: %v", pending)
 	}
 }
+
+func TestUsageMeterSurvivesHugeAnswers(t *testing.T) {
+	meter := newUsageMeter(overload.ProviderAnthropic, "text/event-stream")
+	meter.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n"))
+	// A content line over the line limit is skipped, not fatal.
+	meter.write([]byte("data: {\"delta\":\"" + strings.Repeat("x", maxEventLine+10)))
+	meter.write([]byte("\"}\n\n"))
+	// Answers past the size limit are still read as they stream.
+	for range 20 {
+		meter.write([]byte("data: {\"delta\":\"" + strings.Repeat("y", 1<<20-100) + "\"}\n\n"))
+	}
+	meter.write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4000}}\n"))
+	usage, exact := meter.usage()
+	if !exact || usage.Input != 20 || usage.Output != 4000 || meter.bytes < maxMeteredBytes {
+		t.Fatalf("usage = %+v exact = %v after %d bytes", usage, exact, meter.bytes)
+	}
+	plain := newUsageMeter(overload.ProviderOpenAICompat, "application/json")
+	plain.write([]byte(strings.Repeat("z", 3000)))
+	if usage, exact := plain.usage(); exact || usage.Output != 1001 {
+		t.Fatalf("estimate = %+v %v", usage, exact)
+	}
+}

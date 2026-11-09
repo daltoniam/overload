@@ -126,8 +126,9 @@ func (worker *ScheduleWorker) runAgent(ctx context.Context, runID int64, agent o
 		if agent.LegacyFocus.Kind == "review" {
 			instructions += "\n" + agent.LegacyFocus.Body
 		}
-		text, err := harness.Complete(ctx, agent.Model, instructions, "Scheduled input:\n"+string(input))
+		text, spend, err := harness.Complete(ctx, agent.Model, instructions, "Scheduled input:\n"+string(input))
 		output.Text = overload.TruncateUTF8(strings.TrimSpace(text), maxAgentOutput)
+		output.CostUSD, output.UnpricedCalls = spend.USD, spend.Unpriced
 		return output, err
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)

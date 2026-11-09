@@ -188,7 +188,7 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 		names[i] = regexp.QuoteMeta(change.Symbol)
 		position[change.Symbol] = i
 	}
-	pattern := regexp.MustCompile(`(?:^|[^A-Za-z0-9_$])(` + strings.Join(names, "|") + `)(?:$|[^A-Za-z0-9_$])`)
+	pattern := regexp.MustCompile(`(?:` + strings.Join(names, "|") + `)`)
 	uses := make([][]symbolUse, len(index.Changes))
 	files, bytesRead := 0, 0
 	_ = fs.WalkDir(repo, ".", func(name string, entry fs.DirEntry, err error) error {
@@ -222,11 +222,11 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 			return nil
 		}
 		for number, line := range strings.Split(string(data), "\n") {
-			for _, match := range pattern.FindAllStringSubmatch(line, -1) {
-				i := position[match[1]]
-				if isDefinitionOf(line, name, match[1]) {
+			for _, symbol := range identifiersIn(line, position) {
+				if isDefinitionOf(line, name, symbol) {
 					continue
 				}
+				i := position[symbol]
 				uses[i] = append(uses[i], symbolUse{Path: name, Line: number + 1, Text: truncateUse(line), InDiff: inDiff[name]})
 			}
 		}
@@ -335,4 +335,30 @@ func (index contractsIndex) linked() map[string][]string {
 		}
 	}
 	return links
+}
+
+func identifierByte(b byte) bool {
+	return b == '_' || b == '$' || (b >= '0' && b <= '9') || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// identifiersIn returns the identifiers in line that are listed symbols,
+// one per occurrence. Splitting the line into identifiers checks both
+// boundaries of every name, so First(Second()) yields both.
+func identifiersIn(line string, symbols map[string]int) []string {
+	var found []string
+	for start := 0; start < len(line); {
+		if !identifierByte(line[start]) {
+			start++
+			continue
+		}
+		end := start
+		for end < len(line) && identifierByte(line[end]) {
+			end++
+		}
+		if _, ok := symbols[line[start:end]]; ok {
+			found = append(found, line[start:end])
+		}
+		start = end
+	}
+	return found
 }

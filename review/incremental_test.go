@@ -18,3 +18,11 @@ func TestUnchangedFilesSurviveRebases(t *testing.T) {
 		t.Fatalf("deleted file not hashed: %v", hashes)
 	}
 }
+
+func TestFinalNewlineChangesTheHash(t *testing.T) {
+	with := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n"
+	without := with + "\\ No newline at end of file\n"
+	if len(UnchangedFiles(with, without)) != 0 {
+		t.Fatal("a final-newline change counted as unchanged")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -65,10 +66,11 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 			t.Errorf("unexpected model request: %s", text)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"id":"1","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Scheduled result"}}]}`)
+		_, _ = fmt.Fprint(w, `{"id":"1","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"Scheduled result"}}],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`)
 	}))
 	defer model.Close()
-	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context"}); err != nil {
+	input, output := 2.0, 10.0
+	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context", PriceInput: &input, PriceOutput: &output}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: name, Kind: "scheduled_prompt", Model: name, Prompt: "Pinned entry", Enabled: true}); err != nil {
@@ -105,6 +107,10 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 	run, err := store.GetRun(ctx, runID)
 	if err != nil || run.Status != "completed" || calls != 1 {
 		t.Fatalf("run=%+v calls=%d err=%v", run, calls, err)
+	}
+	// 1,000 input x $2 + 100 output x $10 per million.
+	if run.Cost == nil || math.Abs(run.Cost.USD-0.003) > 1e-9 || run.Cost.Unpriced != 0 {
+		t.Fatalf("plain agent cost = %+v", run.Cost)
 	}
 	var kind string
 	var content []byte

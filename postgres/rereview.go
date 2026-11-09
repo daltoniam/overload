@@ -30,7 +30,9 @@ func (s *Store) RereviewBase(ctx context.Context, run overload.Run, workflow ove
 	if err := json.Unmarshal(specData, &spec); err != nil {
 		return 0, "", nil, err
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT id, path, line, severity, title, body FROM (SELECT DISTINCT ON (f.fingerprint) f.id, f.path, f.line, f.severity, f.title, f.body FROM findings f JOIN runs r ON r.id=f.run_id WHERE r.repository_id=$1 AND r.pr_number=$2 AND r.id<$3 AND r.trigger<>$4 AND f.status IN ('posted', 'dry_run') AND f.resolved_by_run_id IS NULL ORDER BY f.fingerprint, f.id DESC) open ORDER BY id DESC LIMIT $5`, run.RepositoryID, run.PRNumber, run.ID, EvalTrigger, maxPriorFindings)
+	// The latest finding per fingerprint decides whether an issue is
+	// open, so a fixed issue does not come back through an older copy.
+	rows, err := s.Pool.Query(ctx, `SELECT id, path, line, severity, title, body FROM (SELECT DISTINCT ON (f.fingerprint) f.id, f.path, f.line, f.severity, f.title, f.body, f.resolved_by_run_id FROM findings f JOIN runs r ON r.id=f.run_id WHERE r.repository_id=$1 AND r.pr_number=$2 AND r.id<$3 AND r.trigger<>$4 AND f.status IN ('posted', 'dry_run', 'suppressed') ORDER BY f.fingerprint, f.id DESC) latest WHERE resolved_by_run_id IS NULL ORDER BY id DESC LIMIT $5`, run.RepositoryID, run.PRNumber, run.ID, EvalTrigger, maxPriorFindings)
 	if err != nil {
 		return 0, "", nil, err
 	}
@@ -52,7 +54,9 @@ func ResolveFindings(ctx context.Context, tx pgx.Tx, runID int64, ids []int64) (
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `UPDATE findings f SET resolved_by_run_id=$1 FROM runs r, runs current WHERE current.id=$1 AND r.id=f.run_id AND r.repository_id=current.repository_id AND r.pr_number=current.pr_number AND f.id = ANY($2) AND f.resolved_by_run_id IS NULL RETURNING f.id`, runID, ids)
+	// Every earlier copy of a fixed finding (same fingerprint on the same
+	// pull request) is resolved with it.
+	rows, err := tx.Query(ctx, `UPDATE findings f SET resolved_by_run_id=$1 FROM runs r, runs current WHERE current.id=$1 AND r.id=f.run_id AND r.repository_id=current.repository_id AND r.pr_number=current.pr_number AND r.id < $1 AND f.resolved_by_run_id IS NULL AND f.fingerprint IN (SELECT p.fingerprint FROM findings p JOIN runs pr ON pr.id=p.run_id WHERE p.id = ANY($2) AND pr.repository_id=current.repository_id AND pr.pr_number=current.pr_number) RETURNING f.id`, runID, ids)
 	if err != nil {
 		return nil, err
 	}

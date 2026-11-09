@@ -149,9 +149,6 @@ func (tools *repoTools) agentTools() []fantasy.AgentTool {
 					return nil
 				}
 				files++
-				if !pattern.Match(data) {
-					return nil
-				}
 				for number, line := range strings.Split(string(data), "\n") {
 					if pattern.MatchString(line) {
 						fmt.Fprintf(&out, "%s:%d: %s\n", name, number+1, truncateUse(line))

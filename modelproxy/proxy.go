@@ -209,24 +209,24 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	flusher, _ := w.(http.Flusher)
-	var metered bytes.Buffer
+	metered := newUsageMeter(provider, response.Header.Get("Content-Type"))
 	defer func() {
-		if response.StatusCode < 200 || response.StatusCode > 299 || metered.Len() >= maxMeteredBytes {
+		if response.StatusCode < 200 || response.StatusCode > 299 {
 			return
 		}
-		if usage, ok := parseUsage(provider, response.Header.Get("Content-Type"), metered.Bytes()); ok {
-			if usd, priced := model.Pricing.Cost(usage); priced {
-				proxy.charge(token, usd)
-			}
+		usage, exact := metered.usage()
+		if !exact {
+			slog.Warn("model proxy could not read a call's usage; charging an estimate", "model", model.Model, "response_bytes", metered.bytes)
+		}
+		if usd, priced := model.Pricing.Cost(usage); priced {
+			proxy.charge(token, usd)
 		}
 	}()
 	buf := make([]byte, 32<<10)
 	for {
 		n, readErr := response.Body.Read(buf)
 		if n > 0 {
-			if metered.Len() < maxMeteredBytes {
-				metered.Write(buf[:min(n, maxMeteredBytes-metered.Len())])
-			}
+			metered.write(buf[:n])
 			if _, err := w.Write(buf[:n]); err != nil {
 				return
 			}

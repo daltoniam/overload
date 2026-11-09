@@ -125,7 +125,7 @@ func BuildReport(repository string, prs []int, workflows []string, runs []RunRes
 		result := LabelResult{Label: label, CaughtBy: []string{}}
 		for _, name := range workflows {
 			for _, run := range report.Runs {
-				if run.Workflow == name && run.PR == label.PR && slices.ContainsFunc(run.Findings, label.Catches) {
+				if run.Workflow == name && run.PR == label.PR && run.Status == "completed" && slices.ContainsFunc(run.Findings, label.Catches) {
 					result.CaughtBy = append(result.CaughtBy, name)
 					break
 				}
