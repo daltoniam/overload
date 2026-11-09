@@ -47,7 +47,11 @@ const (
 	// this host only and for every path.
 	secureSessionCookie = "__Host-overload_session"
 	loginCookie         = "overload_login"
-	loginTTL            = 10 * time.Minute
+	// secureLoginCookie is the sign-in cookie's name over https; like the
+	// session cookie, the __Host- prefix stops a sibling subdomain from
+	// planting its own sign-in state.
+	secureLoginCookie = "__Host-overload_login"
+	loginTTL          = 10 * time.Minute
 	// discoveryRetry is how long a failed discovery is remembered, so a
 	// provider outage does not make every sign-in wait on a fetch.
 	discoveryRetry = 30 * time.Second
@@ -160,6 +164,13 @@ func (auth *oidcAuth) secureCookies() bool {
 	return strings.HasPrefix(auth.settings.baseURL, "https://")
 }
 
+func (auth *oidcAuth) loginCookieName() string {
+	if auth.secureCookies() {
+		return secureLoginCookie
+	}
+	return loginCookie
+}
+
 func (auth *oidcAuth) sessionCookieName() string {
 	if auth.secureCookies() {
 		return secureSessionCookie
@@ -255,16 +266,16 @@ func (auth *oidcAuth) login(w http.ResponseWriter, r *http.Request) {
 		signInProblem(w, r, http.StatusInternalServerError, "Unable to start sign-in", "Overload could not save the sign-in. Try again.")
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: loginCookie, Value: state, Path: "/auth/", MaxAge: int(loginTTL.Seconds()), HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: auth.loginCookieName(), Value: state, Path: "/", MaxAge: int(loginTTL.Seconds()), HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
 	config := auth.oauthConfig(provider)
 	http.Redirect(w, r, config.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), http.StatusFound)
 }
 
 func (auth *oidcAuth) callback(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	cookie, err := r.Cookie(loginCookie)
+	cookie, err := r.Cookie(auth.loginCookieName())
 	state := query.Get("state")
-	http.SetCookie(w, &http.Cookie{Name: loginCookie, Path: "/auth/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: auth.loginCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
 	if err != nil || state == "" || cookie.Value != state {
 		signInProblem(w, r, http.StatusBadRequest, "Sign-in expired", "The sign-in expired or was started in another browser or at another address.")
 		return

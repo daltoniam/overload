@@ -558,7 +558,8 @@ Register `<base>/auth/callback` as the client's redirect URI and
 How it works:
 
 - Sign-in uses the authorization code flow with PKCE, and checks the
-  `state` (bound to the browser by a cookie) and `nonce`. ID tokens are
+  `state` (bound to the browser by a `__Host-` cookie over https, so a
+  sibling subdomain cannot plant one) and `nonce`. ID tokens are
   verified against the provider's discovery document and keys. A sign-in
   started at another address (such as `127.0.0.1`) is sent to the base URL
   first, since its cookie must reach the callback. At most 10,000

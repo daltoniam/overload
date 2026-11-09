@@ -483,11 +483,11 @@ func TestOIDCRejectsBadSignIns(t *testing.T) {
 			return "/auth/callback?error=access_denied&state=" + url.QueryEscape(state)
 		}, http.StatusForbidden},
 		{"no sign-in cookie", func(b *browser, state string) string {
-			delete(b.cookies, loginCookie)
+			delete(b.cookies, secureLoginCookie)
 			return "/auth/callback?code=x&state=" + url.QueryEscape(state)
 		}, http.StatusBadRequest},
 		{"cookie for another sign-in", func(b *browser, state string) string {
-			b.cookies[loginCookie] = &http.Cookie{Name: loginCookie, Value: "other"}
+			b.cookies[secureLoginCookie] = &http.Cookie{Name: secureLoginCookie, Value: "other"}
 			return "/auth/callback?code=x&state=" + url.QueryEscape(state)
 		}, http.StatusBadRequest},
 	} {
@@ -504,14 +504,14 @@ func TestOIDCRejectsBadSignIns(t *testing.T) {
 	// A provider answer is accepted once.
 	reuse := newBrowser(t, handler)
 	callback := reuse.startSignIn(provider, "/")
-	cookie := reuse.cookies[loginCookie]
-	if !cookie.HttpOnly || !cookie.Secure || cookie.Path != "/auth/" || cookie.SameSite != http.SameSiteLaxMode {
+	cookie := reuse.cookies[secureLoginCookie]
+	if !cookie.HttpOnly || !cookie.Secure || cookie.Path != "/" || cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("sign-in cookie = %+v", cookie)
 	}
 	if response := reuse.do(http.MethodGet, callback, nil); response.Code != http.StatusSeeOther {
 		t.Fatalf("first callback: %d", response.Code)
 	}
-	reuse.cookies[loginCookie] = cookie
+	reuse.cookies[secureLoginCookie] = cookie
 	if response := reuse.do(http.MethodGet, callback, nil); response.Code != http.StatusBadRequest {
 		t.Fatalf("reused callback: %d", response.Code)
 	}

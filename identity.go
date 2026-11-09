@@ -15,7 +15,7 @@ var roleRanks = map[string]int{RoleViewer: 1, RoleMember: 2, RoleAdmin: 3}
 
 // RoleAtLeast reports whether role grants at least minimum.
 func RoleAtLeast(role, minimum string) bool {
-	return roleRanks[role] > 0 && roleRanks[role] >= roleRanks[minimum]
+	return roleRanks[role] > 0 && roleRanks[minimum] > 0 && roleRanks[role] >= roleRanks[minimum]
 }
 
 // ValidRole reports whether role is a known role.
