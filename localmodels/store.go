@@ -139,25 +139,35 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		}
 		staged = append(staged, [2]string{partial, store.FilePath(installed, file)})
 	}
-	for _, step := range staged {
-		if err := os.Rename(step[0], step[1]); err != nil {
-			return Installed{}, err
-		}
-	}
 	// Model services hold this lock only briefly; wait for it rather than
-	// fail a finished download.
+	// fail a finished download. Until the manifest records the revision,
+	// its new files keep their partial names, which clean recognizes and a
+	// later pull resumes from.
 	unlockServices, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return Installed{}, err
 	}
 	defer unlockServices()
+	var promoted [][2]string
+	unpromote := func(cause error) (Installed, error) {
+		for _, step := range promoted {
+			_ = os.Rename(step[1], step[0])
+		}
+		return Installed{}, cause
+	}
+	for _, step := range staged {
+		if err := os.Rename(step[0], step[1]); err != nil {
+			return unpromote(err)
+		}
+		promoted = append(promoted, step)
+	}
 	for _, file := range selected {
 		if info, err := os.Stat(store.FilePath(installed, file)); err != nil || info.Size() != file.Size {
-			return Installed{}, fmt.Errorf("%s disappeared before the download was recorded; run the pull again", file.Path)
+			return unpromote(fmt.Errorf("%s disappeared before the download was recorded; run the pull again", file.Path))
 		}
 	}
 	if manifest, err = store.readManifest(); err != nil {
-		return Installed{}, err
+		return unpromote(err)
 	}
 	installed.DownloadedAt = store.now().UTC()
 	var replaced []Installed
@@ -170,7 +180,7 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	})
 	manifest = append(manifest, installed)
 	if err := store.writeManifest(manifest); err != nil {
-		return Installed{}, err
+		return unpromote(err)
 	}
 	freed, retired, err := store.release(manifest, replaced)
 	installed.Freed, installed.Served = freed, retired > 0
@@ -299,6 +309,7 @@ func (store Store) release(manifest, replaced []Installed) (int64, int, error) {
 	}
 	retired = slices.DeleteFunc(retired, func(path string) bool { return installed[path] })
 	var freed int64
+	var failures []error
 	kept := 0
 	for _, entry := range replaced {
 		for _, file := range entry.Files {
@@ -312,16 +323,27 @@ func (store Store) release(manifest, replaced []Installed) (int64, int, error) {
 				}
 			default:
 				last := linkCount(path) <= 1
-				if os.Remove(path) == nil {
+				err := os.Remove(path)
+				switch {
+				case err == nil:
 					if last {
 						freed += file.Size
 					}
 					store.removeEmptyParents(filepath.Dir(path))
+				case !errors.Is(err, fs.ErrNotExist):
+					// Keep it on the list so clean can try again.
+					if !slices.Contains(retired, path) {
+						retired = append(retired, path)
+					}
+					failures = append(failures, err)
 				}
 			}
 		}
 	}
-	return freed, kept, store.writeRetired(retired)
+	if err := store.writeRetired(retired); err != nil {
+		failures = append(failures, err)
+	}
+	return freed, kept, errors.Join(failures...)
 }
 
 // linkCount is the number of hard links to path; 0 when unknown.

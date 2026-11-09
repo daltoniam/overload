@@ -400,6 +400,31 @@ func TestCleanCountsSharedFilesOnce(t *testing.T) {
 	}
 }
 
+func TestReleaseKeepsFilesItCouldNotDelete(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	store := NewStore(t.TempDir())
+	entry := Installed{ID: "m", Quant: "Q8_0", Repository: "a/m", Revision: testRevision, Files: []File{{Path: "m-Q8_0.gguf", Size: 1}}}
+	path := store.FilePath(entry, entry.Files[0])
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(filepath.Dir(path), 0o755) })
+	if _, _, err := store.release(nil, []Installed{entry}); err == nil {
+		t.Fatal("a failed delete was not reported")
+	}
+	if retired, _ := store.retired(); len(retired) != 1 || retired[0] != path {
+		t.Fatalf("retired = %v", retired)
+	}
+}
+
 func TestOwnPartial(t *testing.T) {
 	for name, want := range map[string]bool{"a.gguf.0123456789abcdef.part": true, "a.gguf.mine.part": false, "video.mp4.part": false, "a.gguf.0123456789abcdeg.part": false, ".0123456789abcdef.part": false} {
 		if ownPartial(name) != want {
