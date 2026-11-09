@@ -309,7 +309,7 @@ func (gateway *Gateway) call(ctx context.Context, w http.ResponseWriter, r *http
 		return http.StatusBadGateway, tokenCount{}
 	}
 	var counted tokenCount
-	filter := &usageFilter{count: &counted, sse: strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream"), dropUsageChunk: dropUsage}
+	filter := newUsageFilter(&counted, strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream"), dropUsage)
 	modelproxy.Relay(w, response, response.StatusCode, filter)
 	return response.StatusCode, counted
 }
@@ -354,41 +354,93 @@ func (count *tokenCount) observe(data []byte) {
 	}
 }
 
-const maxObservedBytes = 8 << 20
+// observeTail reads usage from the end of a JSON answer too large to keep
+// whole: the last "usage" object in it, where both APIs put their totals.
+func (count *tokenCount) observeTail(tail []byte) {
+	index := bytes.LastIndex(tail, []byte(`"usage"`))
+	if index < 0 {
+		slog.Warn("model answer too large to count its tokens", "bytes_kept", len(tail))
+		return
+	}
+	rest := bytes.TrimLeft(tail[index+len(`"usage"`):], " \t\r\n")
+	rest, ok := bytes.CutPrefix(rest, []byte(":"))
+	var usage usageFields
+	if !ok || json.NewDecoder(bytes.NewReader(rest)).Decode(&usage) != nil {
+		slog.Warn("model answer too large to count its tokens", "bytes_kept", len(tail))
+		return
+	}
+	count.input = max(count.input, usage.PromptTokens, usage.InputTokens)
+	count.output = max(count.output, usage.CompletionTokens, usage.OutputTokens)
+}
+
+const (
+	// maxObservedBytes bounds the part of a response kept to read usage
+	// from: a whole JSON answer, or one event stream line.
+	maxObservedBytes = 8 << 20
+	// tailBytes is how much of a larger JSON answer is kept: both APIs put
+	// usage at the end.
+	tailBytes = 64 << 10
+)
 
 // usageFilter passes a model response through while feeding its JSON to a
 // tokenCount: every `data:` line of an event stream, or the whole body
-// otherwise (up to 8 MiB). When dropUsageChunk is set it removes the
-// OpenAI stream chunk that carries only usage.
+// otherwise. With dropUsageChunk it removes the usage-only event that
+// include_usage adds, for clients that did not ask for it.
 type usageFilter struct {
 	count          *tokenCount
 	sse            bool
 	dropUsageChunk bool
-	pending        bytes.Buffer
-	overflowed     bool
-	skipBlank      bool
+
+	// pending holds a JSON answer, or the event stream line being read.
+	pending bytes.Buffer
+	// tail holds the end of a JSON answer larger than maxObservedBytes.
+	tail       []byte
+	overflowed bool
+	// passing is set while a stream line too long to inspect is copied
+	// through unchanged until its end.
+	passing bool
+	// eventStart is set when the next line begins an event.
+	eventStart bool
+	// held is a usage-only event line kept back until the line after it
+	// shows whether it is a whole event.
+	held []byte
+}
+
+func newUsageFilter(count *tokenCount, sse, dropUsageChunk bool) *usageFilter {
+	return &usageFilter{count: count, sse: sse, dropUsageChunk: dropUsageChunk, eventStart: true}
 }
 
 func (filter *usageFilter) Process(chunk []byte) []byte {
 	if !filter.sse {
-		if filter.overflowed || filter.pending.Len()+len(chunk) > maxObservedBytes {
-			filter.overflowed = true
-		} else {
-			filter.pending.Write(chunk)
-		}
+		filter.keepJSON(chunk)
 		return chunk
 	}
-	filter.pending.Write(chunk)
 	var out []byte
-	for {
-		index := bytes.IndexByte(filter.pending.Bytes(), '\n')
-		if index < 0 {
-			break
+	for len(chunk) > 0 {
+		index := bytes.IndexByte(chunk, '\n')
+		if filter.passing {
+			if index < 0 {
+				return append(out, chunk...)
+			}
+			out = append(out, chunk[:index+1]...)
+			chunk = chunk[index+1:]
+			filter.passing, filter.eventStart = false, false
+			continue
 		}
-		out = filter.line(out, filter.pending.Next(index+1))
-	}
-	if filter.pending.Len() > maxObservedBytes {
-		out = append(out, filter.pending.Bytes()...)
+		if index < 0 {
+			if filter.pending.Len()+len(chunk) > maxObservedBytes {
+				out = filter.release(out)
+				out = append(append(out, filter.pending.Bytes()...), chunk...)
+				filter.pending.Reset()
+				filter.passing = true
+				return out
+			}
+			filter.pending.Write(chunk)
+			return out
+		}
+		filter.pending.Write(chunk[:index+1])
+		chunk = chunk[index+1:]
+		out = filter.line(out, bytes.Clone(filter.pending.Bytes()))
 		filter.pending.Reset()
 	}
 	return out
@@ -396,33 +448,67 @@ func (filter *usageFilter) Process(chunk []byte) []byte {
 
 func (filter *usageFilter) Finish() []byte {
 	if !filter.sse {
-		if !filter.overflowed {
+		if filter.overflowed {
+			filter.count.observeTail(filter.tail)
+		} else {
 			filter.count.observe(filter.pending.Bytes())
 		}
 		filter.pending.Reset()
 		return nil
 	}
-	rest := bytes.Clone(filter.pending.Bytes())
-	filter.pending.Reset()
-	if len(rest) == 0 {
-		return nil
+	var out []byte
+	if rest := bytes.Clone(filter.pending.Bytes()); len(rest) > 0 && !filter.passing {
+		out = filter.line(out, rest)
 	}
-	return filter.line(nil, rest)
+	filter.pending.Reset()
+	return filter.release(out)
+}
+
+// keepJSON keeps a JSON answer to read usage from, or only its end once it
+// is larger than maxObservedBytes.
+func (filter *usageFilter) keepJSON(chunk []byte) {
+	if !filter.overflowed && filter.pending.Len()+len(chunk) <= maxObservedBytes {
+		filter.pending.Write(chunk)
+		return
+	}
+	if !filter.overflowed {
+		filter.overflowed = true
+		filter.tail = append(filter.tail, filter.pending.Bytes()...)
+		filter.pending.Reset()
+	}
+	filter.tail = append(filter.tail, chunk...)
+	if len(filter.tail) > tailBytes {
+		filter.tail = append(filter.tail[:0], filter.tail[len(filter.tail)-tailBytes:]...)
+	}
+}
+
+// release sends a held usage line that turned out not to be a whole event.
+func (filter *usageFilter) release(out []byte) []byte {
+	if filter.held != nil {
+		out = append(out, filter.held...)
+		filter.held = nil
+	}
+	return out
 }
 
 // line handles one event stream line, appending what to send to out.
 func (filter *usageFilter) line(out, line []byte) []byte {
 	trimmed := bytes.TrimSpace(line)
-	if len(trimmed) == 0 && filter.skipBlank {
-		filter.skipBlank = false
-		return out
+	starts := filter.eventStart
+	filter.eventStart = len(trimmed) == 0
+	if filter.held != nil {
+		if len(trimmed) == 0 {
+			// The held line was a whole event: drop it and its end.
+			filter.held = nil
+			return out
+		}
+		out = filter.release(out)
 	}
-	filter.skipBlank = false
 	if payload, ok := bytes.CutPrefix(trimmed, []byte("data:")); ok {
 		payload = bytes.TrimSpace(payload)
 		filter.count.observe(payload)
-		if filter.dropUsageChunk && usageOnly(payload) {
-			filter.skipBlank = true
+		if filter.dropUsageChunk && starts && usageOnly(payload) {
+			filter.held = line
 			return out
 		}
 	}

@@ -342,9 +342,29 @@ func TestUsageFilter(t *testing.T) {
 			chunks: []string{`{"usage":{"input_tokens":20,`, `"output_tokens":7}}`},
 			want:   `{"usage":{"input_tokens":20,"output_tokens":7}}`, in: 20, out: 7,
 		},
+		"usage line inside a larger event": {
+			sse: true, drop: true, chunks: []string{"event: usage\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n\n"},
+			want: "event: usage\ndata: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n\n", in: 3,
+		},
+		"usage line followed by another field": {
+			sse: true, drop: true, chunks: []string{"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n", "id: 7\n\n"},
+			want: "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\nid: 7\n\n", in: 3,
+		},
+		"usage line at the end of the stream": {
+			sse: true, drop: true, chunks: []string{"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n"},
+			want: "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3}}\n", in: 3,
+		},
+		"line too long to inspect": {
+			sse: true, drop: true, chunks: []string{"data: {\"choices\":[{\"delta\":\"" + strings.Repeat("x", maxObservedBytes), strings.Repeat("y", 10), "\"}]}\n\n", "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":9}}\n\n", "data: [DONE]\n\n"},
+			want: "data: {\"choices\":[{\"delta\":\"" + strings.Repeat("x", maxObservedBytes) + strings.Repeat("y", 10) + "\"}]}\n\ndata: [DONE]\n\n", in: 5, out: 9,
+		},
+		"whole body too large to keep": {
+			chunks: []string{`{"content":"` + strings.Repeat("x", maxObservedBytes), `","usage":{"prompt_tokens":40,"completion_tokens":12}}`},
+			want:   `{"content":"` + strings.Repeat("x", maxObservedBytes) + `","usage":{"prompt_tokens":40,"completion_tokens":12}}`, in: 40, out: 12,
+		},
 	} {
 		var count tokenCount
-		filter := &usageFilter{count: &count, sse: test.sse, dropUsageChunk: test.drop}
+		filter := newUsageFilter(&count, test.sse, test.drop)
 		var got strings.Builder
 		for _, chunk := range test.chunks {
 			got.Write(filter.Process([]byte(chunk)))
