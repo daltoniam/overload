@@ -380,6 +380,13 @@ func uninstall(args []string) error {
 	}
 	if runtime.GOOS == "darwin" {
 		inst.stopServices()
+		modelDir := inst.values["OVERLOAD_MODELS_DIR"]
+		if modelDir == "" {
+			modelDir = filepath.Join(inst.home, "models")
+		}
+		if err := removeModelServices(modelDir, inst.label); err != nil {
+			fmt.Printf("Could not remove every model service: %v. Remove the remaining %s.model.* agents with launchctl bootout.\n", err, inst.label)
+		}
 		for _, label := range []string{inst.label, inst.label + ".postgres", inst.label + ".tunnel"} {
 			if err := launchd.Remove(label); err != nil {
 				return err

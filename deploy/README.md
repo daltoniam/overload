@@ -38,8 +38,10 @@ against `checksums.txt` and installs it into `~/.local/bin`
 
 Running `install` again keeps the configuration and restarts the services.
 `overload status` shows services and health. `overload uninstall` removes the
-launchd agents and keeps the data; `--purge` deletes the install directory
-too. `--home`, `--label` and `--port` allow side-by-side installs.
+launchd agents (model services included) and keeps the data; `--purge`
+deletes the install directory too, including downloaded model weights unless
+`OVERLOAD_MODELS_DIR` points elsewhere. `--home`, `--label` and `--port`
+allow side-by-side installs.
 
 `make install-test` (and the macOS CI job) installs under a throwaway label
 and port and checks login, `install-check`, a saved model surviving restarts
@@ -136,6 +138,64 @@ starts, rather than reviewing with the refused model; GitHub only sees
 The policy trusts the catalog entry a connection names unless its model ID
 is a different entry's. It keeps reviews on approved models; it is not a
 control against someone who can edit model connections and the policy.
+
+### Downloading and serving models
+
+`overload models` manages llama.cpp models from the catalog (see Catalog and
+model policy above), so nothing needs to be run by hand. Downloads work on
+macOS and Linux; `serve` uses launchd and needs macOS.
+
+```sh
+overload models pull recursive-flint --quant Q4_K_M   # resumable, SHA-256 verified
+overload models check recursive-flint                 # is llama-server new enough?
+overload models serve recursive-flint --port 8080 --connect flint
+overload models status                                # services and /health
+overload models list                                  # downloads, disk used and free
+overload models stop recursive-flint
+overload models rm recursive-flint                    # delete the weights
+overload models clean                                 # delete partial and replaced downloads
+```
+
+- `pull` downloads from the catalog's Hugging Face repository (or
+  `--repository OWNER/NAME`) at the commit its main branch points to, into
+  `models/<owner>/<name>/<commit>/` next to the install's configuration;
+  an update downloads into a new commit directory (files that did not
+  change are hard-linked where the volume supports it and downloaded
+  again otherwise, and an unfinished download carries over) and switches
+  over only once every file has verified, so a failed update leaves the
+  previous download usable. `--dir` or
+  `OVERLOAD_MODELS_DIR` changes the directory; put `OVERLOAD_MODELS_DIR` in
+  the configuration file so every command and the catalog page use the same
+  one. An interrupted or stalled download resumes where it stopped. Every
+  file is checked against the SHA-256 Hugging Face publishes for it; a
+  mismatch deletes the partial file. A download that would leave less than
+  2 GB free is refused. Gated models need `HF_TOKEN` or a token saved by
+  `hf auth login`; the token is sent only to Hugging Face and its
+  subdomains, never on redirects elsewhere.
+- `check` and `serve` compare `llama-server --version` with the catalog's
+  minimum build (Flint needs b11801) and say how to upgrade; a build that
+  reports no number (built from source without git) needs
+  `--skip-version-check` on `serve`. They use `--llama-server`,
+  `OVERLOAD_LLAMA_SERVER` or `llama-server` on PATH.
+- `serve` registers a launchd agent (`dev.overload.model.<id>`) that runs
+  llama-server on 127.0.0.1 with the catalog's arguments, starts at login
+  and restarts if it exits. It refuses a port something else uses, waits
+  until `/health` reports the model loaded (printing the log if the server
+  never answers), and checks the server lists the model. `--parallel N`
+  gives N request slots, each with the catalog's full context.
+  `--connect NAME` also saves a model connection with the catalog entry and
+  settings; without it the command to add one is printed. Logs are in the
+  install's `logs/model-<id>.log`. `overload uninstall` removes model
+  services too. If the model never loads, `serve` prints the end of the
+  log and leaves the service registered; fix the cause and serve again, or
+  remove it with `stop`.
+- `rm` refuses a model that is being served, and keeps files another
+  downloaded entry uses. Pulling a model again from another repository
+  deletes the old files, unless the model is being served from them; then
+  they are kept until `serve` loads the new ones, and `clean` deletes them
+  afterwards.
+- The catalog page for a model shows what this Mac has downloaded and
+  serves.
 
 ### DwarfStar on Metal
 

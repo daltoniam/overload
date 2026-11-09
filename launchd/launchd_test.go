@@ -2,6 +2,8 @@ package launchd
 
 import (
 	"encoding/xml"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -23,5 +25,23 @@ func TestLaunchAgentPlistIsValidXML(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("plist missing %q", want)
 		}
+	}
+}
+
+func TestWriteReplacesTheAgentAtomically(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dev.overload.plist")
+	for _, label := range []string{"first", "second"} {
+		if err := writeAt(path, Agent{Label: label, Args: []string{"/bin/true"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), "<string>second</string>") {
+		t.Fatalf("agent = %s, %v", data, err)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("temporary files left: %v", entries)
 	}
 }

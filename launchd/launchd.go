@@ -3,6 +3,7 @@ package launchd
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Agent is a login service that launchd starts at login and restarts if it
@@ -80,7 +82,25 @@ func writeAt(path string, agent Agent) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, agent.plist(), 0o644)
+	// Write a temporary file and rename it, so a failed write never leaves
+	// a truncated agent behind.
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".agent-*")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(temporary.Name()) }()
+	if _, err := temporary.Write(agent.plist()); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Chmod(0o644); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporary.Name(), path)
 }
 
 func domain() string { return "gui/" + strconv.Itoa(os.Getuid()) }
@@ -115,7 +135,9 @@ func Remove(label string) error {
 // State describes a loaded agent ("running (pid 123)") or reports "not
 // loaded".
 func State(label string) string {
-	out, err := exec.Command("launchctl", "print", domain()+"/"+label).CombinedOutput()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "launchctl", "print", domain()+"/"+label).CombinedOutput()
 	if err != nil {
 		return "not loaded"
 	}

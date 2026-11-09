@@ -9,13 +9,16 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/daltoniam/overload/github"
 	httpapi "github.com/daltoniam/overload/http"
+	"github.com/daltoniam/overload/localmodels"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/queue"
 	"github.com/daltoniam/overload/tunnel"
+	"github.com/daltoniam/overload/web/templates/pages"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
@@ -77,6 +80,8 @@ func run(args []string) error {
 		return manageCatalog(args[1:], os.Stdout)
 	case "policy":
 		return managePolicy(args[1:])
+	case "models":
+		return manageModels(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
@@ -274,6 +279,19 @@ func newTunnel(store *postgres.Store, addr string) *tunnel.Manager {
 		return "Pointed the GitHub App " + app.Slug + " at " + webhookURL + ".", nil
 	}
 	return manager
+}
+
+// LocalModel reports the catalog entry's downloads and model service in
+// this install's model directory.
+func (store serverStore) LocalModel(id string) *pages.LocalModel {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	dir, err := modelsDir("")
+	if err != nil {
+		return nil
+	}
+	return localModelSummary(localmodels.NewStore(dir), localmodels.Launchd{}, id)
 }
 
 func (store serverStore) ChangedFiles(ctx context.Context, repository string, number int) ([]string, error) {

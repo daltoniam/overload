@@ -12,6 +12,12 @@ import (
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
+// LocalModelReader reports what this machine has downloaded and serves of
+// a catalog entry; servers without a local model directory do not have it.
+type LocalModelReader interface {
+	LocalModel(id string) *pages.LocalModel
+}
+
 // PolicyStore reads and saves the model policy.
 type PolicyStore interface {
 	ListReviewSettings(context.Context) ([]overload.ReviewSettings, error)
@@ -52,7 +58,11 @@ func registerCatalog(mux *http.ServeMux, store PolicyStore, csrf string) {
 			http.Error(w, "Unable to load the model policy", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.CatalogEntry(model, policy.Evaluate(model.ID)).Render(r.Context(), w)
+		var local *pages.LocalModel
+		if reader, ok := store.(LocalModelReader); ok {
+			local = reader.LocalModel(model.ID)
+		}
+		_ = pages.CatalogEntry(model, policy.Evaluate(model.ID), local).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /catalog/policy", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {

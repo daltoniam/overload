@@ -176,6 +176,7 @@ overload/
   sandbox/             Agent Sandbox implementation of SandboxRunner + local exec fake
   eval/                eval sets, scoring, reports
   catalog/             model catalog (provenance, licences, settings, evals) and the model policy
+  localmodels/         verified model downloads, disk accounting, llama.cpp build checks, llama-server services
   http/                router, middleware (auth, CSRF, logging), webhook + UI handlers
   web/templates/       templ: layouts/, components/, pages/ (Switchboard pattern)
   web/static/          CSS (embedded)
@@ -1433,7 +1434,7 @@ plan and deploy/README.md.
    connections can name a catalog entry; an administrator policy restricts
    models by origin country and licence, enforced when a model is saved and
    when a run is queued.
-2. **Runtime manager** (16.4 item 1): checksum-verified, resumable model
+2. **Runtime manager** (16.4 item 1; done): checksum-verified, resumable model
    downloads; disk accounting and cleanup; the minimum llama.cpp build per
    catalog entry checked against the installed server; llama-server launchd
    services with the catalog's settings, with start, stop and health.
