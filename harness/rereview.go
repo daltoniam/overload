@@ -17,13 +17,17 @@ type rereview struct {
 	carried map[string]bool
 	prior   map[string][]overload.PriorFinding
 	ids     map[int64]bool
+	// gone are earlier findings on files the pull request no longer
+	// changes (a later commit reverted them): resolved without a review.
+	gone []int64
 }
 
 // planRereview decides which reviewable files to carry over: a file whose
 // diff is unchanged since the earlier review is carried unless the
 // contracts index links it to a changed file (it uses a symbol a changed
-// file removes or changes).
-func planRereview(incremental *overload.Incremental, reviewable []string, links map[string][]string) *rereview {
+// file removes or changes). inDiff lists every file the current diff
+// touches, reviewable or not.
+func planRereview(incremental *overload.Incremental, reviewable []string, links map[string][]string, inDiff map[string]bool) *rereview {
 	if incremental == nil {
 		return nil
 	}
@@ -46,7 +50,10 @@ func planRereview(incremental *overload.Incremental, reviewable []string, links 
 		}
 	}
 	for _, finding := range incremental.Prior {
-		if !plan.carried[finding.Path] {
+		switch {
+		case !inDiff[finding.Path]:
+			plan.gone = append(plan.gone, finding.ID)
+		case !plan.carried[finding.Path]:
 			plan.prior[finding.Path] = append(plan.prior[finding.Path], finding)
 			plan.ids[finding.ID] = true
 		}
@@ -91,7 +98,8 @@ func (plan *rereview) priorText(files ...string) string {
 }
 
 // verdicts keeps the judgments of earlier findings the run was asked
-// about. A finding any agent still sees stays open.
+// about. A finding any agent still sees stays open. Findings on files the
+// pull request no longer changes are resolved.
 func (plan *rereview) verdicts(all []overload.PriorVerdict) []overload.PriorVerdict {
 	if plan == nil {
 		return nil
@@ -104,6 +112,9 @@ func (plan *rereview) verdicts(all []overload.PriorVerdict) []overload.PriorVerd
 		if status[verdict.ID] != overload.PriorStillPresent {
 			status[verdict.ID] = verdict.Status
 		}
+	}
+	for _, id := range plan.gone {
+		status[id] = overload.PriorResolved
 	}
 	var kept []overload.PriorVerdict
 	for _, finding := range plan.spec.Prior {
@@ -150,6 +161,7 @@ func (plan *rereview) record(metrics map[string]any, reviewed int, verdicts []ov
 	}
 	metrics["carried_finding_ids"] = carried
 	metrics["prior_unjudged"] = unjudged
+	metrics["prior_file_unchanged"] = len(plan.gone)
 	metrics["since_run_id"] = plan.spec.SinceRunID
 	metrics["rereviewed_files"] = reviewed
 	metrics["carried_files"] = len(plan.carried)

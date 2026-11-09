@@ -188,14 +188,15 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 	if err != nil {
 		return 0, err
 	}
-	type openThread struct {
+	type reviewThread struct {
 		id           string
+		resolved     bool
 		commentID    int64
 		path         string
 		originalLine int
 		body         string
 	}
-	var open []openThread
+	var known []reviewThread
 	var after *string
 	complete := false
 	for page := 0; page < maxThreadPages; page++ {
@@ -231,7 +232,7 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 		}
 		page := data.Repository.PullRequest.ReviewThreads
 		for _, thread := range page.Nodes {
-			if thread.IsResolved || len(thread.Comments.Nodes) == 0 {
+			if len(thread.Comments.Nodes) == 0 {
 				continue
 			}
 			first := thread.Comments.Nodes[0]
@@ -239,7 +240,9 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 			if !strings.EqualFold(first.Author.Login, strings.TrimSuffix(login, "[bot]")) && !strings.EqualFold(first.Author.Login, login) {
 				continue
 			}
-			open = append(open, openThread{id: thread.ID, commentID: first.DatabaseID, path: first.Path, originalLine: first.OriginalLine, body: first.Body})
+			// Resolved threads are kept: they count when deciding whether
+			// an older finding's match is unique.
+			known = append(known, reviewThread{id: thread.ID, resolved: thread.IsResolved, commentID: first.DatabaseID, path: first.Path, originalLine: first.OriginalLine, body: first.Body})
 		}
 		if !page.PageInfo.HasNextPage {
 			complete = true
@@ -255,27 +258,25 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 	}
 	// A finding that recorded its comment resolves that thread. One
 	// without (posted before comment IDs were kept) resolves a thread
-	// only when exactly one open thread has its path, posted line and
-	// title: with several, the thread may belong to a still-open finding.
+	// only when exactly one of overload's threads, open or resolved, has
+	// its path, posted line and title, and that thread is open: with
+	// several, the open one may belong to a still-open finding.
 	var threads []string
 	taken := map[string]bool{}
 	for _, finding := range fixed {
-		var candidates []string
-		for _, thread := range open {
-			if taken[thread.id] {
-				continue
-			}
+		var candidates []reviewThread
+		for _, thread := range known {
 			if finding.CommentID != 0 {
 				if thread.commentID == finding.CommentID {
-					candidates = append(candidates, thread.id)
+					candidates = append(candidates, thread)
 				}
 			} else if thread.path == finding.Path && thread.originalLine == finding.Line && strings.HasPrefix(thread.body, commentTitle(finding.Title)) {
-				candidates = append(candidates, thread.id)
+				candidates = append(candidates, thread)
 			}
 		}
-		if len(candidates) == 1 {
-			taken[candidates[0]] = true
-			threads = append(threads, candidates[0])
+		if len(candidates) == 1 && !candidates[0].resolved && !taken[candidates[0].id] {
+			taken[candidates[0].id] = true
+			threads = append(threads, candidates[0].id)
 		}
 	}
 	resolved := 0

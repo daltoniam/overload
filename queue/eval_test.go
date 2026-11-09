@@ -162,3 +162,12 @@ func TestRunEvalReportsCostAndRecall(t *testing.T) {
 		}
 	}
 }
+
+func TestRunEvalRefusesPullRequestsOfAnotherRepository(t *testing.T) {
+	// fixedHeads answers for any repository; its pull requests carry no
+	// base repository ID, so they do not belong to GitHub repository 42.
+	_, err := RunEval(context.Background(), nil, nil, fixedHeads{}, EvalPlan{Repository: "acme/api", GitHubID: 42, PRs: []int{7}, Workflows: []string{"sol"}})
+	if err == nil || !strings.Contains(err.Error(), "not a pull request of the repository") {
+		t.Fatalf("err = %v", err)
+	}
+}

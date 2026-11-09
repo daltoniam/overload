@@ -143,7 +143,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		result.Metrics["pr_context_chars"] = len(shared.text)
 		result.Metrics["contracts_symbols"] = len(shared.index.Changes)
 	}
-	again := planRereview(spec.Incremental, reviewablePaths(reviewable, routing.Skipped), shared.index.linked())
+	again := planRereview(spec.Incremental, reviewablePaths(reviewable, routing.Skipped), shared.index.linked(), parsed.touched())
 	again.carry(&routing)
 	paths := slices.DeleteFunc(reviewablePaths(reviewable, routing.Skipped), func(name string) bool { return again != nil && again.carried[name] })
 	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())

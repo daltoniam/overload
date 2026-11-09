@@ -23,8 +23,12 @@ type HeadReader interface {
 // as dry runs. Concurrency limits how many of the batch's runs are queued
 // or running at once (the server's own worker limit still applies).
 type EvalPlan struct {
-	Repository     string
-	RepositoryID   int64
+	Repository   string
+	RepositoryID int64
+	// GitHubID, when known, is the repository's GitHub ID: every pull
+	// request read must belong to it, so a same-named repository
+	// elsewhere is never evaluated by mistake.
+	GitHubID       int64
 	InstallationID int64
 	PRs            []int
 	Workflows      []string
@@ -61,6 +65,9 @@ func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pg
 		pr, _, err := reader.PullRequest(ctx, plan.InstallationID, plan.Repository, number)
 		if err != nil {
 			return nil, fmt.Errorf("read #%d: %w", number, err)
+		}
+		if plan.GitHubID != 0 && pr.GetBase().GetRepo().GetID() != plan.GitHubID {
+			return nil, fmt.Errorf("#%d is not a pull request of the repository overload knows as %s", number, plan.Repository)
 		}
 		head, base := pr.GetHead().GetSHA(), pr.GetBase().GetSHA()
 		if head == "" || base == "" {

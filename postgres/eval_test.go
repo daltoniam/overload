@@ -35,4 +35,14 @@ func TestEvalRepositoryIsExact(t *testing.T) {
 	if _, _, err := evalRepository(ctx, tx, EvalRequest{Repository: "nobody/" + repo}); err == nil {
 		t.Fatal("unknown repository accepted")
 	}
+	if id, err := store.RepositoryGitHubID(ctx, repoID); err != nil || id != 0 {
+		t.Fatalf("GitHub ID before the App reported it = %d %v", id, err)
+	}
+	githubID := time.Now().UnixNano() % 1_000_000_000_000
+	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET github_id=$2 WHERE id=$1`, repoID, githubID); err != nil {
+		t.Fatal(err)
+	}
+	if id, err := store.RepositoryGitHubID(ctx, repoID); err != nil || id != githubID {
+		t.Fatalf("GitHub ID = %d %v", id, err)
+	}
 }

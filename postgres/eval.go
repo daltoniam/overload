@@ -29,6 +29,19 @@ type EvalRequest struct {
 	Batch        string
 }
 
+// RepositoryGitHubID returns a repository's GitHub ID, or 0 when overload
+// has not learned it from the GitHub App.
+func (s *Store) RepositoryGitHubID(ctx context.Context, repoID int64) (int64, error) {
+	var githubID *int64
+	if err := s.Pool.QueryRow(ctx, `SELECT github_id FROM repositories WHERE id=$1`, repoID).Scan(&githubID); err != nil {
+		return 0, err
+	}
+	if githubID == nil {
+		return 0, nil
+	}
+	return *githubID, nil
+}
+
 // evalRepository finds the evaluated repository and its App installation.
 // A name that matches more than one repository (the same owner/name on
 // different hosts) is refused rather than guessed.

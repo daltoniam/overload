@@ -203,7 +203,14 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if proxy.Budget != nil {
 		reason, err := proxy.Budget(r.Context(), proxy.Pending())
 		if err != nil {
+			// Without knowing whether the budget allows it, the call is not
+			// made; the client may retry.
 			slog.Warn("model proxy could not check the budget", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"type":"budget_unavailable","message":"overload could not check its review budget; try again shortly"}}`)
+			return
 		}
 		if reason != "" {
 			w.Header().Set("Content-Type", "application/json")

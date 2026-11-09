@@ -83,12 +83,42 @@ func TestPriorFindingsStayOpenWithoutAVerdict(t *testing.T) {
 		{ID: 3, Path: "a.go", Title: "No verdict"},
 		{ID: 4, Path: "carried.go", Title: "On a carried file"},
 	}
-	plan := planRereview(&overload.Incremental{Unchanged: []string{"carried.go"}, Prior: prior}, []string{"a.go", "carried.go"}, nil)
+	plan := planRereview(&overload.Incremental{Unchanged: []string{"carried.go"}, Prior: prior}, []string{"a.go", "carried.go"}, nil, map[string]bool{"a.go": true, "carried.go": true})
 	verdicts := plan.verdicts([]overload.PriorVerdict{{ID: 1, Status: overload.PriorResolved}, {ID: 2, Status: overload.PriorStillPresent}})
 	metrics := map[string]any{}
 	plan.record(metrics, 1, verdicts)
 	carried, _ := metrics["carried_finding_ids"].([]int64)
 	if fmt.Sprint(carried) != "[2 3 4]" || metrics["prior_unjudged"] != 1 || metrics["prior_resolved"] != 1 {
 		t.Fatalf("carried = %v metrics = %+v", carried, metrics)
+	}
+}
+
+func TestPriorFindingsOnRevertedFilesAreResolved(t *testing.T) {
+	prior := []overload.PriorFinding{
+		{ID: 1, Path: "a.go", Title: "Still changed"},
+		{ID: 2, Path: "reverted.go", Title: "File no longer in the pull request"},
+		{ID: 3, Path: "skipped.lock", Title: "In the diff but not reviewable"},
+	}
+	inDiff := map[string]bool{"a.go": true, "skipped.lock": true}
+	plan := planRereview(&overload.Incremental{Prior: prior}, []string{"a.go"}, nil, inDiff)
+	if text := plan.priorText("reverted.go"); text != "" {
+		t.Fatalf("a finding on a reverted file was shown for review: %q", text)
+	}
+	verdicts := plan.verdicts([]overload.PriorVerdict{{ID: 1, Status: overload.PriorStillPresent}})
+	if fmt.Sprint(verdicts) != fmt.Sprint([]overload.PriorVerdict{{ID: 1, Status: overload.PriorStillPresent}, {ID: 2, Status: overload.PriorResolved}}) {
+		t.Fatalf("verdicts = %+v", verdicts)
+	}
+	metrics := map[string]any{}
+	plan.record(metrics, 1, verdicts)
+	carried, _ := metrics["carried_finding_ids"].([]int64)
+	if fmt.Sprint(carried) != "[1 3]" || metrics["prior_file_unchanged"] != 1 {
+		t.Fatalf("carried = %v metrics = %+v", carried, metrics)
+	}
+	parsed, err := parseReviewDiff("diff --git a/gone.go b/gone.go\ndeleted file mode 100644\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n" + utilPatch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if touched := parsed.touched(); !touched["gone.go"] || !touched["svc/util.py"] || len(touched) != 2 {
+		t.Fatalf("touched = %v", touched)
 	}
 }

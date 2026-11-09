@@ -2,6 +2,7 @@ package modelproxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"math"
 	"net/http"
@@ -48,9 +49,12 @@ func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
 	defer upstream.Close()
 	proxy := New("http://overload:8083")
 	var seen []float64
-	stop := false
+	stop, broken := false, false
 	proxy.Budget = func(_ context.Context, pending float64) (string, error) {
 		seen = append(seen, pending)
+		if broken {
+			return "", errors.New("database unavailable")
+		}
 		if stop {
 			return "monthly", nil
 		}
@@ -82,6 +86,12 @@ func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
 	if status := post(); status != http.StatusTooManyRequests || calls != 2 {
 		t.Fatalf("over budget: status %d after %d upstream calls", status, calls)
 	}
+	// A budget that cannot be checked refuses the call too.
+	stop, broken = false, true
+	if status := post(); status != http.StatusServiceUnavailable || calls != 2 {
+		t.Fatalf("budget check failed: status %d after %d upstream calls", status, calls)
+	}
+	broken = false
 	stop = false
 	// A revoked grant stops calls but its spend counts until the run has
 	// recorded it, including calls that finish after the revoke.
@@ -151,5 +161,16 @@ func TestUsageFromMultilineEvents(t *testing.T) {
 	usage, ok = parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\ndata: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n"))
 	if !ok || usage.Input != 7 || usage.Output != 3 {
 		t.Fatalf("events without blank lines = %+v %v", usage, ok)
+	}
+	// A long answer without blank lines between events does not crowd out
+	// the usage at its end.
+	meter := newUsageMeter(overload.ProviderOpenAICompat, "text/event-stream")
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("x", 4000) + "\"}}]}\n")
+	for range maxEventLine/len(chunk) + 50 {
+		meter.write(chunk)
+	}
+	meter.write([]byte("data: {\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":80}}\n"))
+	if usage, exact := meter.usage(); !exact || usage.Input != 900 || usage.Output != 80 {
+		t.Fatalf("long separator-free stream = %+v exact = %v", usage, exact)
 	}
 }

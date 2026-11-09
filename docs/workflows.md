@@ -116,7 +116,8 @@ Webhooks) and the head gets an `overload` commit status of `success`
 ("Overload skipped: monthly review budget reached"), so a required check
 does not block merges. `--skip-status error` blocks them instead. As a
 backstop, the model proxy meters every sandboxed call and answers 429
-once a global cap is passed by more than 5%. The dashboard and the log
+once a global cap is passed by more than 5%, and 503 while it cannot read
+the budget. The dashboard and the log
 warn at 80% and 100% of a cap.
 
 ## Whole pull request context

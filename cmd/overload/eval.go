@@ -199,6 +199,12 @@ func evaluate(args []string) error {
 	if installation < 0 {
 		return fmt.Errorf("%s is not a repository overload knows; add it first", options.repo)
 	}
+	// Evaluation reads pull requests from GitHub. When overload knows the
+	// repository's GitHub ID, every pull request read must belong to it.
+	githubID, err := store.RepositoryGitHubID(ctx, repositoryID)
+	if err != nil {
+		return err
+	}
 	var reader queue.HeadReader
 	if installation > 0 {
 		client, err := queue.AppClient(ctx, store)
@@ -225,7 +231,7 @@ func evaluate(args []string) error {
 	}
 	batch := fmt.Sprintf("eval-%s", time.Now().UTC().Format("20060102T150405Z"))
 	fmt.Fprintf(os.Stderr, "Evaluating %s on %s; the overload server runs the reviews as dry runs (batch %s)\n", strings.Join(options.workflows, ", "), overload.Plural(len(options.prs), "pull request"), batch)
-	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: options.repo, RepositoryID: repositoryID, InstallationID: installation, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
+	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: options.repo, RepositoryID: repositoryID, GitHubID: githubID, InstallationID: installation, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
 	if err != nil {
 		return err
 	}

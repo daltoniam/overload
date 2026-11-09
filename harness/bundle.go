@@ -76,6 +76,21 @@ func (parsed reviewDiff) paths() []string {
 	return paths
 }
 
+// touched lists every path the diff changes, old paths of renames and
+// deleted files included.
+func (parsed reviewDiff) touched() map[string]bool {
+	touched := map[string]bool{}
+	for _, section := range parsed.sections {
+		if section.path != "" {
+			touched[section.path] = true
+		}
+		if old := oldPath(section.patch); old != "" {
+			touched[old] = true
+		}
+	}
+	return touched
+}
+
 // tooLarge lists files whose diff alone exceeds budget characters; they
 // cannot be reviewed.
 func (parsed reviewDiff) tooLarge(budget int) map[string]bool {

@@ -153,8 +153,20 @@ func (meter *usageMeter) eventLine(line string) {
 		return
 	}
 	data = strings.TrimPrefix(data, " ")
+	// A data line that is a whole JSON value starts no multi-line event:
+	// it is read now, so streams that omit blank lines between events
+	// never accumulate.
+	if len(meter.data) == 0 && json.Valid([]byte(data)) {
+		meter.parse(data)
+		return
+	}
 	if meter.dataSize+len(data) > maxEventLine {
-		meter.dataSkip = true
+		// Too large to keep: read what was gathered line by line and drop
+		// the rest of this event.
+		for _, line := range meter.data {
+			meter.parse(line)
+		}
+		meter.data, meter.dataSize, meter.dataSkip = nil, 0, true
 		return
 	}
 	meter.data = append(meter.data, data)

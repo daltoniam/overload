@@ -716,10 +716,12 @@ never approves. Decisions (2026-11-09):
   when a review is queued: spend plus the expected cost of queued and
   running runs (scheduled jobs included for the global cap) plus this
   one. Spend is recorded as timestamped additions (`run_costs`), so it
-  counts in the day and month it was incurred. The model proxy meters sandboxed calls from their
-  usage and returns 429 past a global cap plus 5% as the backstop. A
-  budget skip sets a `success` status by default (configurable to
-  `error`) so a required check does not block merges.
+  counts in the day and month it was incurred. The model proxy meters
+  sandboxed calls from their usage and returns 429 past a global cap
+  plus 5% as the backstop (503 when the budget cannot be read, so
+  spending never goes unchecked). A budget skip sets a `success` status
+  by default (configurable to `error`) so a required check does not
+  block merges.
 - **Context.** The contracts index is built in Go (portable and testable,
   and the same in host mode where ripgrep may be missing), in one pass
   over the head with a combined regular expression and size limits. The
