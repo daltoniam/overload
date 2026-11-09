@@ -5,3 +5,4 @@ coverage.out
 .crush/
 .local/
 /overload
+deploy/compose/overload.env

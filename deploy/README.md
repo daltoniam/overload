@@ -18,6 +18,9 @@ present (the formula depends on `postgresql@17`). Otherwise it downloads
 against `checksums.txt` and installs it into `~/.local/bin`
 (`OVERLOAD_INSTALL_DIR`, `OVERLOAD_VERSION`, `OVERLOAD_NO_BREW=1` and
 `OVERLOAD_INSTALL_ARGS` change this). It then runs `overload install`.
+Releases built with Developer ID credentials also carry a notarized
+`overload_darwin_universal.pkg` that installs `/usr/local/bin/overload`
+(see [macOS package](#macos-package)); run `overload install` after it.
 
 `overload install`:
 
@@ -1038,9 +1041,38 @@ users or a public issuer URL. Match `sub`
 
 `overload install` on Linux writes the configuration and database (with
 `--postgres-bin` or `--database-url`) and prints the `overload serve` command;
-it does not manage services. Run that under systemd or a container. The app
-image is built from `deploy/images/app/Dockerfile` and published to
-`ghcr.io/daltoniam/overload` on release tags.
+it does not manage services. Run that under systemd
+(`deploy/systemd/overload.service`) or a container. The app image is built
+from `deploy/images/app/Dockerfile` and published to
+`ghcr.io/daltoniam/overload` (amd64 and arm64, with an SBOM and build
+provenance) on release tags. It runs as a non-root user, checks its own
+health with `overload healthcheck`, and shuts down cleanly on SIGTERM.
+
+### Docker Compose
+
+`deploy/compose/compose.yaml` runs the control plane and Postgres 17 on one
+host:
+
+```sh
+cd deploy/compose
+printf 'OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\n' \
+  "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+docker compose up -d --wait
+```
+
+The UI listens on `127.0.0.1:8082` (`OVERLOAD_PORT`) as `admin`
+(`OVERLOAD_UI_USER`) with the password from `.env`. Use letters and digits
+for the database password, since it goes into a URL. Other settings (model
+API keys, `OVERLOAD_OIDC_*`, `OVERLOAD_BASE_URL`, `OVERLOAD_ENABLE_POSTING`)
+go in `overload.env` next to the compose file. The app container has a
+read-only root, no capabilities and only `/tmp` writable; data lives in the
+`postgres_data` volume, so `docker compose down` keeps it and `down -v`
+deletes it. `OVERLOAD_IMAGE` pins a release (`ghcr.io/daltoniam/overload:0.6.3`);
+`docker compose up --build` builds from the checkout instead.
+
+`make compose-test` (and a CI job) starts the file under a throwaway project
+and port and checks health, login, `install-check`, a clean stop on SIGTERM
+and a saved model surviving the project being recreated.
 
 ## Kubernetes
 
@@ -1092,9 +1124,40 @@ arm64 (`overload_<os>_<arch>.tar.gz`, unversioned names so `install.sh` can
 use `releases/latest/download`) and `checksums.txt`, publishes the GitHub
 release, and updates `Formula/overload.rb` in `daltoniam/homebrew-tap` using
 the `RELEASE_TOKEN` secret. The same workflow pushes multi-arch app images to
-GHCR. `make release-snapshot` builds the archives locally. macOS binaries are
-ad-hoc signed by the Go linker, which is enough for curl and Homebrew
-installs; a downloadable `.pkg` would need Developer ID signing.
+GHCR. `make release-snapshot` builds the archives locally. macOS binaries in
+the archives are ad-hoc signed, which is enough for curl and Homebrew
+installs.
+
+### macOS package
+
+`make pkg` builds `dist/pkg/overload_darwin_universal.pkg`: a universal
+(arm64 and x86_64) binary installed to `/usr/local/bin/overload`, plus a
+`.sha256` file, and checks the payload, architectures and version with
+`deploy/macos/check-pkg.sh`. After installing it, run `overload install` as
+usual. Without credentials the package is unsigned: fine for
+`sudo installer -pkg`, but Gatekeeper blocks it when downloaded with a
+browser. With these variables `deploy/macos/build-pkg.sh` signs the binary
+with the hardened runtime, signs the package, notarizes it with `notarytool`
+and staples the ticket:
+
+| Variable | Value |
+| --- | --- |
+| `MACOS_SIGN_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
+| `MACOS_INSTALLER_IDENTITY` | `Developer ID Installer: Name (TEAMID)` |
+| `MACOS_NOTARY_PROFILE` | a `xcrun notarytool store-credentials` profile, or |
+| `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD` | an Apple ID with an app-specific password |
+| `MACOS_KEYCHAIN` | the keychain holding the identities (optional) |
+
+The release workflow builds the package on a macOS runner and attaches it to
+the GitHub release when the repository has the `MACOS_SIGN_IDENTITY` and
+`MACOS_INSTALLER_IDENTITY` variables and the `MACOS_SIGN_P12_BASE64`,
+`MACOS_INSTALLER_P12_BASE64`, `MACOS_P12_PASSWORD`, `MACOS_NOTARY_APPLE_ID`,
+`MACOS_NOTARY_TEAM_ID` and `MACOS_NOTARY_PASSWORD` secrets
+(`deploy/macos/import-certs.sh` loads the certificates into a throwaway
+keychain). It then requires a Developer ID signature, the hardened runtime,
+a stapled ticket and Gatekeeper approval before uploading. Without them the
+release has no package and the job says so. The macOS CI job builds the
+unsigned package, installs it and checks the installed version.
 
 ## Release gates
 
@@ -1103,5 +1166,8 @@ installs; a downloadable `.pkg` would need Developer ID signing.
 - [x] GitHub App and repository sync against a real App and repository.
 - [x] Posting to a real pull request.
 - [ ] A published release and Homebrew formula, installed on a clean Mac.
+- [x] macOS package built, installed and checked in CI (unsigned).
+- [ ] A signed and notarized package, which needs Developer ID credentials.
+- [x] Control-plane container under Docker Compose in CI.
 - [ ] A reaper for sandbox claims left by a crashed worker.
 - [ ] Backup, restore and upgrade tests.

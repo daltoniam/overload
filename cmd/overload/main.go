@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/daltoniam/overload/github"
@@ -142,7 +143,7 @@ func serve() error {
 	if err := httpapi.ValidateAuth(); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	store, err := waitForDatabase(ctx, 2*time.Minute)
 	if err != nil {

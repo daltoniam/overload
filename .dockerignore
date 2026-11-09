@@ -5,3 +5,5 @@
 .crush
 dist
 coverage.out
+deploy/compose/.env
+deploy/compose/overload.env

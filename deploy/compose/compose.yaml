@@ -1,0 +1,59 @@
+# The overload control plane and its Postgres database on one Docker host.
+#
+#   cd deploy/compose
+#   printf 'OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\n' \
+#     "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+#   docker compose up -d --wait
+#
+# The UI listens on 127.0.0.1:8082 (OVERLOAD_PORT); put a TLS proxy or a
+# Cloudflare Tunnel in front of it for a team, and set OVERLOAD_BASE_URL to
+# the address people use. Model API keys, OIDC settings and other overload
+# variables go in overload.env next to this file.
+name: overload
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: overload
+      POSTGRES_USER: overload
+      POSTGRES_PASSWORD: ${OVERLOAD_POSTGRES_PASSWORD:?set OVERLOAD_POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U overload -d overload"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  overload:
+    image: ${OVERLOAD_IMAGE:-ghcr.io/daltoniam/overload:latest}
+    build:
+      context: ../..
+      dockerfile: deploy/images/app/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: overload.env
+        required: false
+    environment:
+      DATABASE_URL: postgres://overload:${OVERLOAD_POSTGRES_PASSWORD}@postgres:5432/overload?sslmode=disable
+      OVERLOAD_ADDR: 0.0.0.0:8082
+      OVERLOAD_UI_USER: ${OVERLOAD_UI_USER:-admin}
+      OVERLOAD_UI_PASSWORD: ${OVERLOAD_UI_PASSWORD:?set OVERLOAD_UI_PASSWORD in .env}
+      OVERLOAD_BASE_URL: ${OVERLOAD_BASE_URL:-http://localhost:${OVERLOAD_PORT:-8082}}
+    ports:
+      - "127.0.0.1:${OVERLOAD_PORT:-8082}:8082"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres_data:

@@ -186,6 +186,8 @@ overload/
   deploy/kind/         kind config + setup scripts
   deploy/k8s/          kustomize base + overlays (dev, prod): overload, postgres (dev only), llama.cpp, agent-sandbox resources, NetworkPolicies
   deploy/images/       Dockerfiles for overload and overload-agent
+  deploy/compose/      Docker Compose file for the control plane and Postgres on one host
+  deploy/macos/        macOS installer package build, check and CI signing scripts
   testdata/            diffs, recorded model responses, fixture repos
 ```
 
@@ -1516,6 +1518,6 @@ plan and deploy/README.md.
     full JACCL meshes of two to four nodes; larger rings are not modelled.
     Running models across a real Thunderbolt 5 cluster still waits for the
     hardware spike in 16.3.
-11. **Packaging** (16.4 item 5): a signed and notarized macOS package when
+11. **Packaging** (16.4 item 5; done): a signed and notarized macOS package when
     signing credentials are configured, and a published control-plane
     container image.
