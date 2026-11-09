@@ -657,28 +657,28 @@ func TestServices(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &fakeManager{written: map[string]launchd.Agent{}}
-	if err := store.Serve(manager, launchd.Agent{Label: "dev.overload.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.overload.model.recursive-flint", Port: 9000}); err == nil || !strings.Contains(err.Error(), "already in use") {
+	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: "dev.overload.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.overload.model.recursive-flint", Port: 9000}); err == nil || !strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("busy port: %v", err)
 	}
-	if err := store.Serve(manager, agent, service); err != nil {
+	if err := store.Serve(context.Background(), manager, agent, service); err != nil {
 		t.Fatal(err)
 	}
 	busy[8080] = true
-	if err := store.Serve(manager, agent, service); err != nil {
+	if err := store.Serve(context.Background(), manager, agent, service); err != nil {
 		t.Fatalf("restarting a model's own service: %v", err)
 	}
 	manager.stopped = nil
-	if err := store.Serve(manager, launchd.Agent{Label: "dev.second.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.second.model.recursive-flint", Port: 8081, Files: service.Files}); err == nil || !strings.Contains(err.Error(), "another install") {
+	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: "dev.second.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.second.model.recursive-flint", Port: 8081, Files: service.Files}); err == nil || !strings.Contains(err.Error(), "another install") {
 		t.Fatalf("a second install took over a served model: %v", err)
 	}
 	other := Service{ID: "other", Label: "dev.overload.model.other", Port: 8080}
-	if err := store.Serve(manager, launchd.Agent{Label: other.Label}, other); err == nil {
+	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: other.Label}, other); err == nil {
 		t.Fatal("two services on one port")
 	}
 	if len(manager.stopped) != 0 {
 		t.Fatalf("a refused serve stopped %v", manager.stopped)
 	}
-	if err := store.Serve(manager, launchd.Agent{Label: "dev.overload.model.missing"}, Service{ID: "missing", Port: 8095}); err == nil || !strings.Contains(err.Error(), "not downloaded") {
+	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: "dev.overload.model.missing"}, Service{ID: "missing", Port: 8095}); err == nil || !strings.Contains(err.Error(), "not downloaded") {
 		t.Fatalf("served a model that is not downloaded: %v", err)
 	}
 	if _, err := store.Remove(model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
@@ -686,24 +686,24 @@ func TestServices(t *testing.T) {
 	}
 	manager.writeErr = errors.New("disk full")
 	manager.started = nil
-	if err := store.Serve(manager, agent, service); err == nil || len(manager.started) != 1 {
+	if err := store.Serve(context.Background(), manager, agent, service); err == nil || len(manager.started) != 1 {
 		t.Fatalf("a failed rewrite did not restart the previous service: %v %v", err, manager.started)
 	}
 	if services, _ := store.Services(); len(services) != 1 || services[0].Port != service.Port {
 		t.Fatalf("a failed rewrite changed the service list: %+v", services)
 	}
-	if err := store.Serve(manager, launchd.Agent{Label: service.Label}, Service{ID: "other-model", Label: service.Label, Port: 8099}); err == nil || !strings.Contains(err.Error(), "already used") {
+	if err := store.Serve(context.Background(), manager, launchd.Agent{Label: service.Label}, Service{ID: "other-model", Label: service.Label, Port: 8099}); err == nil || !strings.Contains(err.Error(), "already used") {
 		t.Fatalf("two models under one service name: %v", err)
 	}
 	manager.writeErr = nil
 	manager.startErr = errors.New("boom")
-	if err := store.Serve(manager, agent, service); err == nil || manager.removed[len(manager.removed)-1] != agent.Label {
+	if err := store.Serve(context.Background(), manager, agent, service); err == nil || manager.removed[len(manager.removed)-1] != agent.Label {
 		t.Fatalf("a service that failed to start was not removed: %v %v", err, manager.removed)
 	}
 	if services, err := store.Services(); err != nil || len(services) != 0 {
 		t.Fatalf("a failed restart kept its record: %+v %v", services, err)
 	}
-	if err := store.StopService(manager, "recursive-flint"); err == nil {
+	if err := store.StopService(context.Background(), manager, "recursive-flint"); err == nil {
 		t.Fatal("stopped a missing service")
 	}
 }
@@ -899,7 +899,7 @@ func TestServeRefusesAnAgentBuiltForOldFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := Service{ID: installed.ID, Quant: installed.Quant, Label: "dev.overload.model.recursive-flint", Port: 8085, Files: []string{filepath.Join(store.Dir, "a/flint", testRevision, "flint-Q4_K_M.gguf")}}
-	if err := store.Serve(&fakeManager{written: map[string]launchd.Agent{}}, launchd.Agent{Label: stale.Label}, stale); err == nil || !strings.Contains(err.Error(), "changed") {
+	if err := store.Serve(context.Background(), &fakeManager{written: map[string]launchd.Agent{}}, launchd.Agent{Label: stale.Label}, stale); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("served an agent built for replaced files: %v", err)
 	}
 }
@@ -931,6 +931,9 @@ func TestUpdateDownloadsOnlyChangedFiles(t *testing.T) {
 	if data, _ := os.ReadFile(store.FilePath(installed, installed.Files[0])); string(data) != string(first) {
 		t.Fatal("the unchanged part was not carried over")
 	}
+	if used, _, err := store.Usage(); err != nil || used > int64(len(first)+len(second))+4096 {
+		t.Fatalf("usage counted linked files twice: %d, %v", used, err)
+	}
 	if _, err := os.Stat(filepath.Join(store.Dir, "test/flint-GGUF", testRevision)); !os.IsNotExist(err) {
 		t.Fatal("the old revision directory was left behind")
 	}
@@ -951,7 +954,13 @@ func TestReuseReplacesAStaleDestination(t *testing.T) {
 		}
 	}
 	present := map[string]bool{}
-	store.reuseFiles([]Installed{old}, current, present)
+	links := store.reuseFiles([]Installed{old}, current, present)
+	if data, _ := os.ReadFile(store.FilePath(current, file)); len(links) != 1 || string(data) != "stale bytes!" {
+		t.Fatal("reuse touched the new revision before the downloads verified")
+	}
+	if err := linkInto(links[0].source, links[0].destination, store.partialPath(current, file)); err != nil {
+		t.Fatal(err)
+	}
 	data, _ := os.ReadFile(store.FilePath(current, file))
 	if !present[file.Path] || string(data) != string(content) {
 		t.Fatalf("stale destination kept: present=%v data=%q", present[file.Path], data)

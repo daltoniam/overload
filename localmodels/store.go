@@ -121,7 +121,7 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	present := store.presentFiles(manifest, installed, progress)
-	store.reuseFiles(manifest, installed, present)
+	links := store.reuseFiles(manifest, installed, present)
 	if err := store.checkSpace(installed, present); err != nil {
 		return Installed{}, err
 	}
@@ -139,6 +139,11 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 			return Installed{}, fmt.Errorf("%s: %w", file.Path, err)
 		}
 		staged = append(staged, [2]string{partial, store.FilePath(installed, file)})
+	}
+	for _, link := range links {
+		if err := linkInto(link.source, link.destination, store.partialPath(installed, link.file)); err != nil {
+			return Installed{}, fmt.Errorf("reuse %s from the installed revision: %w", link.file.Path, err)
+		}
 	}
 	for _, step := range staged {
 		if err := os.Rename(step[0], step[1]); err != nil {
@@ -212,11 +217,12 @@ func (store Store) presentFiles(manifest []Installed, installed Installed, progr
 	return present
 }
 
-// reuseFiles links files an installed revision of the same repository
-// already has with the same digest, and moves unfinished downloads of the
+// reuseFiles finds files an installed revision of the same repository
+// already has with the same digest, to hard-link into the new revision
+// once every download has verified, and moves unfinished downloads of the
 // same file from older revision directories, so updating to a revision
 // that changed one file downloads only that file.
-func (store Store) reuseFiles(manifest []Installed, installed Installed, present map[string]bool) {
+func (store Store) reuseFiles(manifest []Installed, installed Installed, present map[string]bool) []reuseLink {
 	byDigest := map[string]string{}
 	for _, entry := range manifest {
 		if entry.Repository != installed.Repository {
@@ -226,46 +232,71 @@ func (store Store) reuseFiles(manifest []Installed, installed Installed, present
 			byDigest[file.SHA256] = store.FilePath(entry, file)
 		}
 	}
+	var links []reuseLink
 	for _, file := range installed.Files {
 		if present[file.Path] {
 			continue
 		}
 		destination := store.FilePath(installed, file)
-		if source, ok := byDigest[file.SHA256]; ok && source != destination && linkInto(source, destination, file.Size) {
-			present[file.Path] = true
-			continue
-		}
-		partial := store.partialPath(installed, file)
-		if _, err := os.Stat(partial); err == nil {
-			continue
-		}
-		matches, _ := filepath.Glob(filepath.Join(store.Dir, filepath.FromSlash(installed.Repository), "*", filepath.FromSlash(file.Path)+"."+file.SHA256[:16]+partialSuffix))
-		for _, match := range matches {
-			if match != partial && os.MkdirAll(filepath.Dir(partial), 0o755) == nil && os.Rename(match, partial) == nil {
-				break
+		if source, ok := byDigest[file.SHA256]; ok && source != destination {
+			if info, err := os.Stat(source); err == nil && info.Size() == file.Size {
+				links = append(links, reuseLink{source, destination, file})
+				present[file.Path] = true
+				continue
 			}
+		}
+		store.adoptPartial(installed, file)
+	}
+	return links
+}
+
+// reuseLink is a file to hard-link from an installed revision.
+type reuseLink struct {
+	source, destination string
+	file                File
+}
+
+// adoptPartial moves an unfinished download of file with the same digest
+// from another revision directory of the repository. Names are compared
+// literally.
+func (store Store) adoptPartial(installed Installed, file File) {
+	partial := store.partialPath(installed, file)
+	if _, err := os.Stat(partial); err == nil {
+		return
+	}
+	repository := filepath.Join(store.Dir, filepath.FromSlash(installed.Repository))
+	revisions, err := os.ReadDir(repository)
+	if err != nil {
+		return
+	}
+	for _, revision := range revisions {
+		if !revision.IsDir() || revision.Name() == installed.Revision {
+			continue
+		}
+		candidate := store.partialPath(Installed{Repository: installed.Repository, Revision: revision.Name()}, file)
+		if _, err := os.Stat(candidate); err == nil && os.MkdirAll(filepath.Dir(partial), 0o755) == nil && os.Rename(candidate, partial) == nil {
+			return
 		}
 	}
 }
 
-// linkInto hard-links source to destination through a temporary name and a
-// rename, so a stale or corrupt destination is replaced and a destination
-// is never half-written. A hard link survives the source being deleted.
-func linkInto(source, destination string, size int64) bool {
-	info, err := os.Stat(source)
-	if err != nil || info.Size() != size || os.MkdirAll(filepath.Dir(destination), 0o755) != nil {
-		return false
+// linkInto hard-links source to destination through temporary, a name
+// clean removes if this is interrupted, and a rename, so a stale
+// destination is replaced and never half-written. A hard link survives the
+// source being deleted.
+func linkInto(source, destination, temporary string) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
 	}
-	temporary := destination + ".link"
 	_ = os.Remove(temporary)
-	if os.Link(source, temporary) != nil {
-		return false
+	if err := os.Link(source, temporary); err != nil {
+		return err
 	}
-	if os.Rename(temporary, destination) != nil {
+	if err := os.Rename(temporary, destination); err != nil {
 		_ = os.Remove(temporary)
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 // release deals with the files of replaced entries that no installed entry
@@ -298,14 +329,29 @@ func (store Store) release(manifest, replaced []Installed) (int64, int, error) {
 					kept++
 				}
 			default:
+				last := linkCount(path) <= 1
 				if os.Remove(path) == nil {
-					freed += file.Size
+					if last {
+						freed += file.Size
+					}
 					store.removeEmptyParents(filepath.Dir(path))
 				}
 			}
 		}
 	}
 	return freed, kept, store.writeRetired(retired)
+}
+
+// linkCount is the number of hard links to path; 0 when unknown.
+func linkCount(path string) uint64 {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return uint64(stat.Nlink)
+	}
+	return 1
 }
 
 func loadedPaths(services []Service) map[string]bool {
@@ -725,6 +771,7 @@ func (store Store) Clean() (int64, error) {
 // Usage returns the bytes the store's files take, including partial
 // downloads, and the bytes free on its volume.
 func (store Store) Usage() (used, free int64, err error) {
+	seen := map[[2]uint64]bool{}
 	err = filepath.WalkDir(store.Dir, func(_ string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
@@ -736,6 +783,15 @@ func (store Store) Usage() (used, free int64, err error) {
 			info, err := entry.Info()
 			if err != nil {
 				return err
+			}
+			// Revisions share unchanged files as hard links; count each
+			// file once.
+			if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+				key := [2]uint64{uint64(stat.Dev), stat.Ino}
+				if seen[key] {
+					return nil
+				}
+				seen[key] = true
 			}
 			used += info.Size()
 		}

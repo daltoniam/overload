@@ -249,7 +249,7 @@ func (command modelsCommand) run(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := store.StopService(command.manager, flags.positional[0]); err != nil {
+		if err := store.StopService(ctx, command.manager, flags.positional[0]); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintf(command.out, "Stopped %s\n", flags.positional[0])
@@ -434,7 +434,7 @@ func (command modelsCommand) serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := store.Serve(command.manager, agent, service); err != nil {
+	if err := store.Serve(ctx, command.manager, agent, service); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(command.out, "Started %s %s at %s; waiting for it to load (logs in %s)\n", model.ID, installed.Quant, service.BaseURL(), agent.Log)

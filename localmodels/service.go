@@ -136,10 +136,10 @@ var PortInUse = func(port int) bool {
 // Serve installs and starts the service, replacing an earlier one for the
 // same model, and records it. It refuses a port another service or
 // program uses, and removes the service again if it cannot start.
-func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Service) error {
+func (store Store) Serve(ctx context.Context, manager ServiceManager, agent launchd.Agent, service Service) error {
 	// A pull holds this lock briefly while it records a download; wait
 	// for it rather than fail.
-	unlock, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
+	unlock, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return err
 	}
@@ -230,8 +230,8 @@ func (store Store) filesPresent(service Service) error {
 }
 
 // StopService removes the model's service.
-func (store Store) StopService(manager ServiceManager, id string) error {
-	unlock, err := store.lockWait(context.Background(), ".services.lock", time.Minute)
+func (store Store) StopService(ctx context.Context, manager ServiceManager, id string) error {
+	unlock, err := store.lockWait(ctx, ".services.lock", time.Minute)
 	if err != nil {
 		return err
 	}
