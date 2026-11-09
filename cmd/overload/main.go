@@ -239,6 +239,13 @@ func (store serverStore) ReviewCommand(ctx context.Context, event github.Comment
 	if err != nil {
 		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
 	}
+	allowed, err := reader.CanWrite(ctx, event.Installation.ID, event.Repository.FullName, event.Comment.User.Login)
+	if err != nil {
+		return 0, fmt.Errorf("%w: cannot check %s's permission: %v", queue.ErrReviewNotQueued, event.Comment.User.Login, err)
+	}
+	if !allowed {
+		return 0, fmt.Errorf("%w: %s cannot write to %s", queue.ErrReviewNotQueued, event.Comment.User.Login, event.Repository.FullName)
+	}
 	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, event.Repository.FullName, event.Issue.Number, true)
 }
 

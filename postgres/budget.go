@@ -157,7 +157,8 @@ const expectedCostSQL = `COALESCE(NULLIF((%[1]s->>'max_run_cost_usd')::float8, 0
 // checkBudget decides whether a review expected to cost expected fits
 // every budget that applies to the repository: what was spent this month
 // (or today, UTC) plus what queued and running runs are expected to cost
-// plus this run must stay within each cap.
+// plus this run must stay within each cap. Every kind of run counts
+// toward the global budget, scheduled jobs included.
 //
 // replaces names the pull request and head being queued: its queued
 // reviews of other heads are about to be superseded, so they do not count
@@ -188,10 +189,10 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 			}
 			check := BudgetCheck{Period: period.name, Scope: budget.Repository, Cap: *period.cap, Expected: expected, SkipStatus: budget.SkipStatus}
 			scoped := budget.Repository != ""
-			if err := q.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd), 0) FROM runs WHERE cost_usd IS NOT NULL AND `+spentAt+` >= $1 AND `+spentAt+` <= $2 AND (NOT $3 OR repository_id = $4)`, period.since, now, scoped, repoID).Scan(&check.Spent); err != nil {
+			if err := q.QueryRow(ctx, `SELECT COALESCE(sum(c.usd), 0) FROM run_costs c JOIN runs r ON r.id = c.run_id WHERE c.at >= $1 AND c.at <= $2 AND (NOT $3 OR r.repository_id = $4)`, period.since, now, scoped, repoID).Scan(&check.Spent); err != nil {
 				return BudgetCheck{}, err
 			}
-			pending := fmt.Sprintf(`SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND r.kind = 'pr_review' AND (NOT $1 OR r.repository_id = $2) AND NOT (r.status = 'queued' AND r.repository_id = $2 AND r.pr_number = $3 AND r.head_sha <> $4)`, "r.config_snapshot")
+			pending := fmt.Sprintf(`SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND (NOT $1 OR r.repository_id = $2) AND NOT COALESCE(r.status = 'queued' AND r.repository_id = $2 AND r.pr_number = $3 AND r.head_sha <> $4, false)`, "r.config_snapshot")
 			if err := q.QueryRow(ctx, pending, scoped, repoID, replaces.pr, replaces.head).Scan(&check.Pending); err != nil {
 				return BudgetCheck{}, err
 			}

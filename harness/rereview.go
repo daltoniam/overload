@@ -128,20 +128,28 @@ func (plan *rereview) record(metrics map[string]any, reviewed int, verdicts []ov
 			still++
 		}
 	}
-	// Findings on carried files and findings still present stay open:
-	// they count toward the review's decision without being posted again.
-	carried := []int64{}
-	for _, finding := range plan.spec.Prior {
-		if plan.carried[finding.Path] {
-			carried = append(carried, finding.ID)
-		}
-	}
+	// Every earlier finding stays open unless the re-review judged it
+	// resolved: findings on carried files, findings still present, and
+	// findings the model gave no verdict for count toward the review's
+	// decision without being posted again.
+	judged := map[int64]string{}
 	for _, verdict := range verdicts {
-		if verdict.Status == overload.PriorStillPresent {
-			carried = append(carried, verdict.ID)
+		judged[verdict.ID] = verdict.Status
+	}
+	carried := []int64{}
+	unjudged := 0
+	for _, finding := range plan.spec.Prior {
+		status, ok := judged[finding.ID]
+		if status == overload.PriorResolved {
+			continue
 		}
+		if !ok && !plan.carried[finding.Path] {
+			unjudged++
+		}
+		carried = append(carried, finding.ID)
 	}
 	metrics["carried_finding_ids"] = carried
+	metrics["prior_unjudged"] = unjudged
 	metrics["since_run_id"] = plan.spec.SinceRunID
 	metrics["rereviewed_files"] = reviewed
 	metrics["carried_files"] = len(plan.carried)

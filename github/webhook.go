@@ -111,7 +111,9 @@ func ParseComment(body []byte) (CommentEvent, error) {
 
 // RequestsReview reports whether the comment asks for a review: a new
 // comment on a pull request whose first line is the review command, from
-// someone with write access (owner, member or collaborator), not a bot.
+// an owner, member or collaborator, not a bot. The association is only a
+// first filter: an organization member may lack write access, so the
+// commenter's repository permission must still be checked (CanWrite).
 func (event CommentEvent) RequestsReview() bool {
 	if event.Action != "created" || len(event.Issue.PullRequest) == 0 || string(event.Issue.PullRequest) == "null" || event.Comment.User.Type == "Bot" {
 		return false

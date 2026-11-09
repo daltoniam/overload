@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 
@@ -107,8 +108,8 @@ func usageOf(usage fantasy.Usage) overload.Usage {
 // above most real counts.
 const charsPerToken = 3
 
-// estimate is an upper estimate of one call's cost: the whole prompt as
-// uncached input and the full output budget.
+// estimate is an upper estimate of one model call's cost: the whole
+// prompt as uncached input and the full output budget.
 func (plan reasoningPlan) estimate(call fantasy.AgentCall) (float64, bool) {
 	chars := plan.systemChars + len(call.Prompt)
 	for _, message := range call.Messages {
@@ -118,15 +119,43 @@ func (plan reasoningPlan) estimate(call fantasy.AgentCall) (float64, bool) {
 			}
 		}
 	}
-	usd, priced := plan.pricing.Cost(overload.Usage{Input: int64(chars/charsPerToken + 1), Output: plan.maxTokens})
-	return usd * float64(max(plan.steps, 1)), priced
+	return plan.estimateChars(chars)
+}
+
+func (plan reasoningPlan) estimateChars(chars int) (float64, bool) {
+	return plan.pricing.Cost(overload.Usage{Input: int64(chars/charsPerToken + 1), Output: plan.maxTokens})
+}
+
+// messageChars measures a step's prompt, tool calls and results included.
+// The JSON form is a little longer than the text, which keeps the
+// estimate on the high side.
+func messageChars(messages []fantasy.Message) int {
+	data, err := json.Marshal(messages)
+	if err != nil {
+		chars := 0
+		for _, message := range messages {
+			for _, part := range message.Content {
+				if text, ok := part.(fantasy.TextPart); ok {
+					chars += len(text.Text)
+				}
+			}
+		}
+		return chars
+	}
+	return len(data)
 }
 
 // call runs one model call through the budget: it reserves room, makes the
-// call, and records what it used.
+// call, and records what it used. A call that may take several steps
+// (with tools) reserves and settles each step on its own, estimated from
+// that step's prompt, so the context growing with earlier answers and
+// tool results is accounted for before each step starts.
 func (m *meter) call(ctx context.Context, plan reasoningPlan, call fantasy.AgentCall, generate func(context.Context, fantasy.AgentCall) (*fantasy.AgentResult, error)) (*fantasy.AgentResult, error) {
 	if m == nil {
 		return generate(ctx, call)
+	}
+	if plan.steps > 1 {
+		return m.callSteps(ctx, plan, call, generate)
 	}
 	estimate, priced := plan.estimate(call)
 	if err := m.run.reserve(estimate, priced); err != nil {
@@ -151,10 +180,68 @@ func (m *meter) call(ctx context.Context, plan reasoningPlan, call fantasy.Agent
 		usage.Calls = 1
 		spend = spend.Charge(plan.pricing, usage)
 	}
+	m.record(usage, spend)
+	m.run.settle(estimate, priced, usage, spend)
+	return response, err
+}
+
+// callSteps is call for a generate that may take several model steps.
+func (m *meter) callSteps(ctx context.Context, plan reasoningPlan, call fantasy.AgentCall, generate func(context.Context, fantasy.AgentCall) (*fantasy.AgentResult, error)) (*fantasy.AgentResult, error) {
+	_, priced := plan.estimateChars(0)
+	reserved, inFlight, settled := 0.0, false, 0
+	settle := func(steps []fantasy.StepResult) {
+		for _, step := range steps[min(settled, len(steps)):] {
+			usage := usageOf(step.Usage)
+			spend := overload.Spend{}.Charge(plan.pricing, usage)
+			m.record(usage, spend)
+			m.run.settle(reserved, priced, usage, spend)
+			reserved, inFlight = 0, false
+			settled++
+		}
+	}
+	inner := call.PrepareStep
+	call.PrepareStep = func(ctx context.Context, options fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+		settle(options.Steps)
+		var prepared fantasy.PrepareStepResult
+		if inner != nil {
+			var err error
+			if ctx, prepared, err = inner(ctx, options); err != nil {
+				return ctx, prepared, err
+			}
+		}
+		messages := options.Messages
+		if prepared.Messages != nil {
+			messages = prepared.Messages
+		}
+		chars := messageChars(messages)
+		if prepared.System != nil {
+			chars += len(*prepared.System)
+		}
+		estimate, _ := plan.estimateChars(chars)
+		if err := m.run.reserve(estimate, priced); err != nil {
+			return ctx, prepared, err
+		}
+		reserved, inFlight = estimate, true
+		return ctx, prepared, nil
+	}
+	response, err := generate(ctx, call)
+	if response != nil {
+		settle(response.Steps)
+	}
+	if inFlight {
+		// The step failed without a result: count the call and free its
+		// reservation.
+		usage := overload.Usage{Calls: 1}
+		spend := overload.Spend{}.Charge(plan.pricing, usage)
+		m.record(usage, spend)
+		m.run.settle(reserved, priced, usage, spend)
+	}
+	return response, err
+}
+
+func (m *meter) record(usage overload.Usage, spend overload.Spend) {
 	m.mu.Lock()
 	m.usage = m.usage.Add(usage)
 	m.spend = m.spend.Add(spend)
 	m.mu.Unlock()
-	m.run.settle(estimate, priced, usage, spend)
-	return response, err
 }

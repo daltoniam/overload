@@ -73,17 +73,17 @@ func (s *Store) FinishLocalReview(ctx context.Context, runID int64, spec overloa
 	if err != nil {
 		return err
 	}
-	var costUSD *float64
-	var unpriced int64
-	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
-		costUSD, unpriced = &spend.USD, spend.Unpriced
-	}
-	command, err := tx.Exec(ctx, `UPDATE runs SET status=$1, head_sha=$2, prompt_version=$3, error_code=$4, error_message=$5, metrics=COALESCE($6::jsonb, '{}'::jsonb), finished_at=now(), cost_usd=$8, cost_unpriced_calls=$9, cost_at=CASE WHEN $8::float8 IS NULL THEN NULL ELSE now() END WHERE id=$7 AND status='running'`, status, headSHA, spec.Workflow.Name, errorCode, errorMessage, metrics, runID, costUSD, unpriced)
+	command, err := tx.Exec(ctx, `UPDATE runs SET status=$1, head_sha=$2, prompt_version=$3, error_code=$4, error_message=$5, metrics=COALESCE($6::jsonb, '{}'::jsonb), finished_at=now() WHERE id=$7 AND status='running'`, status, headSHA, spec.Workflow.Name, errorCode, errorMessage, metrics, runID)
 	if err != nil {
 		return err
 	}
 	if command.RowsAffected() != 1 {
 		return errors.New("run is not in progress")
+	}
+	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
+		if err := s.SetRunCostIn(ctx, tx, runID, spend); err != nil {
+			return err
+		}
 	}
 	for name, content := range map[string][]byte{"spec.json": specData, "result.json": resultData} {
 		if _, err := tx.Exec(ctx, `INSERT INTO run_artifacts (run_id, name, content) VALUES ($1, $2, $3)`, runID, name, content); err != nil {

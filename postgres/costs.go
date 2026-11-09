@@ -8,18 +8,33 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// spentAt is when a run's spend counts for budgets and the dashboard:
-// when its cost was recorded, or for older rows when it was created.
-const spentAt = `COALESCE(cost_at, created_at)`
+// setRunCostSQL sets a run's total cost ($2 dollars, $3 unpriced calls)
+// and records the difference from what was recorded before at $4.
+const setRunCostSQL = `WITH old AS (SELECT cost_usd, cost_unpriced_calls FROM runs WHERE id=$1 FOR UPDATE),
+updated AS (UPDATE runs SET cost_usd=$2::float8, cost_unpriced_calls=$3::bigint WHERE id=$1 RETURNING id)
+INSERT INTO run_costs (run_id, usd, unpriced_calls, at)
+SELECT updated.id, $2::float8 - COALESCE(old.cost_usd, 0), $3::bigint - old.cost_unpriced_calls, $4::timestamptz FROM old, updated
+WHERE old.cost_usd IS NULL OR $2::float8 <> old.cost_usd OR $3::bigint <> old.cost_unpriced_calls`
 
-// SetRunCost records what a run's model calls cost.
+// addRunCostSQL adds to a run's cost and records the addition at $4.
+const addRunCostSQL = `WITH updated AS (UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2::float8, cost_unpriced_calls=cost_unpriced_calls+$3::bigint WHERE id=$1 RETURNING id)
+INSERT INTO run_costs (run_id, usd, unpriced_calls, at) SELECT id, $2::float8, $3::bigint, $4::timestamptz FROM updated`
+
+// SetRunCost records what a run's model calls cost in total.
 func (s *Store) SetRunCost(ctx context.Context, runID int64, spend overload.Spend) error {
+	return s.SetRunCostIn(ctx, s.Pool, runID, spend)
+}
+
+// SetRunCostIn is SetRunCost within a transaction. Only spend not
+// recorded before counts toward the current period.
+func (s *Store) SetRunCostIn(ctx context.Context, q execer, runID int64, spend overload.Spend) error {
 	if err := checkSpend(spend); err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=$2, cost_unpriced_calls=$3, cost_at=$4 WHERE id=$1`, runID, spend.USD, spend.Unpriced, s.now())
+	_, err := q.Exec(ctx, setRunCostSQL, runID, spend.USD, spend.Unpriced, s.now())
 	return err
 }
 
@@ -29,8 +44,13 @@ func (s *Store) AddRunCost(ctx context.Context, runID int64, spend overload.Spen
 	if err := checkSpend(spend); err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2, cost_unpriced_calls=cost_unpriced_calls+$3, cost_at=$4 WHERE id=$1`, runID, spend.USD, spend.Unpriced, s.now())
+	_, err := s.Pool.Exec(ctx, addRunCostSQL, runID, spend.USD, spend.Unpriced, s.now())
 	return err
+}
+
+// execer runs a statement on a pool or in a transaction.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 func checkSpend(spend overload.Spend) error {
@@ -123,7 +143,7 @@ func dayStart(now time.Time) time.Time {
 // Spend summarizes spend for the dashboard.
 func (s *Store) Spend(ctx context.Context, now time.Time) (SpendSummary, error) {
 	var summary SpendSummary
-	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd) FILTER (WHERE `+spentAt+` >= $2),0), COALESCE(sum(cost_usd),0), count(*), count(*) FILTER (WHERE cost_unpriced_calls > 0) FROM runs WHERE cost_usd IS NOT NULL AND `+spentAt+` >= $1 AND `+spentAt+` <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
+	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(usd) FILTER (WHERE at >= $2),0), COALESCE(sum(usd),0), count(DISTINCT run_id), count(DISTINCT run_id) FILTER (WHERE unpriced_calls > 0) FROM run_costs WHERE at >= $1 AND at <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
 	if err != nil {
 		return summary, fmt.Errorf("spend: %w", err)
 	}

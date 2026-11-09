@@ -78,18 +78,33 @@ func TestProxyGrantsExpire(t *testing.T) {
 	proxy.now = func() time.Time { return now }
 	base, _ := proxy.Grant(overload.ModelProfile{Model: "m", BaseURL: "http://127.0.0.1:1"}, time.Minute)
 	token := strings.TrimPrefix(base, "http://overload:8083/v1/m/")
-	if _, ok := proxy.lookup(token); !ok {
+	if _, ok := proxy.begin(token); !ok {
 		t.Fatal("fresh grant missing")
 	}
 	now = now.Add(2 * time.Minute)
-	if _, ok := proxy.lookup(token); ok {
+	if _, ok := proxy.begin(token); ok {
 		t.Fatal("expired grant accepted")
 	}
-	// An expired grant is kept for its settle window, then removed.
-	now = now.Add(settleWindow)
+	// A call that began before the grant expired is still streaming long
+	// after: the grant and its spend are kept until the call is metered.
+	now = now.Add(10 * settleWindow)
 	proxy.Grant(overload.ModelProfile{Model: "m"}, time.Minute)
-	if len(proxy.grants) != 1 {
-		t.Fatalf("expired grants not cleaned up: %d", len(proxy.grants))
+	if _, kept := proxy.grants[token]; !kept {
+		t.Fatal("grant with a call in flight was removed")
+	}
+	proxy.finish(token, 0.25)
+	if pending := proxy.Pending(); pending != 0.25 {
+		t.Fatalf("pending after a late call = %v", pending)
+	}
+	// Once its last call finished, the grant is kept for its settle
+	// window, then removed.
+	now = now.Add(settleWindow + time.Second)
+	if pending := proxy.Pending(); pending != 0 {
+		t.Fatalf("settled grant still pending: %v", pending)
+	}
+	proxy.Grant(overload.ModelProfile{Model: "m"}, time.Minute)
+	if _, kept := proxy.grants[token]; kept {
+		t.Fatal("settled grant not cleaned up")
 	}
 	request := httptest.NewRequest(http.MethodGet, "/v1/m/"+token+"/chat/completions", nil)
 	recorder := httptest.NewRecorder()

@@ -46,11 +46,15 @@ type grant struct {
 	// finish after the grant ended. It counts as pending spend until the
 	// run has recorded its cost.
 	spent float64
+	// active counts calls still streaming; lastDone is when the latest
+	// one finished. A grant settles only once no call is active.
+	active   int
+	lastDone time.Time
 }
 
 // settleWindow is how long a finished grant's spend keeps counting as
-// pending: long enough for its run to record the cost and for the budget
-// gate to read it again.
+// pending after it ended and its last call finished: long enough for its
+// run to record the cost and for the budget gate to read it again.
 const settleWindow = 2 * time.Minute
 
 func (entry *grant) live(now time.Time) bool {
@@ -63,6 +67,20 @@ func (entry *grant) endedAt() time.Time {
 		return entry.ended
 	}
 	return entry.expires
+}
+
+// settled reports whether the grant's spend no longer counts as pending:
+// it has ended, none of its calls are still running, and settleWindow has
+// passed since both.
+func (entry *grant) settled(now time.Time) bool {
+	if entry.live(now) || entry.active > 0 {
+		return false
+	}
+	since := entry.endedAt()
+	if entry.lastDone.After(since) {
+		since = entry.lastDone
+	}
+	return now.Sub(since) > settleWindow
 }
 
 // BudgetGate decides whether more model calls may go out: pending is what
@@ -105,7 +123,7 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 	proxy.mu.Lock()
 	now := proxy.now()
 	for existing, entry := range proxy.grants {
-		if !entry.live(now) && now.Sub(entry.endedAt()) > settleWindow {
+		if entry.settled(now) {
 			delete(proxy.grants, existing)
 		}
 	}
@@ -120,37 +138,44 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 	}
 }
 
-func (proxy *Proxy) lookup(token string) (overload.ModelProfile, bool) {
+// begin starts a call through a live grant. The caller must call finish
+// when the call is done, so the grant is kept until its cost is metered.
+func (proxy *Proxy) begin(token string) (overload.ModelProfile, bool) {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 	entry, ok := proxy.grants[token]
 	if !ok || !entry.live(proxy.now()) {
 		return overload.ModelProfile{}, false
 	}
+	entry.active++
 	return entry.model, true
 }
 
-// Pending is what calls through live grants, and grants that ended within
-// settleWindow, cost so far.
+// finish ends a call begun with begin and charges what it cost.
+func (proxy *Proxy) finish(token string, usd float64) {
+	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	if entry, ok := proxy.grants[token]; ok {
+		entry.spent += usd
+		entry.active--
+		entry.lastDone = proxy.now()
+	}
+}
+
+// Pending is what calls through grants that have not settled cost so far:
+// live grants, grants with calls still running, and grants whose end or
+// last call was within settleWindow.
 func (proxy *Proxy) Pending() float64 {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 	now := proxy.now()
 	total := 0.0
 	for _, entry := range proxy.grants {
-		if entry.live(now) || now.Sub(entry.endedAt()) <= settleWindow {
+		if !entry.settled(now) {
 			total += entry.spent
 		}
 	}
 	return total
-}
-
-func (proxy *Proxy) charge(token string, usd float64) {
-	proxy.mu.Lock()
-	defer proxy.mu.Unlock()
-	if entry, ok := proxy.grants[token]; ok {
-		entry.spent += usd
-	}
 }
 
 func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -160,11 +185,13 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	model, ok := proxy.lookup(token)
+	model, ok := proxy.begin(token)
 	if !ok {
 		http.Error(w, "unknown or expired model grant", http.StatusUnauthorized)
 		return
 	}
+	charged := 0.0
+	defer func() { proxy.finish(token, charged) }()
 	provider := model.Provider
 	if provider == "" {
 		provider = overload.ProviderOpenAICompat
@@ -246,7 +273,7 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("model proxy could not read a call's usage; charging an estimate", "model", model.Model, "response_bytes", metered.bytes)
 		}
 		if usd, priced := model.Pricing.Cost(usage); priced {
-			proxy.charge(token, usd)
+			charged = usd
 		}
 	}()
 	buf := make([]byte, 32<<10)

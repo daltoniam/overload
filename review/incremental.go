@@ -11,8 +11,8 @@ import (
 
 // FilePatchHashes identifies each file's change in a diff by its changed
 // and context lines (carriage returns and final-newline markers
-// included), its file modes, and for binary files the new content's blob
-// ID. Hunk positions and other index lines are left out, so the same
+// included), its source path, file modes and rename or copy source, and
+// for binary files the new content's blob ID. Hunk positions and other index lines are left out, so the same
 // change hashes the same after a rebase or a merge from the base branch.
 func FilePatchHashes(patch string) map[string]string {
 	hashes := map[string]string{}
@@ -35,12 +35,16 @@ func FilePatchHashes(patch string) map[string]string {
 			newBlob = ""
 			// Files without --- and +++ lines (binary, mode-only) are named
 			// by the header; the +++ line wins when present.
-			if oldPath, newPath := overload.GitHeaderPaths(strings.TrimPrefix(line, "diff --git ")); newPath != "" {
-				name = newPath
-			} else {
+			oldPath, newPath := overload.GitHeaderPaths(strings.TrimPrefix(line, "diff --git "))
+			if name = newPath; name == "" {
 				name = oldPath
 			}
-		case !inHunk && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "deleted file mode ") || strings.HasPrefix(line, "old mode ") || strings.HasPrefix(line, "new mode ")):
+			// The source matters for renames and copies, which may have no
+			// hunks: renaming a different file onto the same path is a
+			// different change.
+			body.WriteString("from " + oldPath + "\n")
+		case !inHunk && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "deleted file mode ") || strings.HasPrefix(line, "old mode ") || strings.HasPrefix(line, "new mode ") ||
+			strings.HasPrefix(line, "rename from ") || strings.HasPrefix(line, "copy from ") || strings.HasPrefix(line, "similarity index ")):
 			body.WriteString(strings.TrimSuffix(line, "\r"))
 			body.WriteByte('\n')
 		case !inHunk && strings.HasPrefix(line, "index "):

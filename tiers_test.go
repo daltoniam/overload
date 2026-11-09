@@ -10,7 +10,7 @@ func tieredWorkflow() ResolvedWorkflow {
 	return ResolvedWorkflow{
 		Kind:      "pr_review",
 		Agents:    []ResolvedAgent{agent("lead"), agent("security"), agent("tests")},
-		SkipPaths: []string{"*.lock"},
+		SkipPaths: []string{"*.lock", "docs/**"},
 		ReviewPolicy: ReviewPolicy{Tiers: &Tiers{
 			SensitivePaths: []string{"**/migrations/**", "**/auth/**", "**/*.tf", ".github/workflows/**"},
 			Trivial:        &Tier{MaxLines: 10, MaxFiles: 3, Action: TierSkip},
@@ -45,6 +45,9 @@ func TestChooseTier(t *testing.T) {
 		{"skipped files do not count", append(files(1, 2), FileChange{Path: "poetry.lock", Lines: 900}), TierTrivial, true, ""},
 		{"sensitive path forces full", []FileChange{{Path: "db/migrations/0042_add.py", Lines: 1}}, TierFull, false, ""},
 		{"sensitive workflow file", []FileChange{{Path: ".github/workflows/ci.yml", Lines: 2}}, TierFull, false, ""},
+		{"sensitive code moved into a skipped directory", []FileChange{{Path: "docs/check.go", OldPath: "src/auth/check.go"}}, TierFull, false, ""},
+		{"code moved into a skipped directory counts", []FileChange{{Path: "docs/big.py", OldPath: "app/big.py", Lines: 50}}, TierLite, false, "lead"},
+		{"moves within a skipped directory do not count", []FileChange{{Path: "docs/b.md", OldPath: "docs/a.md", Lines: 500}}, TierTrivial, true, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			decision := workflow.ChooseTier(test.changes)

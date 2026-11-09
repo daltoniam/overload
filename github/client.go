@@ -228,6 +228,35 @@ func (client *Client) DismissReview(ctx context.Context, installationID int64, r
 	return err
 }
 
+// CanWrite reports whether a user has write access (write, maintain or
+// admin) to a repository. Organization membership alone is not enough.
+func (client *Client) CanWrite(ctx context.Context, installationID int64, repository, login string) (bool, error) {
+	owner, repo, err := splitRepository(repository)
+	if err != nil {
+		return false, err
+	}
+	if login == "" {
+		return false, nil
+	}
+	api, err := client.installation(installationID)
+	if err != nil {
+		return false, err
+	}
+	level, _, err := api.Repositories.GetPermissionLevel(ctx, owner, repo, login)
+	if err != nil {
+		return false, err
+	}
+	switch level.GetPermission() {
+	case "admin", "write":
+		return true, nil
+	}
+	switch level.GetRoleName() {
+	case "admin", "maintain", "write":
+		return true, nil
+	}
+	return false, nil
+}
+
 // ownReviews calls visit for each review overload posted on the PR, until
 // visit returns true.
 func (client *Client) ownReviews(ctx context.Context, installationID int64, repository string, number int, visit func(*gh.PullRequestReview) bool) error {

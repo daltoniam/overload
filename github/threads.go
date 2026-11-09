@@ -86,7 +86,7 @@ const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved comments(first: 1) { nodes { path body author { login } } } }
+        nodes { id isResolved comments(first: 1) { nodes { path originalLine body author { login } } } }
       }
     }
   }
@@ -142,7 +142,7 @@ func (client *Client) graphQL(ctx context.Context, installationID int64, query s
 
 // ResolveThreads resolves overload's open review threads for findings a
 // re-review found fixed, and returns how many it resolved. Threads are
-// matched by author, path and title, like PriorReplies.
+// matched by author, path, the line the comment was posted on, and title.
 func (client *Client) ResolveThreads(ctx context.Context, installationID int64, repository string, number int, fixed []overload.Finding) (int, error) {
 	if len(fixed) == 0 {
 		return 0, nil
@@ -156,6 +156,10 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 		return 0, err
 	}
 	var threads []string
+	// Each fixed finding resolves at most one thread: the one posted on
+	// its line, so a still-open finding with the same title elsewhere in
+	// the file keeps its thread.
+	claimed := make([]bool, len(fixed))
 	var after *string
 	for page := 0; page < 10; page++ {
 		var data struct {
@@ -171,9 +175,10 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 							IsResolved bool   `json:"isResolved"`
 							Comments   struct {
 								Nodes []struct {
-									Path   string `json:"path"`
-									Body   string `json:"body"`
-									Author struct {
+									Path         string `json:"path"`
+									OriginalLine int    `json:"originalLine"`
+									Body         string `json:"body"`
+									Author       struct {
 										Login string `json:"login"`
 									} `json:"author"`
 								} `json:"nodes"`
@@ -196,8 +201,9 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 			if !strings.EqualFold(first.Author.Login, strings.TrimSuffix(login, "[bot]")) && !strings.EqualFold(first.Author.Login, login) {
 				continue
 			}
-			for _, finding := range fixed {
-				if first.Path == finding.Path && strings.HasPrefix(first.Body, commentTitle(finding.Title)) {
+			for index, finding := range fixed {
+				if !claimed[index] && first.Path == finding.Path && first.OriginalLine == finding.Line && strings.HasPrefix(first.Body, commentTitle(finding.Title)) {
+					claimed[index] = true
 					threads = append(threads, thread.ID)
 					break
 				}

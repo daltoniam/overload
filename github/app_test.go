@@ -301,3 +301,42 @@ func TestSetStatus(t *testing.T) {
 		t.Fatalf("403 not reported as missing permission: %v", err)
 	}
 }
+
+func TestCanWriteChecksRepositoryPermission(t *testing.T) {
+	levels := map[string]string{
+		"writer":     `{"permission":"write","role_name":"write"}`,
+		"maintainer": `{"permission":"write","role_name":"maintain"}`,
+		"admin":      `{"permission":"admin","role_name":"admin"}`,
+		"member":     `{"permission":"read","role_name":"read"}`,
+		"triager":    `{"permission":"read","role_name":"triage"}`,
+		"outsider":   `{"permission":"none","role_name":""}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		login, ok := strings.CutPrefix(r.URL.Path, "/repos/acme/api/collaborators/")
+		login, ok2 := strings.CutSuffix(login, "/permission")
+		body, known := levels[login]
+		if !ok || !ok2 || !known {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	client, err := NewTokenClient("token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.api.BaseURL, err = url.Parse(server.URL + "/"); err != nil {
+		t.Fatal(err)
+	}
+	for login, want := range map[string]bool{"writer": true, "maintainer": true, "admin": true, "member": false, "triager": false, "outsider": false, "": false} {
+		if got, err := client.CanWrite(context.Background(), 0, "acme/api", login); err != nil || got != want {
+			t.Errorf("CanWrite(%q) = %v %v, want %v", login, got, err, want)
+		}
+	}
+	if _, err := client.CanWrite(context.Background(), 0, "acme/api", "ghost"); err == nil {
+		t.Error("a failed permission lookup allowed the command")
+	}
+}

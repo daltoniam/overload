@@ -709,11 +709,14 @@ never approves. Decisions (2026-11-09):
   call's prompt) and summed per agent, planner, verifier and run
   (`runs.cost_usd`). An unpriced model shows "unpriced", never $0.
 - **Budgets.** A per-run cap reserves an upper estimate (prompt as
-  uncached input plus the full output budget) before each call, so a run
-  stays within it and completes degraded. Monthly and daily caps (global
-  and per repository, `budgets` table or environment) are checked when a
-  review is queued: spend plus the expected cost of queued and running
-  runs plus this one. The model proxy meters sandboxed calls from their
+  uncached input plus the full output budget) before each call, and
+  before each step of a tool-using call from that step's growing prompt,
+  so a run stays within it and completes degraded. Monthly and daily caps
+  (global and per repository, `budgets` table or environment) are checked
+  when a review is queued: spend plus the expected cost of queued and
+  running runs (scheduled jobs included for the global cap) plus this
+  one. Spend is recorded as timestamped additions (`run_costs`), so it
+  counts in the day and month it was incurred. The model proxy meters sandboxed calls from their
   usage and returns 429 past a global cap plus 5% as the backstop. A
   budget skip sets a `success` status by default (configurable to
   `error`) so a required check does not block merges.

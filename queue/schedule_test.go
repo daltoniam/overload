@@ -112,6 +112,10 @@ func TestScheduleWorkerFrozenInputAndFailure(t *testing.T) {
 	if run.Cost == nil || math.Abs(run.Cost.USD-0.003) > 1e-9 || run.Cost.Unpriced != 0 {
 		t.Fatalf("plain agent cost = %+v", run.Cost)
 	}
+	var recorded float64
+	if err := store.Pool.QueryRow(ctx, `SELECT COALESCE(sum(usd), 0) FROM run_costs WHERE run_id=$1`, runID).Scan(&recorded); err != nil || math.Abs(recorded-0.003) > 1e-9 {
+		t.Fatalf("spend recorded for budgets = %v %v (counted twice?)", recorded, err)
+	}
 	var kind string
 	var content []byte
 	if err := store.Pool.QueryRow(ctx, `SELECT kind,content FROM job_outputs WHERE run_id=$1`, runID).Scan(&kind, &content); err != nil || kind != "scheduled_prompt" || !strings.Contains(string(content), "Scheduled result") || !strings.Contains(string(content), name) {

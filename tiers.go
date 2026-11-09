@@ -119,7 +119,10 @@ func (workflow ResolvedWorkflow) ChooseTier(changes []FileChange) TierDecision {
 		if change.Path == "" {
 			return TierDecision{Tier: TierFull, Reason: "a changed file's path could not be read"}
 		}
-		if skip.match(change.Path) {
+		// A file moved into a skipped directory still counts unless it
+		// also came from one: moving code out of a sensitive or reviewed
+		// location is a change to review.
+		if skip.match(change.Path) && (change.OldPath == "" || skip.match(change.OldPath)) {
 			continue
 		}
 		if sensitive.match(change.Path) || (change.OldPath != "" && sensitive.match(change.OldPath)) {

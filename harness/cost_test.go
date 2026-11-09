@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"charm.land/fantasy"
 	"github.com/daltoniam/overload"
 )
 
@@ -117,5 +119,35 @@ func TestPricingCost(t *testing.T) {
 	}
 	if _, ok := (*overload.Pricing)(nil).Cost(overload.Usage{Input: 1}); ok {
 		t.Fatal("nil pricing priced a call")
+	}
+}
+
+func TestMultiStepCallsReserveEachStepAgainstItsContext(t *testing.T) {
+	budget := newRunBudget(1)
+	metered := newMeter(budget)
+	// $1,000 per million input tokens: $0.001 a token.
+	plan := reasoningPlan{pricing: &overload.Pricing{Input: 1000}, steps: 5}
+	user := func(text string) fantasy.Message {
+		return fantasy.Message{Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: text}}}
+	}
+	first := []fantasy.Message{user("Review this change.")}
+	// The second step carries a large tool result: about 10,000 tokens,
+	// $10, which the $1 cap cannot cover even though the first step was
+	// cheap and five first-sized steps would fit.
+	second := append(first, fantasy.Message{Role: fantasy.MessageRoleTool, Content: []fantasy.MessagePart{fantasy.ToolResultPart{ToolCallID: "1", Output: fantasy.ToolResultOutputContentText{Text: strings.Repeat("x", 30000)}}}})
+	step := fantasy.StepResult{Response: fantasy.Response{Usage: fantasy.Usage{InputTokens: 30}}}
+	_, err := metered.call(context.Background(), plan, fantasy.AgentCall{Prompt: "Review this change."}, func(ctx context.Context, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
+		if _, _, err := call.PrepareStep(ctx, fantasy.PrepareStepFunctionOptions{StepNumber: 0, Messages: first}); err != nil {
+			t.Fatalf("first step refused: %v", err)
+		}
+		_, _, err := call.PrepareStep(ctx, fantasy.PrepareStepFunctionOptions{StepNumber: 1, Steps: []fantasy.StepResult{step}, Messages: second})
+		return nil, err
+	})
+	if !errors.Is(err, errCostCap) {
+		t.Fatalf("second step = %v, want the cost cap", err)
+	}
+	usage, spend, refused := budget.totals()
+	if usage.Calls != 1 || usage.Input != 30 || math.Abs(spend.USD-0.03) > 1e-9 || refused != 1 || budget.reserved != 0 {
+		t.Fatalf("usage = %+v spend = %+v refused = %d reserved = %v", usage, spend, refused, budget.reserved)
 	}
 }

@@ -85,11 +85,15 @@ func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
 	stop = false
 	// A revoked grant stops calls but its spend counts until the run has
 	// recorded it, including calls that finish after the revoke.
+	token := strings.TrimPrefix(path, "/v1/m/")
+	if _, ok := proxy.begin(token); !ok {
+		t.Fatal("live grant refused a call")
+	}
 	revoke()
 	if status := post(); status != http.StatusUnauthorized {
 		t.Fatalf("call after revoke: %d", status)
 	}
-	proxy.charge(strings.TrimPrefix(path, "/v1/m/"), 0.01)
+	proxy.finish(token, 0.01)
 	if pending := proxy.Pending(); math.Abs(pending-0.036) > 1e-9 {
 		t.Fatalf("pending after revoke = %v", pending)
 	}

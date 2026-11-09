@@ -42,6 +42,14 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 			"diff --git a/logo.png b/logo.png\nindex 1111111..2222222 100644\nBinary files a/logo.png and b/logo.png differ\n",
 			"diff --git a/logo.png b/logo.png\nindex 1111111..3333333 100644\nBinary files a/logo.png and b/logo.png differ\n",
 		},
+		"rename source": {
+			"diff --git a/old-a b/target\nsimilarity index 100%\nrename from old-a\nrename to target\n",
+			"diff --git a/old-b b/target\nsimilarity index 100%\nrename from old-b\nrename to target\n",
+		},
+		"rename or copy": {
+			"diff --git a/old b/target\nsimilarity index 100%\nrename from old\nrename to target\n",
+			"diff --git a/old b/target\nsimilarity index 100%\ncopy from old\ncopy to target\n",
+		},
 	} {
 		if len(UnchangedFiles(pair[0], pair[1])) != 0 {
 			t.Errorf("%s change counted as unchanged", name)
@@ -51,6 +59,10 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 	original := "diff --git a/a.go b/a.go\nindex 1111111..2222222 100644\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n"
 	if len(UnchangedFiles(original, rebased)) != 1 {
 		t.Fatal("a rebased text change counted as changed")
+	}
+	rename := "diff --git a/old-a b/target\nsimilarity index 100%\nrename from old-a\nrename to target\n"
+	if len(UnchangedFiles(rename, rename)) != 1 {
+		t.Fatal("the same rename counted as changed")
 	}
 }
 

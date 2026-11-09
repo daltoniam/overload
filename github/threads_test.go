@@ -40,7 +40,8 @@ func TestPriorRepliesAndResolveThreads(t *testing.T) {
 				return
 			}
 			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
-				{"id":"T1","isResolved":false,"comments":{"nodes":[{"path":"a.go","body":"**Nil map** (high)\n\nInitialize it.","author":{"login":"overload-bot"}}]}},
+				{"id":"T1","isResolved":false,"comments":{"nodes":[{"path":"a.go","originalLine":3,"body":"**Nil map** (high)\n\nInitialize it.","author":{"login":"overload-bot"}}]}},
+				{"id":"T4","isResolved":false,"comments":{"nodes":[{"path":"a.go","originalLine":40,"body":"**Nil map** (high)\n\nAnother map, still open.","author":{"login":"overload-bot"}}]}},
 				{"id":"T2","isResolved":false,"comments":{"nodes":[{"path":"a.go","body":"**Nil map** (high)\n\nfake","author":{"login":"mallory"}}]}},
 				{"id":"T3","isResolved":true,"comments":{"nodes":[{"path":"b.go","body":"**Old** (low)","author":{"login":"overload-bot"}}]}}
 			]}}}}}`)
@@ -58,7 +59,7 @@ func TestPriorRepliesAndResolveThreads(t *testing.T) {
 	if err != nil || len(replies[41]) != 1 || replies[41][0] != "dev: Fixed in the next commit" {
 		t.Fatalf("replies = %+v %v", replies, err)
 	}
-	count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Title: "Nil map"}})
+	count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map"}})
 	if err != nil || count != 1 || strings.Join(resolved, ",") != "T1" {
 		t.Fatalf("resolved %d %v: %v", count, resolved, err)
 	}

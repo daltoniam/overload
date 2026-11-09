@@ -79,6 +79,54 @@ func TestRunCostsAndSpend(t *testing.T) {
 	}
 }
 
+func TestSpendCountsEachAdditionWhenItHappened(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := fmt.Sprintf("test-cost-period-%d/api", time.Now().UnixNano())
+	var repoID, runID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	january := time.Date(2098, 1, 31, 23, 0, 0, 0, time.UTC)
+	february := time.Date(2098, 2, 1, 1, 0, 0, 0, time.UTC)
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2) RETURNING id`, repoID, january).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	store.Now = func() time.Time { return january }
+	if err := store.AddRunCost(ctx, runID, overload.Spend{USD: 10}); err != nil {
+		t.Fatal(err)
+	}
+	store.Now = func() time.Time { return february }
+	if err := store.AddRunCost(ctx, runID, overload.Spend{USD: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// Setting the total adds only what was not recorded yet.
+	if err := store.SetRunCost(ctx, runID, overload.Spend{USD: 11.5, Unpriced: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunCost(ctx, runID, overload.Spend{USD: 11.5, Unpriced: 1}); err != nil {
+		t.Fatal(err)
+	}
+	spend, err := store.Spend(ctx, february)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(spend.Month-1.5) > 1e-9 || math.Abs(spend.Today-1.5) > 1e-9 || spend.MonthRuns != 1 || spend.Unpriced != 1 {
+		t.Fatalf("february = %+v", spend)
+	}
+	if spend, err = store.Spend(ctx, january); err != nil || math.Abs(spend.Month-10) > 1e-9 {
+		t.Fatalf("january = %+v %v", spend, err)
+	}
+	run, err := store.GetRun(ctx, runID)
+	if err != nil || run.Cost == nil || math.Abs(run.Cost.USD-11.5) > 1e-9 || run.Cost.Unpriced != 1 {
+		t.Fatalf("run cost = %+v %v", run.Cost, err)
+	}
+}
+
 func TestModelPricesArePinned(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

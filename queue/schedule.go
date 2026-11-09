@@ -101,12 +101,17 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	command, err = tx.Exec(ctx, `UPDATE runs SET status='completed',finished_at=now(),metrics=$2,cost_usd=COALESCE(cost_usd,0),cost_at=COALESCE(cost_at,now()) WHERE id=$1 AND status='running'`, runID, metrics)
+	command, err = tx.Exec(ctx, `UPDATE runs SET status='completed',finished_at=now(),metrics=$2 WHERE id=$1 AND status='running'`, runID, metrics)
 	if err != nil {
 		return err
 	}
 	if command.RowsAffected() != 1 {
 		return nil
+	}
+	// Each agent's spend was added as it finished; the total also covers
+	// any addition that failed to save, without counting the rest twice.
+	if err := worker.Store.SetRunCostIn(ctx, tx, runID, overload.Spend{USD: totals.CostUSD, Unpriced: totals.Unpriced}); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO job_outputs(run_id,kind,content) VALUES ($1,'scheduled_prompt',$2)`, runID, data); err != nil {
 		return err

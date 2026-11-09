@@ -186,8 +186,10 @@ overload already reviewed are handled:
 | `resolve_threads` | `false` | Resolve overload's GitHub review thread when a re-review finds its finding fixed. |
 
 "Review now", `overload review --queue` and a comment of
-`/overload review` from someone with write access (owner, member or
-collaborator) always review, whatever the limit. GitHub Apps created
+`/overload review` from someone with write access to the repository
+always review, whatever the limit. Organization membership alone is not
+enough: overload checks the commenter's repository permission (write,
+maintain or admin) before queuing the review. GitHub Apps created
 before this need the **Issue comment** event enabled (App settings,
 Permissions & events) for the comment to reach overload.
 

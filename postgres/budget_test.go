@@ -75,9 +75,15 @@ func TestBudgetSkipsDeliveriesWhenSpent(t *testing.T) {
 		created time.Time
 		cost    float64
 	}{{now.Add(-48 * time.Hour), 2.5}, {now.AddDate(0, -1, 0), 0.75}} {
-		if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at, cost_usd) VALUES ($1, 99, '', '', 'webhook', 'completed', $2, $3)`, repoID, run.created, run.cost); err != nil {
+		var id int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at) VALUES ($1, 99, '', '', 'webhook', 'completed', $2) RETURNING id`, repoID, run.created).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
+		store.Now = func() time.Time { return run.created }
+		if err := store.AddRunCost(ctx, id, overload.Spend{USD: run.cost}); err != nil {
+			t.Fatal(err)
+		}
+		store.Now = func() time.Time { return now }
 	}
 	deliverHead := func(pr int, head string) (string, string) {
 		t.Helper()
@@ -159,21 +165,34 @@ func TestBudgetCountsSpendWhenItHappened(t *testing.T) {
 	if err := store.SaveBudget(ctx, Budget{Repository: repo, MonthlyUSD: &monthly, DailyUSD: &daily}); err != nil {
 		t.Fatal(err)
 	}
+	type increment struct {
+		at  time.Time
+		usd float64
+	}
 	for _, run := range []struct {
-		created, recorded time.Time
-		cost              float64
+		created time.Time
+		costs   []increment
 	}{
 		// Queued last month, model calls today: counts this month and today.
-		{month.Add(-time.Hour), now.Add(-time.Hour), 2},
+		{month.Add(-time.Hour), []increment{{now.Add(-time.Hour), 2}}},
 		// Queued and spent last month: counts neither.
-		{month.Add(-48 * time.Hour), month.Add(-47 * time.Hour), 7},
-		// Queued yesterday, spent today: counts today.
-		{now.Add(-25 * time.Hour), now.Add(-30 * time.Minute), 0.5},
+		{month.Add(-48 * time.Hour), []increment{{month.Add(-47 * time.Hour), 7}}},
+		// Spans midnight: $4 yesterday, $0.50 today. Only today's counts
+		// today; the earlier $4 stays yesterday's.
+		{now.Add(-25 * time.Hour), []increment{{now.Add(-24 * time.Hour), 4}, {now.Add(-30 * time.Minute), 0.5}}},
 	} {
-		if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at, cost_usd, cost_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2, $3, $4)`, repoID, run.created, run.cost, run.recorded); err != nil {
+		var id int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2) RETURNING id`, repoID, run.created).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
+		for _, cost := range run.costs {
+			store.Now = func() time.Time { return cost.at }
+			if err := store.AddRunCost(ctx, id, overload.Spend{USD: cost.usd}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
+	store.Now = func() time.Time { return now }
 	check, err := store.CheckBudget(ctx, repoID, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -188,6 +207,34 @@ func TestBudgetCountsSpendWhenItHappened(t *testing.T) {
 	}
 	if check, err = store.CheckBudget(ctx, repoID, 1); err != nil || check.Exceeded {
 		t.Fatalf("within budget: %+v %v", check, err)
+	}
+	// This month: $2 + $4 + $0.50 = $6.50 spent + $1 exceeds $7.
+	monthly = 7
+	if err := store.SaveBudget(ctx, Budget{Repository: repo, MonthlyUSD: &monthly, DailyUSD: &daily}); err != nil {
+		t.Fatal(err)
+	}
+	if check, err = store.CheckBudget(ctx, repoID, 1); err != nil || !check.Exceeded || check.Period != "monthly" || math.Abs(check.Spent-6.5) > 1e-9 {
+		t.Fatalf("monthly check = %+v %v", check, err)
+	}
+}
+
+func TestGlobalBudgetCountsScheduledJobs(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	store.Now = func() time.Time { return time.Date(2097, 4, 10, 0, 0, 0, 0, time.UTC) }
+	t.Setenv("OVERLOAD_BUDGET_MONTHLY_USD", "100")
+	t.Setenv("OVERLOAD_BUDGET_DAILY_USD", "")
+	name := fmt.Sprintf("budget-scheduled-%d", time.Now().UnixNano())
+	var runID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (kind, trigger, status, config_snapshot) VALUES ('scheduled_prompt', 'cron', 'running', $1) RETURNING id`, fmt.Sprintf(`{"name":%q,"max_run_cost_usd":100}`, name)).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE id=$1`, runID) })
+	// Nothing spent yet, but the running scheduled job may spend the whole
+	// $100: a $20 review does not fit.
+	check, err := store.CheckBudget(ctx, 0, 20)
+	if err != nil || !check.Exceeded || check.Scope != "" || check.Pending < 100 {
+		t.Fatalf("check = %+v %v", check, err)
 	}
 }
 

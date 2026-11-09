@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -72,5 +73,22 @@ func TestIncrementalReviewReviewsChangedAndLinkedFiles(t *testing.T) {
 	}
 	if !strings.Contains(handlerCall, "id 41") || !strings.Contains(handlerCall, "reply: author: fixed by audit()") || strings.Contains(handlerCall, "id 42") {
 		t.Fatalf("earlier findings not shown with replies:\n%s", handlerCall)
+	}
+}
+
+func TestPriorFindingsStayOpenWithoutAVerdict(t *testing.T) {
+	prior := []overload.PriorFinding{
+		{ID: 1, Path: "a.go", Title: "Judged resolved"},
+		{ID: 2, Path: "a.go", Title: "Judged still present"},
+		{ID: 3, Path: "a.go", Title: "No verdict"},
+		{ID: 4, Path: "carried.go", Title: "On a carried file"},
+	}
+	plan := planRereview(&overload.Incremental{Unchanged: []string{"carried.go"}, Prior: prior}, []string{"a.go", "carried.go"}, nil)
+	verdicts := plan.verdicts([]overload.PriorVerdict{{ID: 1, Status: overload.PriorResolved}, {ID: 2, Status: overload.PriorStillPresent}})
+	metrics := map[string]any{}
+	plan.record(metrics, 1, verdicts)
+	carried, _ := metrics["carried_finding_ids"].([]int64)
+	if fmt.Sprint(carried) != "[2 3 4]" || metrics["prior_unjudged"] != 1 || metrics["prior_resolved"] != 1 {
+		t.Fatalf("carried = %v metrics = %+v", carried, metrics)
 	}
 }
