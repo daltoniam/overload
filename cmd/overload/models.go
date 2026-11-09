@@ -515,7 +515,7 @@ func localModelSummary(store localmodels.Store, manager localmodels.ServiceManag
 // directory moved. Services of other installs are left alone.
 func removeModelServices(dir, label string) error {
 	prefix := label + ".model."
-	removed, err := localmodels.NewStore(dir).RemoveServices(localmodels.Launchd{}, prefix)
+	removed, err := localmodels.NewStore(dir).RemoveServices(localmodels.Launchd{}, label)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		fmt.Printf("Could not update %s (%v); removing model services by label instead.\n", dir, err)
 	}

@@ -668,6 +668,9 @@ func TestServices(t *testing.T) {
 		t.Fatalf("restarting a model's own service: %v", err)
 	}
 	manager.stopped = nil
+	if err := store.Serve(manager, launchd.Agent{Label: "dev.second.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.second.model.recursive-flint", Port: 8081, Files: service.Files}); err == nil || !strings.Contains(err.Error(), "another install") {
+		t.Fatalf("a second install took over a served model: %v", err)
+	}
 	other := Service{ID: "other", Label: "dev.overload.model.other", Port: 8080}
 	if err := store.Serve(manager, launchd.Agent{Label: other.Label}, other); err == nil {
 		t.Fatal("two services on one port")
@@ -873,15 +876,15 @@ func TestReleaseKeepsFilesAnyServiceLoads(t *testing.T) {
 
 func TestRemoveServicesKeepsOtherInstalls(t *testing.T) {
 	store := NewStore(t.TempDir())
-	if err := store.writeServices([]Service{{ID: "a", Label: "dev.overload.model.a", Port: 8080}, {ID: "b", Label: "dev.other.model.b", Port: 8081}}); err != nil {
+	if err := store.writeServices([]Service{{ID: "a", Label: "dev.overload.model.a", Port: 8080}, {ID: "b", Label: "dev.other.model.b", Port: 8081}, {ID: "c", Label: "dev.overload.dev.model.c", Port: 8082}}); err != nil {
 		t.Fatal(err)
 	}
 	manager := &fakeManager{written: map[string]launchd.Agent{}}
-	removed, err := store.RemoveServices(manager, "dev.overload.model.")
+	removed, err := store.RemoveServices(manager, "dev.overload")
 	if err != nil || len(removed) != 1 || removed[0] != "dev.overload.model.a" {
 		t.Fatalf("removed = %v, %v", removed, err)
 	}
-	if services, _ := store.Services(); len(services) != 1 || services[0].ID != "b" {
+	if services, _ := store.Services(); len(services) != 2 || services[0].ID != "b" {
 		t.Fatalf("services = %+v", services)
 	}
 }
@@ -976,7 +979,7 @@ func (fn roundTripper) RoundTrip(request *http.Request) (*http.Response, error) 
 
 func TestRemoveServicesWithoutADirectory(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "missing"))
-	if _, err := store.RemoveServices(&fakeManager{written: map[string]launchd.Agent{}}, "dev.overload.model."); !errors.Is(err, os.ErrNotExist) {
+	if _, err := store.RemoveServices(&fakeManager{written: map[string]launchd.Agent{}}, "dev.overload"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing directory: %v", err)
 	}
 	if _, err := os.Stat(store.Dir); !os.IsNotExist(err) {

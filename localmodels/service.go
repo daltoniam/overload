@@ -151,6 +151,9 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 		if existing.Port == service.Port && existing.ID != service.ID {
 			return fmt.Errorf("port %d is already used by the %s service", service.Port, existing.ID)
 		}
+		if existing.ID == service.ID && existing.Label != service.Label {
+			return fmt.Errorf("%s is already served by another install (%s); stop it there first", service.ID, existing.Label)
+		}
 		if existing.ID == service.ID && existing.Port == service.Port {
 			replacing = true
 		}
@@ -240,10 +243,11 @@ func (store Store) StopService(manager ServiceManager, id string) error {
 	return store.writeServices(slices.Delete(services, index, index+1))
 }
 
-// RemoveServices removes the services whose launchd label starts with
-// prefix (one install's), keeping other installs' services that share the
+// RemoveServices removes one install's services (labels under
+// <label>.model.), keeping other installs' services that share the
 // directory, and returns the labels it removed.
-func (store Store) RemoveServices(manager ServiceManager, prefix string) ([]string, error) {
+func (store Store) RemoveServices(manager ServiceManager, label string) ([]string, error) {
+	prefix := label + ".model."
 	if _, err := os.Stat(store.Dir); err != nil {
 		return nil, err
 	}
