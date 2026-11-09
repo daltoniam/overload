@@ -60,7 +60,7 @@ func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt str
 		return nil, reasoningPlan{}, err
 	}
 	plan := planFor(model)
-	plan.systemChars = len(systemPrompt)
+	plan.systemChars, plan.system = len(systemPrompt), systemPrompt
 	return fantasy.NewAgent(languageModel, append(reviewAgentOptions(plan, systemPrompt), extra...)...), plan, nil
 }
 

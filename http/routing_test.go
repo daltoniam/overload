@@ -203,3 +203,20 @@ func TestWorkflowFormReviewDecision(t *testing.T) {
 		t.Fatalf("comment mode should store nothing: %+v %v", workflow, err)
 	}
 }
+
+func TestWorkflowFormReviewPolicy(t *testing.T) {
+	values := url.Values{"name": {"review"}, "kind": {"pr_review"}, "main_agent": {"lead"}, "sub_0_agent": {"correctness"}, "sub_0_mode": {"whole_pr"}, "max_run_cost_usd": {"2.50"}, "review_policy": {`{"context": {"max_index_chars": 12000, "repo_tools": true}}`}}
+	workflow, err := workflowFromForm(values)
+	if err != nil || workflow.MaxRunCostUSD != 2.5 || workflow.Context == nil || workflow.Context.MaxIndexChars != 12000 || !workflow.Context.RepoTools || workflow.Scopes["correctness"].Mode != overload.ScopeWholePR || workflow.Validate() != nil {
+		t.Fatalf("workflow %+v err %v validate %v", workflow, err, workflow.Validate())
+	}
+	values.Set("review_policy", `{"contxt": {}}`)
+	if _, err := workflowFromForm(values); err == nil || !strings.Contains(err.Error(), "not valid JSON") {
+		t.Fatalf("unknown policy field accepted: %v", err)
+	}
+	values.Set("review_policy", `{"context": {"max_index_chars": 10}}`)
+	workflow, err = workflowFromForm(values)
+	if err != nil || workflow.Validate() == nil {
+		t.Fatalf("index budget below the minimum accepted: %v", err)
+	}
+}

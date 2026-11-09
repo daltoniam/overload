@@ -23,6 +23,9 @@ type Runner interface {
 	Review(ctx context.Context, repo string, prNumber int) (overload.ReviewSpec, overload.ReviewResult, string, error)
 }
 
+// maxDescription bounds the pull request description sent to models.
+const maxDescription = 8000
+
 // fetchPR loads an open pull request, its diff and head archive and builds
 // the spec both runners review.
 func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.ResolvedWorkflow, repo string, prNumber int) (overload.ReviewSpec, *bytes.Buffer, string, error) {
@@ -34,7 +37,7 @@ func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.Re
 		return overload.ReviewSpec{}, nil, pr.GetHead().GetSHA(), err
 	}
 	sha := pr.GetHead().GetSHA()
-	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: repo}, PRNumber: prNumber, Diff: patch, Workflow: workflow}
+	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: repo}, PRNumber: prNumber, Diff: patch, Workflow: workflow, PullRequest: &overload.PullRequestInfo{Title: Sanitize(pr.GetTitle(), 300), Body: Sanitize(pr.GetBody(), maxDescription)}}
 	archive := &bytes.Buffer{}
 	if err := source.DownloadHead(ctx, repo, sha, archive); err != nil {
 		return spec, nil, sha, fmt.Errorf("download head: %w", err)

@@ -118,7 +118,8 @@ func (plan reasoningPlan) estimate(call fantasy.AgentCall) (float64, bool) {
 			}
 		}
 	}
-	return plan.pricing.Cost(overload.Usage{Input: int64(chars/charsPerToken + 1), Output: plan.maxTokens})
+	usd, priced := plan.pricing.Cost(overload.Usage{Input: int64(chars/charsPerToken + 1), Output: plan.maxTokens})
+	return usd * float64(max(plan.steps, 1)), priced
 }
 
 // call runs one model call through the budget: it reserves room, makes the
@@ -133,11 +134,23 @@ func (m *meter) call(ctx context.Context, plan reasoningPlan, call fantasy.Agent
 	}
 	response, err := generate(ctx, call)
 	var usage overload.Usage
-	if response != nil {
+	var spend overload.Spend
+	switch {
+	case response != nil && len(response.Steps) > 1:
+		// Each step is a model call, priced on its own: long-context
+		// prices depend on one call's prompt.
+		for _, step := range response.Steps {
+			stepUsage := usageOf(step.Usage)
+			usage = usage.Add(stepUsage)
+			spend = spend.Charge(plan.pricing, stepUsage)
+		}
+	case response != nil:
 		usage = usageOf(response.TotalUsage)
+		spend = spend.Charge(plan.pricing, usage)
+	default:
+		usage.Calls = 1
+		spend = spend.Charge(plan.pricing, usage)
 	}
-	usage.Calls = 1
-	spend := overload.Spend{}.Charge(plan.pricing, usage)
 	m.mu.Lock()
 	m.usage = m.usage.Add(usage)
 	m.spend = m.spend.Add(spend)

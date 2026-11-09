@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"charm.land/fantasy"
@@ -153,13 +154,48 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		}
 		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
 	}
+	var shared prContext
+	wholePR := slices.ContainsFunc(routing.Agents, func(agent overload.AgentFiles) bool { return agent.WholePR && len(agent.Files) > 0 })
+	if workflow.Context != nil || wholePR {
+		shared = buildPRContext(ctx, spec, parsed, repo)
+		result.Metrics["pr_context_chars"] = len(shared.text)
+		result.Metrics["contracts_symbols"] = len(shared.index.Changes)
+	}
+	fileShared := ""
+	if workflow.Context != nil {
+		fileShared = shared.text
+	}
 	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
 	runs := newAgentRuns(len(workflow.Agents), len(batches))
+	leftOut := make([][]string, len(workflow.Agents))
+	var wholeWait sync.WaitGroup
+	var wholeMu sync.Mutex
+	var wholeErr error
+	for position := range workflow.Agents {
+		if !routing.Agents[position].WholePR || len(routing.Agents[position].Files) == 0 {
+			continue
+		}
+		var wholeGroups [][]string
+		wholeGroups, leftOut[position] = groupWholePR(parsed, routing.Agents[position].Files, shared.index.linked(), workflow.Context.WholePRBudget())
+		agent, plan := agents[position], plans[position]
+		if workflow.Context != nil && workflow.Context.RepoTools {
+			if agent, plan, err = newAgent(ctx, workflow.Agents[position].Model, plans[position].system, fantasy.WithTools(newRepoTools(repo, 2*workflow.Context.ToolSteps()).agentTools()...)); err != nil {
+				return result, err
+			}
+		}
+		wholeWait.Go(func() {
+			if err := runWholePR(ctx, workflow, position, agent, plan, wholeGroups, shared.text, parsed, fileIndex, runs, agentMeters[position]); err != nil {
+				wholeMu.Lock()
+				wholeErr = preferError(wholeErr, err)
+				wholeMu.Unlock()
+			}
+		})
+	}
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
 		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
-		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], fantasy.AgentCall{Prompt: batches[task.file]}, paths[task.file], parsed.patchFor(paths[task.file]), agentMeters[task.agent])
+		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], reviewCall(plans[task.agent], fileShared, batches[task.file]), paths[task.file], parsed.patchFor(paths[task.file]), agentMeters[task.agent])
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -181,7 +217,21 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		runs.completed[task.agent].Add(1)
 		return nil
 	})
+	wholeWait.Wait()
+	if wholeErr != nil {
+		err = preferError(err, wholeErr)
+	}
 	runs.record(workflow, &routing, result.Metrics, groups, groupOf, fileIndex, err == nil)
+	for position, files := range leftOut {
+		if len(files) > 0 {
+			for _, name := range files {
+				if !slices.Contains(routing.Agents[position].Unreviewed, name) {
+					routing.Agents[position].Unreviewed = append(routing.Agents[position].Unreviewed, name)
+				}
+			}
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("whole-PR agent %s left out %s whose diff is over its %d-character budget: %s", workflow.Agents[position].Name, overload.Plural(len(files), "file"), workflow.Context.WholePRBudget(), strings.Join(files, ", ")))
+		}
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, fmt.Errorf("review incomplete: %w", ctxErr)
@@ -266,6 +316,9 @@ func scheduleReviews(workflow overload.ResolvedWorkflow, routing overload.Routin
 	groups := make([]connectionGroup, len(loads))
 	for index := range workflow.Agents {
 		group := groupOf[index]
+		if routing.Agents[index].WholePR {
+			continue
+		}
 		for _, path := range routing.Agents[index].Files {
 			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: fileIndex[path]})
 		}

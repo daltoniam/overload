@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -61,6 +62,9 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.MaxFileReviews = number(values.Get("max_file_reviews"), "the file review limit must be a number")
 		workflow.MaxFindings = number(values.Get("max_findings"), "the finding limit must be a number")
 		workflow.MaxFileChars = number(values.Get("max_file_chars"), "the largest file size must be a number")
+		if err := policyFromForm(values, &workflow.ReviewPolicy); err != nil && parseErr == nil {
+			parseErr = err
+		}
 		workflow.ReviewDecision = values.Get("review_decision")
 		if workflow.ReviewDecision != "" && workflow.ReviewDecision != overload.ReviewDecisionComment {
 			workflow.BlockSeverity = values.Get("block_severity")
@@ -71,4 +75,24 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 	}
 	workflow.Normalize()
 	return workflow, parseErr
+}
+
+// policyFromForm reads the review policy JSON and the cost cap field.
+func policyFromForm(values url.Values, policy *overload.ReviewPolicy) error {
+	var parseErr error
+	if text := strings.TrimSpace(values.Get("review_policy")); text != "" {
+		decoder := json.NewDecoder(strings.NewReader(text))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(policy); err != nil {
+			parseErr = fmt.Errorf("the review policy is not valid JSON: %w", err)
+		}
+	}
+	if text := strings.TrimSpace(values.Get("max_run_cost_usd")); text != "" {
+		cost, err := strconv.ParseFloat(text, 64)
+		if err != nil && parseErr == nil {
+			parseErr = errors.New("the most a review may spend must be a number")
+		}
+		policy.MaxRunCostUSD = cost
+	}
+	return parseErr
 }

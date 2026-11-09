@@ -120,6 +120,12 @@ func rank(severity string) int {
 	return 4
 }
 
+// Sanitize strips links, images, HTML and mentions from untrusted text and
+// bounds it to limit bytes, as findings are before they are stored.
+func Sanitize(value string, limit int) string {
+	return sanitize(value, limit)
+}
+
 // sanitize prepares model text that may be posted to GitHub as the bot. The
 // model reads untrusted PR content, so links, images, HTML and mentions are
 // removed rather than trusted.

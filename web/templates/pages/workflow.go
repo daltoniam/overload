@@ -1,6 +1,7 @@
 package pages
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -65,6 +66,8 @@ func scopeChips(scope overload.Scope) []string {
 		chips = append(chips, "only matching paths")
 	case overload.ScopePlanned:
 		chips = append(chips, "planner assigns files")
+	case overload.ScopeWholePR:
+		chips = append(chips, "whole pull request")
 	}
 	chips = append(chips, scope.Paths...)
 	if len(scope.Paths) == 0 && scope.Mode != overload.ScopePlanned && (scope.Mode != "" || scope.MaxFindings != 0 || scope.Description != "") {
@@ -167,4 +170,27 @@ func onOff(text string) string {
 // selectable in every slot (for reordering) even when disabled.
 func inWorkflow(workflow overload.Workflow, agent string) bool {
 	return slices.Contains(workflow.Agents, agent)
+}
+
+func optionalCost(value float64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+const policyPlaceholder = `{"context": {"max_index_chars": 10000}}`
+
+// policyJSON shows the review policy settings that have no form fields of
+// their own; the cost cap has one.
+func policyJSON(policy overload.ReviewPolicy) string {
+	policy.MaxRunCostUSD = 0
+	if policy == (overload.ReviewPolicy{}) {
+		return ""
+	}
+	data, err := json.MarshalIndent(policy, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }

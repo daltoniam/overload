@@ -33,11 +33,15 @@ const (
 
 // Scope modes. ScopeGlobs (the default) reviews files matching the paths
 // and any the planner adds; ScopeAlways reviews only files matching the
-// paths; ScopePlanned reviews only files the planner assigns.
+// paths; ScopePlanned reviews only files the planner assigns. ScopeWholePR
+// reviews every file its paths match (all files without paths) together
+// in one call, or a few calls of related files, to catch bugs that span
+// files; it never takes files away from the main agent.
 const (
 	ScopeGlobs   = "globs"
 	ScopeAlways  = "always"
 	ScopePlanned = "planned"
+	ScopeWholePR = "whole_pr"
 )
 
 const maxDescription = 300
@@ -57,13 +61,13 @@ func (scope Scope) Validate() error {
 		return fmt.Errorf("max findings must be between 0 and %d", maxFindingsCap)
 	}
 	switch scope.Mode {
-	case "", ScopeGlobs, ScopeAlways:
+	case "", ScopeGlobs, ScopeAlways, ScopeWholePR:
 	case ScopePlanned:
 		if len(scope.Paths) > 0 {
 			return errors.New("planned scopes take files from the planner, not paths")
 		}
 	default:
-		return errors.New("scope mode must be globs, always or planned")
+		return errors.New("scope mode must be globs, always, planned or whole_pr")
 	}
 	if len(scope.Description) > maxDescription || strings.ContainsFunc(scope.Description, func(r rune) bool { return r < 32 }) {
 		return fmt.Errorf("scope description must be one line of at most %d bytes", maxDescription)
@@ -77,7 +81,12 @@ func (scope Scope) empty() bool {
 
 // Plannable reports whether the planner may assign files to the scope.
 func (scope Scope) Plannable() bool {
-	return scope.Mode != ScopeAlways
+	return scope.Mode != ScopeAlways && scope.Mode != ScopeWholePR
+}
+
+// WholePR reports whether the scope's agent reviews its files together.
+func (scope Scope) WholePR() bool {
+	return scope.Mode == ScopeWholePR
 }
 
 // CompileGlob turns a path glob into a matcher. `*` and `?` stay within one
@@ -152,8 +161,10 @@ func (set globSet) match(path string) bool {
 // added beyond the agent's scope; Unreviewed the files it did not review
 // because it failed.
 type AgentFiles struct {
-	Agent        string   `json:"agent"`
-	Files        []string `json:"files"`
+	Agent string   `json:"agent"`
+	Files []string `json:"files"`
+	// WholePR marks an agent that reviews its files together.
+	WholePR      bool     `json:"whole_pr,omitempty"`
 	Planned      []string `json:"planned,omitempty"`
 	Reviewed     int      `json:"reviewed,omitempty"`
 	Findings     int      `json:"findings,omitempty"`
@@ -194,10 +205,15 @@ type Routing struct {
 	Degraded []string     `json:"degraded,omitempty"`
 }
 
-// FileReviews is the number of (agent, file) reviews the routing needs.
+// FileReviews is the number of (agent, file) reviews the routing needs. A
+// whole-PR agent counts once: it reviews its files together.
 func (routing Routing) FileReviews() int {
 	total := 0
 	for _, agent := range routing.Agents {
+		if agent.WholePR {
+			total += min(len(agent.Files), 1)
+			continue
+		}
 		total += len(agent.Files)
 	}
 	return total
@@ -238,7 +254,7 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 	}
 	routing := Routing{Agents: make([]AgentFiles, len(workflow.Agents))}
 	for position, agent := range workflow.Agents {
-		routing.Agents[position] = AgentFiles{Agent: agent.Name, Files: []string{}}
+		routing.Agents[position] = AgentFiles{Agent: agent.Name, Files: []string{}, WholePR: agent.Scope.WholePR()}
 	}
 	for _, path := range paths {
 		if skip.match(path) {
@@ -254,7 +270,7 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 			if byGlob || extra[position][path] {
 				routing.Agents[position].Files = append(routing.Agents[position].Files, path)
 			}
-			claimed = claimed || byGlob
+			claimed = claimed || (byGlob && !workflow.Agents[position].Scope.WholePR())
 			if !byGlob && extra[position][path] {
 				routing.Agents[position].Planned = append(routing.Agents[position].Planned, path)
 			}
@@ -435,6 +451,11 @@ func (workflow ResolvedWorkflow) Preview(paths []string) (Preview, error) {
 	if workflow.VerifierPrompt != nil {
 		preview.Warnings = append(preview.Warnings, "The verifier adds one model call per sub-agent finding.")
 	}
+	for _, agent := range routing.Agents {
+		if agent.WholePR && len(agent.Files) > 0 {
+			preview.Warnings = append(preview.Warnings, fmt.Sprintf("%s reviews its %s together; a large pull request is split into a few calls of related files.", agent.Agent, Plural(len(agent.Files), "file")))
+		}
+	}
 	return preview, err
 }
 
@@ -449,7 +470,12 @@ func (workflow ResolvedWorkflow) ServerLoads(routing Routing) []ServerLoad {
 	groupOf, loads := workflow.ServerGroups()
 	for position := range workflow.Agents {
 		if position < len(routing.Agents) {
-			loads[groupOf[position]].Reviews += len(routing.Agents[position].Files)
+			agent := routing.Agents[position]
+			if agent.WholePR {
+				loads[groupOf[position]].Reviews += min(len(agent.Files), 1)
+				continue
+			}
+			loads[groupOf[position]].Reviews += len(agent.Files)
 		}
 	}
 	return loads

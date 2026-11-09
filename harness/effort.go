@@ -37,10 +37,19 @@ type reasoningPlan struct {
 	effort    string
 	maxTokens int64
 	timeout   time.Duration
-	// pricing prices the model's calls; systemChars is the length of the
-	// agent's system prompt, for cost estimates.
+	// pricing prices the model's calls; system is the agent's system
+	// prompt (its length feeds cost estimates). steps is how many model
+	// calls one generate may make (more than 1 with tools).
 	pricing     *overload.Pricing
 	systemChars int
+	system      string
+	steps       int
+}
+
+// withSteps returns the plan for calls that may take steps model calls.
+func (plan reasoningPlan) withSteps(steps int) reasoningPlan {
+	plan.steps = steps
+	return plan
 }
 
 func planFor(model overload.ModelProfile) reasoningPlan {

@@ -295,6 +295,15 @@ type ReviewSpec struct {
 	PRNumber   int              `json:"pr_number"`
 	Diff       string           `json:"diff"`
 	Workflow   ResolvedWorkflow `json:"workflow"`
+	// PullRequest is the pull request's title and description, already
+	// stripped of links, HTML and mentions; they are untrusted text.
+	PullRequest *PullRequestInfo `json:"pull_request,omitempty"`
+}
+
+// PullRequestInfo is what a pull request says about itself.
+type PullRequestInfo struct {
+	Title string `json:"title"`
+	Body  string `json:"body,omitempty"`
 }
 
 type ReviewResult struct {
