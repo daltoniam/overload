@@ -23,8 +23,6 @@ CREATE TABLE IF NOT EXISTS user_sessions (
     last_seen_at timestamptz NOT NULL DEFAULT now(),
     id_token text NOT NULL DEFAULT ''
 );
--- Databases created from an earlier draft of this migration lack id_token.
-ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS id_token text NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions (user_id);
 -- Sign-ins in progress: the state sent to the provider (hashed), with the
 -- nonce and PKCE verifier to check its answer against.
