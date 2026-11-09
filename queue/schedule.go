@@ -42,6 +42,12 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 	if err := json.Unmarshal(snapshot, &workflow); err != nil || workflow.Kind != "scheduled_prompt" || workflow.Verify() != nil {
 		return worker.fail(ctx, runID, "The run's workflow snapshot is invalid")
 	}
+	if err := worker.Store.CheckModelPolicy(ctx, workflow); err != nil {
+		if errors.Is(err, postgres.ErrModelPolicy) {
+			return worker.fail(ctx, runID, overload.TruncateUTF8(err.Error(), 500))
+		}
+		return err
+	}
 	if len(input) > 4096 {
 		return worker.fail(ctx, runID, "Scheduled input is larger than 4096 bytes")
 	}

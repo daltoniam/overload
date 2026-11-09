@@ -67,7 +67,7 @@ func licenceLabel(licence catalog.Licence) string {
 	case catalog.CommercialNo:
 		return "non-commercial"
 	case catalog.CommercialRevenueCap:
-		return fmt.Sprintf("free below $%dM revenue", licence.RevenueCapUSD/1_000_000)
+		return "free below " + catalog.FormatUSD(licence.RevenueCapUSD) + " revenue"
 	case catalog.CommercialProvider:
 		return "provider terms"
 	default:
@@ -94,7 +94,7 @@ func managePolicy(args []string) error {
 	if err := store.Migrate(ctx); err != nil {
 		return err
 	}
-	usage := errors.New("usage: overload policy show | set [--allow-origins US,CA] [--block-origins CN] [--check-lineage] [--require-commercial-use] [--annual-revenue-usd N] [--licence-reviewed id,id] [--refuse-uncataloged]")
+	usage := errors.New("usage: overload policy show | set [--allow-origins US,CA] [--block-origins CN] [--check-lineage] [--require-commercial-use] [--annual-revenue-usd N] [--licence-reviewed id,id] [--lineage-reviewed id,id] [--refuse-uncataloged]")
 	if len(args) == 0 {
 		return usage
 	}
@@ -140,14 +140,15 @@ func parsePolicyFlags(args []string) (catalog.Policy, error) {
 	commercial := flags.Bool("require-commercial-use", false, "refuse models whose licence does not allow commercial use or is not recorded")
 	revenue := flags.Int64("annual-revenue-usd", 0, "annual revenue, for licences free below a revenue cap")
 	reviewed := flags.String("licence-reviewed", "", "comma-separated catalog IDs whose licence you have confirmed")
-	uncataloged := flags.Bool("refuse-uncataloged", false, "refuse model connections that name no catalog entry")
+	lineageReviewed := flags.String("lineage-reviewed", "", "comma-separated catalog IDs whose base model you have confirmed")
+	uncataloged := flags.Bool("refuse-uncataloged", false, "refuse model connections that match no catalog entry")
 	if err := flags.Parse(args); err != nil {
 		return catalog.Policy{}, err
 	}
 	if flags.NArg() != 0 {
 		return catalog.Policy{}, errors.New("unexpected policy arguments")
 	}
-	policy := catalog.Policy{AllowedOrigins: splitList(*allow), BlockedOrigins: splitList(*block), CheckLineage: *lineage, RequireCommercialUse: *commercial, AnnualRevenueUSD: *revenue, LicenceReviewed: splitList(*reviewed), RefuseUncataloged: *uncataloged}.Normalize()
+	policy := catalog.Policy{AllowedOrigins: splitList(*allow), BlockedOrigins: splitList(*block), CheckLineage: *lineage, RequireCommercialUse: *commercial, AnnualRevenueUSD: *revenue, LicenceReviewed: splitList(*reviewed), LineageReviewed: splitList(*lineageReviewed), RefuseUncataloged: *uncataloged}.Normalize()
 	return policy, policy.Validate()
 }
 
@@ -165,7 +166,7 @@ func writePolicyReport(out io.Writer, policy catalog.Policy, models []overload.R
 		return err
 	}
 	for _, model := range models {
-		if err := policy.Evaluate(model.Catalog).Error(); err != nil {
+		if err := policy.Check(model.Catalog, model.Model).Error(); err != nil {
 			if _, err := fmt.Fprintf(out, "refused: model %s: %v\n", model.Name, err); err != nil {
 				return err
 			}

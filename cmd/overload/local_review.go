@@ -69,7 +69,7 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 		if store == nil {
 			return overload.ResolvedWorkflow{}, errors.New("DATABASE_URL required for saved workflows")
 		}
-		return store.ResolveWorkflow(ctx, options.workflow)
+		return store.ResolveRunnableWorkflow(ctx, options.workflow)
 	}
 	profile := overload.ModelProfile{Provider: "openaicompat", BaseURL: os.Getenv("OVERLOAD_DEFAULT_MODEL_BASE_URL"), Model: os.Getenv("OVERLOAD_DEFAULT_MODEL"), APIKeyEnv: "OVERLOAD_DEFAULT_MODEL_API_KEY"}
 	prompt := "context"
@@ -88,7 +88,7 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 		profile.Model, profile.Catalog = options.model, ""
 	}
 	if options.modelURL != "" {
-		profile.BaseURL = options.modelURL
+		profile.BaseURL, profile.Catalog = options.modelURL, ""
 	}
 	if options.promptProfile != "" {
 		prompt = options.promptProfile
@@ -98,7 +98,7 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 		if err != nil {
 			return overload.ResolvedWorkflow{}, err
 		}
-		if err := policy.Evaluate(profile.Catalog).Error(); err != nil {
+		if err := policy.Check(profile.Catalog, profile.Model).Error(); err != nil {
 			return overload.ResolvedWorkflow{}, fmt.Errorf("%w: %v", postgres.ErrModelPolicy, err)
 		}
 	}

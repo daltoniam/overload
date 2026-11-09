@@ -190,7 +190,7 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 				return
 			}
 			for _, setting := range settings {
-				if decision := policy.Evaluate(setting.Catalog); !decision.Allowed {
+				if decision := policy.Check(setting.Catalog, setting.Model); !decision.Allowed {
 					refused[setting.Name] = strings.Join(decision.Reasons, "; ")
 				}
 			}

@@ -154,7 +154,9 @@ func mustLoad(data []byte) []Model {
 }
 
 var (
-	idPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,63}$`)
+	// reservedIDs are catalog page paths an entry cannot use.
+	reservedIDs   = []string{"policy"}
 	originPattern = regexp.MustCompile(`^[A-Z]{2}$`)
 	tiers         = []string{"developer", "team_node", "team_cluster", "hosted"}
 	commercial    = []string{CommercialYes, CommercialNo, CommercialRevenueCap, CommercialProvider, CommercialUnknown}
@@ -182,7 +184,7 @@ func parse(data []byte) ([]Model, error) {
 
 func (model Model) validate() error {
 	switch {
-	case !idPattern.MatchString(model.ID):
+	case !idPattern.MatchString(model.ID) || slices.Contains(reservedIDs, model.ID):
 		return fmt.Errorf("invalid id")
 	case model.Name == "" || model.Publisher == "":
 		return fmt.Errorf("name and publisher are required")
@@ -219,17 +221,70 @@ func (model Model) validate() error {
 	return nil
 }
 
-// Models returns every catalog entry in catalog order.
+// Models returns a copy of every catalog entry in catalog order.
 func Models() []Model {
-	return slices.Clone(models)
+	out := make([]Model, len(models))
+	for index, model := range models {
+		out[index] = model.clone()
+	}
+	return out
 }
 
-// Lookup returns the entry with id.
+// Lookup returns a copy of the entry with id.
 func Lookup(id string) (Model, bool) {
 	for _, model := range models {
 		if model.ID == id {
-			return model, true
+			return model.clone(), true
 		}
 	}
 	return Model{}, false
+}
+
+// Identify returns the catalog entry a model connection refers to: the
+// entry it names, or else the entry whose ID or served model name equals
+// the model ID it sends. It fails when the named entry does not exist, or
+// when the model ID is another entry's, so a connection cannot be labelled
+// as a different catalog model.
+func Identify(catalogID, modelName string) (Model, bool, error) {
+	var byName *Model
+	for index := range models {
+		entry := &models[index]
+		if strings.EqualFold(modelName, entry.ID) || (entry.Runtime != nil && entry.Runtime.ServedName != "" && strings.EqualFold(modelName, entry.Runtime.ServedName)) {
+			byName = entry
+			break
+		}
+	}
+	if catalogID == "" {
+		if byName == nil {
+			return Model{}, false, nil
+		}
+		return byName.clone(), true, nil
+	}
+	named, ok := Lookup(catalogID)
+	if !ok {
+		return Model{}, false, fmt.Errorf("catalog entry %q does not exist", catalogID)
+	}
+	if byName != nil && byName.ID != named.ID {
+		return Model{}, false, fmt.Errorf("model %q is catalog entry %s, not %s", modelName, byName.ID, named.ID)
+	}
+	return named, true, nil
+}
+
+// clone deep-copies the entry so callers cannot change the shared catalog.
+func (model Model) clone() Model {
+	model.BaseOrigins = slices.Clone(model.BaseOrigins)
+	model.TrainingDataOrigins = slices.Clone(model.TrainingDataOrigins)
+	model.Weights = slices.Clone(model.Weights)
+	model.Evals = slices.Clone(model.Evals)
+	model.Sources = slices.Clone(model.Sources)
+	if model.Runtime != nil {
+		runtime := *model.Runtime
+		runtime.ServerArgs = slices.Clone(runtime.ServerArgs)
+		model.Runtime = &runtime
+	}
+	if model.Settings.Temperature != nil {
+		temperature := *model.Settings.Temperature
+		model.Settings.Temperature = &temperature
+	}
+	return model
 }

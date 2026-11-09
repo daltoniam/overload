@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -61,6 +62,12 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	run, resolved, repoName, err := w.Store.LoadRunWorkflow(ctx, runID)
 	if err != nil || resolved.Kind != "pr_review" || resolved.Verify() != nil {
 		return w.failRun(ctx, runID, "invalid_workflow", "Pinned PR workflow is unavailable")
+	}
+	if err := w.Store.CheckModelPolicy(ctx, resolved); err != nil {
+		if errors.Is(err, postgres.ErrModelPolicy) {
+			return w.failRun(ctx, runID, "model_policy", overload.TruncateUTF8(err.Error(), 500))
+		}
+		return err
 	}
 	source := w.Source
 	if source == nil {

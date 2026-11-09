@@ -1,17 +1,22 @@
-package postgres
+package postgres_test
 
 import (
 	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
+	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/postgres/pgtest"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 func TestModelPolicy(t *testing.T) {
-	store := isolatedStore(t)
+	store := pgtest.Isolated(t)
 	ctx := context.Background()
 	policy, err := store.LoadModelPolicy(ctx)
 	if err != nil || policy.Restrictive() {
@@ -21,17 +26,31 @@ func TestModelPolicy(t *testing.T) {
 	if err := store.SaveReviewSettings(ctx, qwen); err != nil {
 		t.Fatal(err)
 	}
+	unlabelled := overload.ReviewSettings{Name: "unlabelled", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8001/v1", Model: "qwen3.8-flash-next", PromptProfile: "context"}
+	if err := store.SaveReviewSettings(ctx, unlabelled); err != nil {
+		t.Fatal(err)
+	}
 	loaded, err := store.GetReviewSettings(ctx, "qwen")
 	if err != nil || loaded.Catalog != "qwen3.8-flash-next" {
 		t.Fatalf("loaded = %+v, %v", loaded, err)
 	}
-	if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: "reviewer", Model: "qwen", Prompt: "Review the diff.", Enabled: true}); err != nil {
-		t.Fatal(err)
+	for _, agent := range []overload.AgentDefinition{{Name: "reviewer", Model: "qwen", Prompt: "Review the diff.", Enabled: true}, {Name: "summarizer", Kind: "scheduled_prompt", Model: "unlabelled", Prompt: "Summarize.", Enabled: true}} {
+		if err := store.SaveAgent(ctx, agent); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: "review", Kind: "pr_review", Agents: []string{"reviewer"}, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ResolveWorkflow(ctx, "review"); err != nil {
+	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: "summary", Kind: "scheduled_prompt", Agents: []string{"summarizer"}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	schedule := overload.Schedule{Name: "daily", Workflow: "summary", Cron: "0 9 * * *", Timezone: "UTC", Enabled: true}
+	if err := store.SaveSchedule(ctx, schedule); err != nil {
+		t.Fatal(err)
+	}
+	pinned, err := store.ResolveRunnableWorkflow(ctx, "review")
+	if err != nil {
 		t.Fatalf("resolve before policy: %v", err)
 	}
 
@@ -42,13 +61,45 @@ func TestModelPolicy(t *testing.T) {
 	if err != nil || strings.Join(policy.BlockedOrigins, ",") != "CN" {
 		t.Fatalf("saved policy = %+v, %v", policy, err)
 	}
-	_, err = store.ResolveWorkflow(ctx, "review")
-	if !errors.Is(err, ErrWorkflowUnavailable) || !strings.Contains(err.Error(), "model qwen of agent reviewer is not allowed") {
+	if _, err := store.ResolveWorkflow(ctx, "review"); err != nil {
+		t.Fatalf("reading a refused workflow for display: %v", err)
+	}
+	_, err = store.ResolveRunnableWorkflow(ctx, "review")
+	if !errors.Is(err, postgres.ErrWorkflowUnavailable) || !strings.Contains(err.Error(), "model qwen of agent reviewer is not allowed") {
 		t.Fatalf("resolve after policy: %v", err)
 	}
+	if _, err := store.ResolveRunnableWorkflow(ctx, "summary"); !errors.Is(err, postgres.ErrWorkflowUnavailable) {
+		t.Fatalf("a connection without a catalog entry was not identified by its model ID: %v", err)
+	}
+	if err := store.CheckModelPolicy(ctx, pinned); !errors.Is(err, postgres.ErrModelPolicy) {
+		t.Fatalf("a run pinned before the policy changed was not refused: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE schedules SET next_run_at=now()-interval '1 minute' WHERE name='daily'`); err != nil {
+		t.Fatal(err)
+	}
+	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, err := store.EnqueueDueSchedules(ctx, client)
+	if err != nil || count != 0 {
+		t.Fatalf("refused schedule: queued %d, %v", count, err)
+	}
+	var next time.Time
+	if err := store.Pool.QueryRow(ctx, `SELECT next_run_at FROM schedules WHERE name='daily'`).Scan(&next); err != nil || !next.After(time.Now()) {
+		t.Fatalf("refused schedule was not moved to its next time: %v %v", next, err)
+	}
+	if _, err := store.RunScheduleNow(ctx, client, "daily"); !errors.Is(err, postgres.ErrWorkflowUnavailable) {
+		t.Fatalf("run now with a refused model: %v", err)
+	}
+
 	qwen.Concurrency = 2
-	if err := store.SaveReviewSettings(ctx, qwen); !errors.Is(err, ErrModelPolicy) {
+	if err := store.SaveReviewSettings(ctx, qwen); !errors.Is(err, postgres.ErrModelPolicy) {
 		t.Fatalf("saving a refused model: %v", err)
+	}
+	mislabelled := overload.ReviewSettings{Name: "sneaky", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8000/v1", Model: "qwen3.8-flash-next", PromptProfile: "context", Catalog: "recursive-flint"}
+	if err := store.SaveReviewSettings(ctx, mislabelled); !errors.Is(err, postgres.ErrModelPolicy) {
+		t.Fatalf("saving a mislabelled model: %v", err)
 	}
 	flint := overload.ReviewSettings{Name: "flint", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8080/v1", Model: "flint", PromptProfile: "context", Catalog: "recursive-flint"}
 	if err := store.SaveReviewSettings(ctx, flint); err != nil {
@@ -60,7 +111,7 @@ func TestModelPolicy(t *testing.T) {
 	if err := store.SaveModelPolicy(ctx, catalog.Policy{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ResolveWorkflow(ctx, "review"); err != nil {
+	if _, err := store.ResolveRunnableWorkflow(ctx, "review"); err != nil {
 		t.Fatalf("resolve after clearing policy: %v", err)
 	}
 }

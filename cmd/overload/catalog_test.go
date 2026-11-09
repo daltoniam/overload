@@ -13,7 +13,7 @@ func TestManageCatalog(t *testing.T) {
 	if err := manageCatalog([]string{"list"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "recursive-flint") || !strings.Contains(out.String(), "non-commercial") || !strings.Contains(out.String(), "free below $10M revenue") {
+	if !strings.Contains(out.String(), "recursive-flint") || !strings.Contains(out.String(), "non-commercial") || !strings.Contains(out.String(), "free below $10,000,000 revenue") {
 		t.Fatalf("list = %s", out.String())
 	}
 	out.Reset()

@@ -30,7 +30,7 @@ func (store *fakePolicyStore) SaveModelPolicy(_ context.Context, policy catalog.
 }
 
 func (store *fakePolicyStore) SaveReviewSettings(ctx context.Context, setting overload.ReviewSettings) error {
-	if err := store.policy.Evaluate(setting.Catalog).Error(); err != nil {
+	if err := store.policy.Check(setting.Catalog, setting.Model).Error(); err != nil {
 		return fmt.Errorf("%w: %v", postgres.ErrModelPolicy, err)
 	}
 	return store.fakeStore.SaveReviewSettings(ctx, setting)
@@ -80,10 +80,13 @@ func TestCatalogAndPolicyPages(t *testing.T) {
 		t.Fatal("missing policy form token")
 	}
 	csrf := match[1]
-	post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"US", "US"}, "blocked_origins": {"US"}}, http.StatusBadRequest)
-	post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"US"}, "annual_revenue_usd": {"lots"}}, http.StatusBadRequest)
-	post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"us, ca"}, "blocked_origins": {"cn"}, "check_lineage": {"true"}, "require_commercial_use": {"true"}, "licence_reviewed": {"twil-8b"}, "annual_revenue_usd": {"5000000"}}, http.StatusSeeOther)
-	if strings.Join(store.policy.AllowedOrigins, ",") != "CA,US" || !store.policy.CheckLineage || store.policy.AnnualRevenueUSD != 5_000_000 || len(store.policy.LicenceReviewed) != 1 {
+	retained := post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"US"}, "blocked_origins": {"US"}, "check_lineage": {"true"}, "licence_reviewed": {"twil-8b"}}, http.StatusUnprocessableEntity)
+	if !strings.Contains(retained, "US is both allowed and blocked") || !strings.Contains(retained, `value="US"`) || !regexp.MustCompile(`value="twil-8b" checked`).MatchString(retained) || !regexp.MustCompile(`name="check_lineage" value="true" checked`).MatchString(retained) {
+		t.Fatalf("invalid policy form was not shown again with its values: %s", retained)
+	}
+	post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"US"}, "annual_revenue_usd": {"lots"}}, http.StatusUnprocessableEntity)
+	post("/catalog/policy", url.Values{"csrf": {csrf}, "allowed_origins": {"us, ca"}, "blocked_origins": {"cn"}, "check_lineage": {"true"}, "require_commercial_use": {"true"}, "licence_reviewed": {"twil-8b"}, "lineage_reviewed": {"gemma-4-31b"}, "annual_revenue_usd": {"5000000"}}, http.StatusSeeOther)
+	if strings.Join(store.policy.AllowedOrigins, ",") != "CA,US" || !store.policy.CheckLineage || store.policy.AnnualRevenueUSD != 5_000_000 || len(store.policy.LicenceReviewed) != 1 || len(store.policy.LineageReviewed) != 1 {
 		t.Fatalf("saved policy = %+v", store.policy)
 	}
 	if !strings.Contains(get("/catalog/policy", http.StatusOK), "qwen: its publisher is from CN") {

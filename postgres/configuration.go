@@ -319,16 +319,28 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	if len(result.Agents) == 0 {
 		return result, errors.New("workflow has no agents")
 	}
+	return result, nil
+}
+
+// ResolveRunnableWorkflow resolves a workflow that is about to queue a run:
+// as ResolveWorkflow, and every agent's model must pass the model policy.
+func (s *Store) ResolveRunnableWorkflow(ctx context.Context, name string) (overload.ResolvedWorkflow, error) {
+	return resolveRunnableWorkflow(ctx, s.Pool, name)
+}
+
+func resolveRunnableWorkflow(ctx context.Context, q querier, name string) (overload.ResolvedWorkflow, error) {
+	resolved, err := resolveWorkflow(ctx, q, name)
+	if err != nil {
+		return resolved, err
+	}
 	policy, err := loadModelPolicy(ctx, q)
 	if err != nil {
-		return result, err
+		return resolved, err
 	}
-	for _, agent := range result.Agents {
-		if err := policy.Evaluate(agent.Model.Catalog).Error(); err != nil {
-			return result, fmt.Errorf("%w: model %s of agent %s is not allowed by the model policy: %v", ErrWorkflowUnavailable, agent.Model.Name, agent.Name, err)
-		}
+	if err := checkWorkflowPolicy(policy, resolved); err != nil {
+		return resolved, fmt.Errorf("%w: %w", ErrWorkflowUnavailable, err)
 	}
-	return result, nil
+	return resolved, nil
 }
 
 func loadPromptRevision(ctx context.Context, q querier, id int64, prompt *overload.PromptTemplate) error {

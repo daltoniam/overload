@@ -330,6 +330,8 @@ func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handle
 		path = strings.TrimSuffix(r.URL.Path, "/delete")
 	} else if r.URL.Path == "/configure/repositories" && r.PostForm.Get("id") != "" {
 		path = r.URL.Path + "/" + r.PostForm.Get("id")
+	} else if r.URL.Path == "/catalog/policy" {
+		path = r.URL.Path
 	} else if existing := r.PostForm.Get("existing"); existing != "" {
 		path = r.URL.Path + "/" + url.PathEscape(existing)
 	}
@@ -360,7 +362,7 @@ func renderRetainedForm(w http.ResponseWriter, r *http.Request, next http.Handle
 		if node.Data == "input" {
 			if attr(node, "type") == "checkbox" {
 				removeAttr(node, "checked")
-				if value == "true" {
+				if slices.Contains(r.PostForm[name], attr(node, "value")) {
 					setAttr(node, "checked", "")
 				}
 			} else {

@@ -55,7 +55,7 @@ func (s *Store) SaveReviewSettings(ctx context.Context, setting overload.ReviewS
 	if err != nil {
 		return err
 	}
-	if err := policy.Evaluate(setting.Catalog).Error(); err != nil {
+	if err := policy.Check(setting.Catalog, setting.Model).Error(); err != nil {
 		return fmt.Errorf("%w: %v", ErrModelPolicy, err)
 	}
 	var count int

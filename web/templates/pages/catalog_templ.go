@@ -1093,17 +1093,65 @@ func PolicyForm(policy catalog.Policy, models []catalog.Model, refused []string,
 					}
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, "</fieldset><label class=\"check\"><input type=\"checkbox\" name=\"refuse_uncataloged\" value=\"true\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, "</fieldset><fieldset class=\"field\"><legend>Lineage reviewed by an administrator</legend><small>When lineage is checked against allowed countries, models whose base model the catalog does not record are refused until you confirm it.</small> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			for _, model := range models {
+				if !model.TrainedFromScratch && model.BaseModel == "" {
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 106, "<label class=\"check\"><input type=\"checkbox\" name=\"lineage_reviewed\" value=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var58 string
+					templ_7745c5c3_Var58, templ_7745c5c3_Err = templ.JoinStringErrs(model.ID)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/catalog.templ`, Line: 172, Col: 90}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var58))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 107, "\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					if contains(policy.LineageReviewed, model.ID) {
+						templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 108, " checked")
+						if templ_7745c5c3_Err != nil {
+							return templ_7745c5c3_Err
+						}
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 109, "> ")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var59 string
+					templ_7745c5c3_Var59, templ_7745c5c3_Err = templ.JoinStringErrs(model.Name)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/catalog.templ`, Line: 172, Col: 163}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var59))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 110, "</label>")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 111, "</fieldset><label class=\"check\"><input type=\"checkbox\" name=\"refuse_uncataloged\" value=\"true\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if policy.RefuseUncataloged {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 106, " checked")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 112, " checked")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 107, "> Refuse model connections that name no catalog entry</label><div class=\"actions\"><button type=\"submit\">Save policy</button><a class=\"button secondary\" href=\"/catalog\">Cancel</a></div></form></section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 113, "> Refuse model connections that match no catalog entry</label><p class=\"muted\">Connections are matched by their catalog entry, or by a model ID equal to an entry's. Allowed countries and the licence rule already refuse unmatched connections; a policy that only blocks countries lets them through.</p><div class=\"actions\"><button type=\"submit\">Save policy</button><a class=\"button secondary\" href=\"/catalog\">Cancel</a></div></form></section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -1194,7 +1242,7 @@ func licenceText(licence catalog.Licence) string {
 	case catalog.CommercialNo:
 		return textOr(licence.Name, "Licence") + ", non-commercial"
 	case catalog.CommercialRevenueCap:
-		return fmt.Sprintf("%s, free below $%dM annual revenue", licence.Name, licence.RevenueCapUSD/1_000_000)
+		return fmt.Sprintf("%s, free below %s annual revenue", licence.Name, catalog.FormatUSD(licence.RevenueCapUSD))
 	case catalog.CommercialProvider:
 		return "Provider's service terms"
 	default:

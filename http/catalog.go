@@ -64,19 +64,20 @@ func registerCatalog(mux *http.ServeMux, store PolicyStore, csrf string) {
 			CheckLineage:         r.PostForm.Get("check_lineage") == "true",
 			RequireCommercialUse: r.PostForm.Get("require_commercial_use") == "true",
 			LicenceReviewed:      r.PostForm["licence_reviewed"],
+			LineageReviewed:      r.PostForm["lineage_reviewed"],
 			RefuseUncataloged:    r.PostForm.Get("refuse_uncataloged") == "true",
 		}
 		if value := strings.TrimSpace(r.PostForm.Get("annual_revenue_usd")); value != "" {
 			revenue, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
-				http.Error(w, "Policy not saved: enter the annual revenue as whole dollars.", http.StatusBadRequest)
+				http.Error(w, "Policy not saved: enter the annual revenue as whole dollars.", http.StatusUnprocessableEntity)
 				return
 			}
 			policy.AnnualRevenueUSD = revenue
 		}
 		policy = policy.Normalize()
 		if err := policy.Validate(); err != nil {
-			http.Error(w, "Policy not saved: "+err.Error()+".", http.StatusBadRequest)
+			http.Error(w, "Policy not saved: "+err.Error()+".", http.StatusUnprocessableEntity)
 			return
 		}
 		if err := store.SaveModelPolicy(r.Context(), policy); err != nil {
@@ -99,7 +100,7 @@ func refusedModels(ctx context.Context, store PolicyStore, policy catalog.Policy
 	}
 	var refused []string
 	for _, setting := range settings {
-		if err := policy.Evaluate(setting.Catalog).Error(); err != nil {
+		if err := policy.Check(setting.Catalog, setting.Model).Error(); err != nil {
 			refused = append(refused, fmt.Sprintf("%s: %v", setting.Name, err))
 		}
 	}

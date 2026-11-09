@@ -3,14 +3,13 @@ package pages
 import (
 	"strconv"
 
-	"github.com/daltoniam/overload/catalog"
-
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/catalog"
 	"github.com/daltoniam/overload/web/templates/layouts"
 )
 
-// ModelsPage lists model connections; Refused maps a model name to the
-// model policy's reason for refusing it.
+// Models lists model connections; refused maps a model name to the model
+// policy's reason for refusing it.
 templ Models(models []overload.ReviewSettings, refused map[string]string) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
 		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><div class="actions"><a class="button secondary" href="/catalog">Catalog and policy</a><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div></div>

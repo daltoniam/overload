@@ -79,16 +79,22 @@ refused.
 
 ### Catalog and model policy
 
-Overload ships a catalog of the models measured in this file and other open
-models a team might run: publisher and country, base model and training-data
-sources, licence terms, hardware tier, known-good settings and planted-bug
-eval results. See it under Models, Catalog and policy, or with
-`overload catalog list` and `overload catalog show ID`.
+Overload ships a catalog of most of the models measured in this file and
+other open models a team might run: publisher and country, base model and
+training-data sources, licence terms, hardware tier, known-good settings and
+planted-bug eval results. See it under Models, Catalog and policy, or with
+`overload catalog list` and `overload catalog show ID`. Fields the catalog
+has not recorded (many licences, some base models) are shown as such rather
+than guessed.
 
 Name a model connection's catalog entry (`--catalog ID`, or the Catalog
 entry field) so the model policy can check it. `overload settings set
 --catalog recursive-flint --name flint --url http://127.0.0.1:8080/v1` fills
-the model ID and reasoning settings from the entry; flags you pass win.
+the model ID and reasoning settings from the entry; flags you pass win. A
+connection that names no entry is matched by its model ID when that equals
+an entry's ID or served name (`flint`, `qwen3.8-flash-next`), and a
+connection whose model ID belongs to a different entry than the one it names
+is refused.
 
 The model policy restricts which models may review code. With no policy
 every model is allowed. For example, to allow only US, Canadian and French
@@ -101,16 +107,25 @@ overload policy set --allow-origins US,CA,FR --check-lineage \
 overload policy show    # the policy and any saved models it refuses
 ```
 
-Licences the catalog has not recorded count as not permitting commercial
-use; after reading a model's terms, list it with `--licence-reviewed ID`
-(this also covers a separately purchased licence). `--refuse-uncataloged`
-refuses connections that name no catalog entry. Every `policy set` replaces
-the whole policy, and `policy set` with no flags clears it.
+- Models whose publisher country is not recorded are refused when origins
+  are allowlisted. With `--check-lineage` and an allowlist, models whose
+  base model is not recorded are refused until you confirm it with
+  `--lineage-reviewed ID`. Training-data sources are recorded only where a
+  model card names them.
+- Licences the catalog has not recorded count as not permitting commercial
+  use; after reading a model's terms, list it with `--licence-reviewed ID`
+  (this also covers a separately purchased licence).
+- Connections that match no catalog entry are refused under an allowlist,
+  the licence rule or `--refuse-uncataloged`. A policy that only blocks
+  countries lets them through, so use an allowlist to fail closed.
+- Every `policy set` replaces the whole policy, and `policy set` with no
+  flags clears it.
 
-A refused model cannot be saved, and a workflow whose agents use one stops
-queueing runs: the webhook records why it was skipped and `overload review`
-fails with the reason. Runs queued before the change keep their pinned
-model.
+A refused model cannot be saved. A workflow whose agents use one stops
+queueing runs: the webhook records why it was skipped, a due schedule moves
+to its next time, and `overload review` fails with the reason. A run queued
+before the policy changed fails with `model_policy` when it starts, rather
+than reviewing with the refused model.
 
 ### DwarfStar on Metal
 

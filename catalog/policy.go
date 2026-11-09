@@ -28,8 +28,12 @@ type Policy struct {
 	// has confirmed the organization may use, for example under a separate
 	// licence. They pass the licence rule but not the origin rules.
 	LicenceReviewed []string `json:"licence_reviewed,omitempty"`
-	// RefuseUncataloged refuses model connections that do not name a
-	// catalog entry, since nothing is known about where they come from.
+	// LineageReviewed lists catalog entries whose base model an
+	// administrator has confirmed, when the catalog does not record it and
+	// lineage is checked against allowed origins.
+	LineageReviewed []string `json:"lineage_reviewed,omitempty"`
+	// RefuseUncataloged refuses model connections that match no catalog
+	// entry, since nothing is known about where they come from.
 	RefuseUncataloged bool `json:"refuse_uncataloged,omitempty"`
 }
 
@@ -58,6 +62,7 @@ func (policy Policy) Normalize() Policy {
 	policy.AllowedOrigins = clean(policy.AllowedOrigins, true)
 	policy.BlockedOrigins = clean(policy.BlockedOrigins, true)
 	policy.LicenceReviewed = clean(policy.LicenceReviewed, false)
+	policy.LineageReviewed = clean(policy.LineageReviewed, false)
 	return policy
 }
 
@@ -76,7 +81,7 @@ func (policy Policy) Validate() error {
 	if policy.AnnualRevenueUSD < 0 {
 		return errors.New("annual revenue cannot be negative")
 	}
-	for _, id := range policy.LicenceReviewed {
+	for _, id := range append(slices.Clone(policy.LicenceReviewed), policy.LineageReviewed...) {
 		if _, ok := Lookup(id); !ok {
 			return fmt.Errorf("%q is not in the catalog", id)
 		}
@@ -98,17 +103,36 @@ func (decision Decision) Error() error {
 	return errors.New(strings.Join(decision.Reasons, "; "))
 }
 
-// Evaluate decides whether the catalog entry id may be used; an empty id is
-// a model connection that names no entry.
-func (policy Policy) Evaluate(id string) Decision {
-	if id == "" {
-		if policy.RefuseUncataloged {
-			return Decision{Reasons: []string{"the model policy only allows catalog models; pick the model's catalog entry"}}
+// Check decides whether a model connection may be used. catalogID is the
+// entry the connection names, if any, and modelName the model ID it sends;
+// see Identify. Connections that match no entry are refused when the
+// policy allowlists origins, requires a commercial licence or refuses
+// uncataloged models, since nothing is known about them; a policy that only
+// blocks origins lets them through.
+func (policy Policy) Check(catalogID, modelName string) Decision {
+	if !policy.Restrictive() {
+		return Decision{Allowed: true}
+	}
+	model, ok, err := Identify(catalogID, modelName)
+	if err != nil {
+		return Decision{Reasons: []string{err.Error()}}
+	}
+	if !ok {
+		if len(policy.AllowedOrigins) > 0 || policy.RequireCommercialUse || policy.RefuseUncataloged {
+			return Decision{Reasons: []string{"it names no catalog entry, so the model policy cannot check it; pick the model's catalog entry"}}
 		}
 		return Decision{Allowed: true}
 	}
+	return policy.Evaluate(model.ID)
+}
+
+// Evaluate decides whether the catalog entry id may be used.
+func (policy Policy) Evaluate(id string) Decision {
 	model, ok := Lookup(id)
 	if !ok {
+		if !policy.Restrictive() {
+			return Decision{Allowed: true}
+		}
 		return Decision{Reasons: []string{fmt.Sprintf("catalog entry %q does not exist", id)}}
 	}
 	var reasons []string
@@ -130,6 +154,9 @@ func (policy Policy) Evaluate(id string) Decision {
 			reasons = append(reasons, fmt.Sprintf("%s is from %s, which the model policy does not allow", subject, origin))
 		}
 	}
+	if policy.CheckLineage && len(policy.AllowedOrigins) > 0 && !model.TrainedFromScratch && model.BaseModel == "" && !slices.Contains(policy.LineageReviewed, id) {
+		reasons = append(reasons, "its base model is not recorded in the catalog; review it and mark its lineage reviewed")
+	}
 	if policy.RequireCommercialUse && !slices.Contains(policy.LicenceReviewed, id) {
 		if reason := policy.licenceRefusal(model.Licence); reason != "" {
 			reasons = append(reasons, reason)
@@ -148,13 +175,15 @@ func (policy Policy) licenceRefusal(licence Licence) string {
 		if policy.AnnualRevenueUSD > 0 && policy.AnnualRevenueUSD < licence.RevenueCapUSD {
 			return ""
 		}
-		return fmt.Sprintf("its licence allows free commercial use only below $%s in annual revenue", groupThousands(licence.RevenueCapUSD))
+		return fmt.Sprintf("its licence allows free commercial use only below %s in annual revenue", FormatUSD(licence.RevenueCapUSD))
 	default:
 		return "its licence terms are not recorded in the catalog; review them and mark it reviewed"
 	}
 }
 
-func groupThousands(value int64) string {
+// FormatUSD formats whole dollars with thousands separators, such as
+// $10,000,000.
+func FormatUSD(value int64) string {
 	digits := fmt.Sprint(value)
 	var out strings.Builder
 	for index, digit := range digits {
@@ -163,5 +192,5 @@ func groupThousands(value int64) string {
 		}
 		out.WriteRune(digit)
 	}
-	return out.String()
+	return "$" + out.String()
 }

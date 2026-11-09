@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -43,7 +44,7 @@ func (s *Store) SaveSchedule(ctx context.Context, schedule overload.Schedule) er
 	if kind != "scheduled_prompt" {
 		return errors.New("workflow is not a scheduled prompt")
 	}
-	resolved, err := s.ResolveWorkflow(ctx, schedule.Workflow)
+	resolved, err := s.ResolveRunnableWorkflow(ctx, schedule.Workflow)
 	if err != nil {
 		return err
 	}
@@ -105,6 +106,7 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 	if err != nil {
 		return 0, err
 	}
+	queued := 0
 	for _, item := range due {
 		zone, err := time.LoadLocation(item.timezone)
 		if err != nil {
@@ -118,10 +120,18 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 		if next.IsZero() {
 			return 0, errors.New("schedule has no future occurrence")
 		}
-		resolved, err := s.ResolveWorkflow(ctx, item.workflow)
+		resolved, err := resolveRunnableWorkflow(ctx, tx, item.workflow)
+		if errors.Is(err, ErrWorkflowUnavailable) {
+			slog.Warn("scheduled run skipped", "schedule", item.name, "error", err)
+			if _, err := tx.Exec(ctx, `UPDATE schedules SET next_run_at=$2 WHERE id=$1`, item.id, next); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if err != nil {
 			return 0, err
 		}
+		queued++
 		if resolved.Kind != "scheduled_prompt" {
 			return 0, errors.New("schedule workflow kind changed")
 		}
@@ -150,7 +160,7 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
-	return len(due), nil
+	return queued, nil
 }
 
 type ScheduleArgs struct {
@@ -177,7 +187,7 @@ func (s *Store) RunScheduleNow(ctx context.Context, client *river.Client[pgx.Tx]
 	if err != nil {
 		return 0, err
 	}
-	resolved, err := resolveWorkflow(ctx, tx, workflowName)
+	resolved, err := resolveRunnableWorkflow(ctx, tx, workflowName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, fmt.Errorf("%w: workflow %s is disabled or missing", ErrWorkflowUnavailable, workflowName)
 	}
