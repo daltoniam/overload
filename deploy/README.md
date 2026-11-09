@@ -165,8 +165,9 @@ overload models clean                                 # delete partial downloads
   2 GB free is refused. Gated models need `HF_TOKEN` or a token saved by
   `hf auth login`; the token is not sent on redirects to other hosts.
 - `check` and `serve` compare `llama-server --version` with the catalog's
-  minimum build (Flint needs b11801) and say how to upgrade; builds that
-  report no number need `--skip-version-check`. They use `--llama-server`,
+  minimum build (Flint needs b11801) and say how to upgrade; a build that
+  reports no number (built from source without git) needs
+  `--skip-version-check` on `serve`. They use `--llama-server`,
   `OVERLOAD_LLAMA_SERVER` or `llama-server` on PATH.
 - `serve` registers a launchd agent (`dev.overload.model.<id>`) that runs
   llama-server on 127.0.0.1 with the catalog's arguments, starts at login
@@ -177,7 +178,9 @@ overload models clean                                 # delete partial downloads
   `--connect NAME` also saves a model connection with the catalog entry and
   settings; without it the command to add one is printed. Logs are in the
   install's `logs/model-<id>.log`. `overload uninstall` removes model
-  services too.
+  services too. If the model never loads, `serve` prints the end of the
+  log and leaves the service registered; fix the cause and serve again, or
+  remove it with `stop`.
 - `rm` refuses a model that is being served, and keeps files another
   downloaded entry uses.
 - The catalog page for a model shows what this Mac has downloaded and

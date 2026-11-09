@@ -213,7 +213,7 @@ func SelectQuant(files []File, quant string) ([]File, error) {
 	if !quantPattern.MatchString(quant) {
 		return nil, errors.New("choose a quantization such as Q4_K_M")
 	}
-	token := regexp.MustCompile(`(?i)(^|[-._/])` + regexp.QuoteMeta(quant) + `([-./]|$)`)
+	token := regexp.MustCompile(`(?i)(^|[-./])` + regexp.QuoteMeta(quant) + `([-./]|$)`)
 	var selected []File
 	for _, file := range files {
 		name := strings.ToLower(file.Path)

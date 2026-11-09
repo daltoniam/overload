@@ -149,19 +149,41 @@ func (store Store) Serve(manager ServiceManager, agent launchd.Agent, service Se
 			replacing = true
 		}
 	}
-	manager.Stop(agent.Label)
 	if !replacing && PortInUse(service.Port) {
 		return fmt.Errorf("port %d is already in use on this Mac; choose another with --port", service.Port)
 	}
+	if err := store.filesPresent(service); err != nil {
+		return err
+	}
+	manager.Stop(agent.Label)
 	if err := manager.Write(agent); err != nil {
 		return err
 	}
 	if err := manager.Start(agent.Label); err != nil {
 		_ = manager.Remove(agent.Label)
-		return err
+		remaining := slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
+		if writeErr := store.writeServices(remaining); writeErr != nil {
+			return writeErr
+		}
+		return fmt.Errorf("start %s: %w; its service was removed", service.ID, err)
 	}
 	services = slices.DeleteFunc(services, func(existing Service) bool { return existing.ID == service.ID })
 	return store.writeServices(append(services, service))
+}
+
+// filesPresent checks, under the services lock that rm also takes, that
+// the weights the service will load are still downloaded.
+func (store Store) filesPresent(service Service) error {
+	installed, err := store.Find(service.ID, service.Quant)
+	if err != nil {
+		return err
+	}
+	for _, file := range installed.Files {
+		if _, err := os.Stat(store.Path(installed.Repository, file.Path)); err != nil {
+			return fmt.Errorf("%s is missing; run overload models pull %s again", file.Path, service.ID)
+		}
+	}
+	return nil
 }
 
 // StopService removes the model's service.
@@ -246,18 +268,19 @@ func CheckHealth(ctx context.Context, client *http.Client, service Service) Heal
 var ErrNotStarting = errors.New("the model server is not starting")
 
 // WaitReady polls the service until it is ready or ctx ends. A server that
-// has not answered at all after unreachable is reported as not starting,
-// rather than waiting out ctx.
+// has not answered for longer than unreachable (since it started, or since
+// it last answered while loading, as when it crashes mid-load and launchd
+// restarts it) is reported as not starting, rather than waiting out ctx.
 func WaitReady(ctx context.Context, client *http.Client, service Service, interval, unreachable time.Duration) error {
-	started, answered := time.Now(), false
+	lastAnswer := time.Now()
 	for {
 		switch CheckHealth(ctx, client, service) {
 		case HealthReady:
 			return nil
 		case HealthLoading:
-			answered = true
+			lastAnswer = time.Now()
 		case HealthUnreachable:
-			if !answered && unreachable > 0 && time.Since(started) > unreachable {
+			if unreachable > 0 && time.Since(lastAnswer) > unreachable {
 				return ErrNotStarting
 			}
 		}

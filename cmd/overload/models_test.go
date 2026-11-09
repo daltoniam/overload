@@ -148,3 +148,26 @@ func TestModelsCommand(t *testing.T) {
 		t.Fatalf("stop of an ID the catalog no longer has: %v", err)
 	}
 }
+
+func TestSkipVersionCheckOnlyCoversUnknownBuilds(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "llama-server")
+	write := func(version string) {
+		if err := os.WriteFile(script, []byte("#!/bin/sh\necho 'version: "+version+"'\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flint, _ := localModel("recursive-flint")
+	command := modelsCommand{}
+	write("11669 (abc1234)")
+	if _, err := command.runtime(context.Background(), flint, script, true); err == nil {
+		t.Fatal("--skip-version-check let a known old build through")
+	}
+	write("0 (abc1234)")
+	if _, err := command.runtime(context.Background(), flint, script, false); err == nil {
+		t.Fatal("an unknown build passed without --skip-version-check")
+	}
+	if _, err := command.runtime(context.Background(), flint, script, true); err != nil {
+		t.Fatalf("--skip-version-check with an unknown build: %v", err)
+	}
+}

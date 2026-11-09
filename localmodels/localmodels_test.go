@@ -39,6 +39,8 @@ type fakeHub struct {
 	badRange  atomic.Bool
 	redirect  string
 	revision  string
+	// status, when set, answers every file request with it.
+	status int
 }
 
 func digestOf(content []byte) string {
@@ -85,6 +87,10 @@ func (hub *fakeHub) handler() http.Handler {
 		content, found := hub.files[path]
 		if !ok || !found {
 			http.NotFound(w, r)
+			return
+		}
+		if hub.status != 0 {
+			w.WriteHeader(hub.status)
 			return
 		}
 		if hub.redirect != "" && r.URL.Query().Get("signed") == "" {
@@ -236,6 +242,41 @@ func TestPartialFromAnotherRevisionIsNotResumed(t *testing.T) {
 	}
 }
 
+func TestPullFailsOnUnexpectedStatus(t *testing.T) {
+	content := []byte(strings.Repeat("x", 4096))
+	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
+	store := NewStore(t.TempDir())
+	destination := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := destination + ".00000000deadbeef" + partialSuffix
+	if err := os.WriteFile(stale, []byte("old revision"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []int{http.StatusRequestedRangeNotSatisfiable, http.StatusPartialContent} {
+		fake.mu.Lock()
+		fake.status = status
+		fake.mu.Unlock()
+		done := make(chan error, 1)
+		go func() {
+			_, err := store.Pull(context.Background(), hub, testModel(), "Q4_K_M", "", nil)
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatalf("status %d on a fresh download succeeded", status)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("status %d on a fresh download looped", status)
+		}
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatal("a partial file from another revision was kept")
+	}
+}
+
 func TestPullRestartsWithoutRangeSupport(t *testing.T) {
 	content := []byte(strings.Repeat("x", 4096))
 	fake, hub := newHub(t, map[string][]byte{"flint-Q4_K_M.gguf": content})
@@ -275,6 +316,9 @@ func TestRedirectsDropTheToken(t *testing.T) {
 
 func TestSelectQuant(t *testing.T) {
 	files := []File{{Path: "flint-Q4_K_M.gguf"}, {Path: "flint-Q4_K_M_L.gguf"}, {Path: "Q8_0/flint-Q8_0-00002-of-00002.gguf"}, {Path: "Q8_0/flint-Q8_0-00001-of-00002.gguf"}, {Path: "mmproj-Q8_0.gguf"}, {Path: "flint-IQ3_XXS.gguf"}, {Path: "a-Q6_K.gguf"}, {Path: "b-Q6_K.gguf"}, {Path: "x-Q5_K-00001-of-00003.gguf"}, {Path: "x-Q5_K-00002-of-00003.gguf"}}
+	if _, err := SelectQuant([]File{{Path: "flint-IQ4_XS.gguf"}}, "XS"); err == nil {
+		t.Error("a quantization matched the tail of another")
+	}
 	for quant, want := range map[string]string{"Q4_K_M": "flint-Q4_K_M.gguf", "q8_0": "Q8_0/flint-Q8_0-00001-of-00002.gguf,Q8_0/flint-Q8_0-00002-of-00002.gguf", "IQ3_XXS": "flint-IQ3_XXS.gguf"} {
 		selected, err := SelectQuant(files, quant)
 		var paths []string
@@ -351,6 +395,7 @@ func TestLlamaVersion(t *testing.T) {
 type fakeManager struct {
 	written  map[string]launchd.Agent
 	started  []string
+	stopped  []string
 	removed  []string
 	startErr error
 }
@@ -363,7 +408,7 @@ func (manager *fakeManager) Start(label string) error {
 	manager.started = append(manager.started, label)
 	return manager.startErr
 }
-func (manager *fakeManager) Stop(string) {}
+func (manager *fakeManager) Stop(label string) { manager.stopped = append(manager.stopped, label) }
 func (manager *fakeManager) Remove(label string) error {
 	manager.removed = append(manager.removed, label)
 	return nil
@@ -403,8 +448,18 @@ func TestServices(t *testing.T) {
 	if _, _, err := NewStore("models").ServiceAgent(model, installed, ServeOptions{Binary: "/b", LogDir: "/l", Port: 8080, Parallel: 1}); err == nil {
 		t.Error("a relative model directory was accepted")
 	}
+	weights := store.Path("test/flint-GGUF", "flint-Q4_K_M.gguf")
+	if err := os.MkdirAll(filepath.Dir(weights), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(weights, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeManifest([]Installed{installed}); err != nil {
+		t.Fatal(err)
+	}
 	manager := &fakeManager{written: map[string]launchd.Agent{}}
-	if err := store.Serve(manager, agent, Service{ID: "x", Label: "dev.overload.model.x", Port: 9000}); err == nil || !strings.Contains(err.Error(), "already in use") {
+	if err := store.Serve(manager, launchd.Agent{Label: "dev.overload.model.recursive-flint"}, Service{ID: model.ID, Quant: "Q4_K_M", Label: "dev.overload.model.recursive-flint", Port: 9000}); err == nil || !strings.Contains(err.Error(), "already in use") {
 		t.Fatalf("busy port: %v", err)
 	}
 	if err := store.Serve(manager, agent, service); err != nil {
@@ -414,27 +469,26 @@ func TestServices(t *testing.T) {
 	if err := store.Serve(manager, agent, service); err != nil {
 		t.Fatalf("restarting a model's own service: %v", err)
 	}
+	manager.stopped = nil
 	other := Service{ID: "other", Label: "dev.overload.model.other", Port: 8080}
 	if err := store.Serve(manager, launchd.Agent{Label: other.Label}, other); err == nil {
 		t.Fatal("two services on one port")
 	}
-	manager.startErr = errors.New("boom")
-	failing := Service{ID: "failing", Label: "dev.overload.model.failing", Port: 8090}
-	if err := store.Serve(manager, launchd.Agent{Label: failing.Label}, failing); err == nil || manager.removed[len(manager.removed)-1] != failing.Label {
-		t.Fatalf("a service that failed to start was not removed: %v %v", err, manager.removed)
+	if len(manager.stopped) != 0 {
+		t.Fatalf("a refused serve stopped %v", manager.stopped)
 	}
-	services, err := store.Services()
-	if err != nil || len(services) != 1 {
-		t.Fatalf("services = %+v, %v", services, err)
-	}
-	if err := store.writeManifest([]Installed{installed}); err != nil {
-		t.Fatal(err)
+	if err := store.Serve(manager, launchd.Agent{Label: "dev.overload.model.missing"}, Service{ID: "missing", Port: 8095}); err == nil || !strings.Contains(err.Error(), "not downloaded") {
+		t.Fatalf("served a model that is not downloaded: %v", err)
 	}
 	if _, err := store.Remove(model.ID, ""); err == nil || !strings.Contains(err.Error(), "being served") {
 		t.Fatalf("removed a served model: %v", err)
 	}
-	if err := store.StopService(manager, "recursive-flint"); err != nil {
-		t.Fatalf("stop: %v", err)
+	manager.startErr = errors.New("boom")
+	if err := store.Serve(manager, agent, service); err == nil || manager.removed[len(manager.removed)-1] != agent.Label {
+		t.Fatalf("a service that failed to start was not removed: %v %v", err, manager.removed)
+	}
+	if services, err := store.Services(); err != nil || len(services) != 0 {
+		t.Fatalf("a failed restart kept its record: %+v %v", services, err)
 	}
 	if err := store.StopService(manager, "recursive-flint"); err == nil {
 		t.Fatal("stopped a missing service")
@@ -495,5 +549,18 @@ func TestHealth(t *testing.T) {
 	}
 	if err := WaitReady(ctx, server.Client(), Service{Port: 1}, time.Millisecond, 20*time.Millisecond); !errors.Is(err, ErrNotStarting) {
 		t.Fatalf("unreachable server: %v", err)
+	}
+	status.Store(http.StatusServiceUnavailable)
+	crashed := make(chan error, 1)
+	go func() { crashed <- WaitReady(ctx, server.Client(), service, time.Millisecond, 100*time.Millisecond) }()
+	time.Sleep(30 * time.Millisecond)
+	server.Close()
+	select {
+	case err := <-crashed:
+		if !errors.Is(err, ErrNotStarting) {
+			t.Fatalf("a server that crashed while loading: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waited out the deadline for a server that crashed while loading")
 	}
 }

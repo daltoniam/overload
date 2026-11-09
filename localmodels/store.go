@@ -172,6 +172,15 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 		return err
 	}
 	partial := store.partialPath(repository, file)
+	stale, _ := filepath.Glob(destination + ".*" + partialSuffix)
+	for _, old := range stale {
+		if old != partial {
+			_ = os.Remove(old)
+		}
+	}
+	if info, err := os.Stat(partial); err == nil && info.Size() > 0 && progress != nil {
+		progress(file.Path, info.Size(), file.Size, true)
+	}
 	output, err := os.OpenFile(partial, os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return err
@@ -215,8 +224,8 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 // bytes now written. A server that ignores or cannot satisfy the range
 // gets one request for the whole file instead.
 func fetch(ctx context.Context, hub Hub, path string, file File, output *os.File, digest hash.Hash, offset int64, progress Progress) (int64, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
 	request, err := hub.request(ctx, path)
 	if err != nil {
 		return offset, err
@@ -236,7 +245,7 @@ func fetch(ctx context.Context, hub Hub, path string, file File, output *os.File
 			return offset, err
 		}
 		offset = 0
-	case response.StatusCode == http.StatusRequestedRangeNotSatisfiable || response.StatusCode == http.StatusPartialContent:
+	case offset > 0 && (response.StatusCode == http.StatusRequestedRangeNotSatisfiable || response.StatusCode == http.StatusPartialContent):
 		_ = response.Body.Close()
 		if err := restart(output, digest); err != nil {
 			return offset, err
@@ -249,7 +258,7 @@ func fetch(ctx context.Context, hub Hub, path string, file File, output *os.File
 	if stall <= 0 {
 		stall = defaultStall
 	}
-	watchdog := time.AfterFunc(stall, cancel)
+	watchdog := time.AfterFunc(stall, func() { cancel(fmt.Errorf("no data received for %s", stall)) })
 	defer watchdog.Stop()
 	reader := io.LimitReader(response.Body, file.Size-offset)
 	buffer := make([]byte, 1<<20)
@@ -270,6 +279,9 @@ func fetch(ctx context.Context, hub Hub, path string, file File, output *os.File
 			return offset, nil
 		}
 		if readErr != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				readErr = cause
+			}
 			return offset, fmt.Errorf("download interrupted at %d of %d bytes (run the command again to resume): %w", offset, file.Size, requestError(readErr))
 		}
 	}
@@ -350,6 +362,11 @@ func (store Store) Remove(id, quant string) (Installed, error) {
 		return Installed{}, err
 	}
 	defer unlock()
+	unlockServices, err := store.lock(".services.lock")
+	if err != nil {
+		return Installed{}, err
+	}
+	defer unlockServices()
 	installed, err := store.Find(id, quant)
 	if err != nil {
 		return Installed{}, err

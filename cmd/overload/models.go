@@ -358,17 +358,12 @@ func (command modelsCommand) runtime(ctx context.Context, model catalog.Model, b
 	}
 	version, err := localmodels.DetectLlama(ctx, binary)
 	if err != nil {
-		if skip {
-			return localmodels.LlamaVersion{}, nil
-		}
 		return localmodels.LlamaVersion{}, err
 	}
-	if !skip {
-		if err := localmodels.CheckRuntime(model, version); err != nil {
-			return version, err
-		}
+	if skip && version.Build == 0 {
+		return version, nil
 	}
-	return version, nil
+	return version, localmodels.CheckRuntime(model, version)
 }
 
 func (command modelsCommand) serve(ctx context.Context, args []string) error {
@@ -379,7 +374,7 @@ func (command modelsCommand) serve(ctx context.Context, args []string) error {
 	parallel := flags.set.Int("parallel", 1, "parallel request slots; each gets the catalog's full context")
 	connect := flags.set.String("connect", "", "also save a model connection with this name (needs DATABASE_URL)")
 	wait := flags.set.Duration("wait", 15*time.Minute, "how long to wait for the model to load")
-	skip := flags.set.Bool("skip-version-check", false, "start even if the llama-server build cannot be checked")
+	skip := flags.set.Bool("skip-version-check", false, "start a llama-server that reports no build number")
 	if err := flags.parse(args, 1); err != nil {
 		return err
 	}
@@ -412,7 +407,10 @@ func (command modelsCommand) serve(ctx context.Context, args []string) error {
 	if label == "" {
 		label = defaultLabel
 	}
-	logDir := filepath.Join(filepath.Dir(configPath()), "logs")
+	logDir, err := filepath.Abs(filepath.Join(filepath.Dir(configPath()), "logs"))
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(logDir, 0o700); err != nil {
 		return err
 	}
@@ -430,7 +428,7 @@ func (command modelsCommand) serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("%w; the service is still registered (overload models stop %s removes it). Last log lines:\n%s", err, model.ID, logTail(agent.Log, 20))
 	}
 	if err := localmodels.CheckModel(ctx, command.client, service); err != nil {
-		return err
+		return fmt.Errorf("%w; the service is still registered (overload models stop %s removes it). Last log lines:\n%s", err, model.ID, logTail(agent.Log, 20))
 	}
 	if *connect == "" {
 		_, err := fmt.Fprintf(command.out, "Ready. Add it with: overload settings set --name %s --url %s --model %s --catalog %s --concurrency %d\n", model.ID, service.BaseURL(), service.ModelName, model.ID, *parallel)
@@ -496,14 +494,23 @@ func localModelSummary(store localmodels.Store, manager localmodels.ServiceManag
 }
 
 // removeModelServices removes the launchd services models started for an
-// install, for uninstall.
-func removeModelServices(dir string) error {
+// install, for uninstall: those recorded in the model directory and any
+// other agent under the install's label, in case the directory moved.
+func removeModelServices(dir, label string) error {
+	labels := map[string]bool{}
 	services, err := localmodels.NewStore(dir).Services()
 	if err != nil {
-		return err
+		fmt.Printf("Could not read %s (%v); removing model services by label instead.\n", dir, err)
 	}
 	for _, service := range services {
-		if err := launchd.Remove(service.Label); err != nil {
+		labels[service.Label] = true
+	}
+	plists, _ := filepath.Glob(filepath.Join(filepath.Dir(launchd.Path(label)), label+".model.*.plist"))
+	for _, plist := range plists {
+		labels[strings.TrimSuffix(filepath.Base(plist), ".plist")] = true
+	}
+	for service := range labels {
+		if err := launchd.Remove(service); err != nil {
 			return err
 		}
 	}

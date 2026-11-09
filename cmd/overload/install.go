@@ -384,7 +384,7 @@ func uninstall(args []string) error {
 		if modelDir == "" {
 			modelDir = filepath.Join(inst.home, "models")
 		}
-		if err := removeModelServices(modelDir); err != nil {
+		if err := removeModelServices(modelDir, inst.label); err != nil {
 			return fmt.Errorf("remove model services: %w", err)
 		}
 		for _, label := range []string{inst.label, inst.label + ".postgres", inst.label + ".tunnel"} {
