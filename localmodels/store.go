@@ -50,6 +50,8 @@ type Installed struct {
 	// Served is set when a pull replaced an entry a model service uses;
 	// the old files are kept until it is served again.
 	Served bool `json:"-"`
+	// Warning describes a clean-up problem after a successful pull.
+	Warning string `json:"-"`
 }
 
 // Size is the bytes the installed files take.
@@ -160,35 +162,58 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 	if slices.ContainsFunc(services, func(service Service) bool {
 		return service.ID == installed.ID && strings.EqualFold(service.Quant, installed.Quant)
 	}) {
-		installed.Served = len(replaced) > 0
-		return installed, store.retire(manifest, replaced)
+		added, err := store.retire(manifest, replaced)
+		if err != nil {
+			installed.Warning = "the download succeeded, but the old files could not be recorded for clean-up: " + err.Error()
+		}
+		installed.Served = added > 0
+		return installed, nil
 	}
 	installed.Freed = store.removeUnused(manifest, replaced)
+	if _, err := store.retire(manifest, nil); err != nil {
+		installed.Warning = "the download succeeded, but the clean-up record could not be updated: " + err.Error()
+	}
 	return installed, nil
 }
 
 // retire records files of replaced entries that a service still loads, so
-// clean deletes exactly those once no service loads them. Files overload
-// did not write are never deleted.
-func (store Store) retire(manifest, replaced []Installed) error {
-	inUse := map[string]bool{}
-	for _, entry := range manifest {
-		for _, file := range entry.Files {
-			inUse[store.Path(entry.Repository, file.Path)] = true
-		}
-	}
+// clean deletes exactly those once no service loads them, and forgets any
+// retired file the manifest lists again. Files overload did not write are
+// never deleted. It returns how many files it added.
+func (store Store) retire(manifest, replaced []Installed) (int, error) {
+	inUse := store.manifestPaths(manifest)
 	retired, err := store.retired()
 	if err != nil {
-		return err
+		return 0, err
 	}
+	retired = slices.DeleteFunc(retired, func(path string) bool { return inUse[path] })
+	added := 0
 	for _, entry := range replaced {
 		for _, file := range entry.Files {
 			if path := store.Path(entry.Repository, file.Path); !inUse[path] && !slices.Contains(retired, path) {
 				retired = append(retired, path)
+				added++
 			}
 		}
 	}
-	data, err := json.MarshalIndent(retired, "", "  ")
+	return added, store.writeRetired(retired)
+}
+
+func (store Store) manifestPaths(manifest []Installed) map[string]bool {
+	paths := map[string]bool{}
+	for _, entry := range manifest {
+		for _, file := range entry.Files {
+			paths[store.Path(entry.Repository, file.Path)] = true
+		}
+	}
+	return paths
+}
+
+func (store Store) writeRetired(paths []string) error {
+	if paths == nil {
+		paths = []string{}
+	}
+	data, err := json.MarshalIndent(paths, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -277,13 +302,21 @@ func (store Store) removeStalePartials(repository string, file File) {
 	for _, entry := range entries {
 		name := entry.Name()
 		path := filepath.Join(filepath.Dir(destination), name)
-		if !entry.Type().IsRegular() || path == keep || len(name) != len(prefix)+16+len(partialSuffix) || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, partialSuffix) {
-			continue
-		}
-		if _, err := hex.DecodeString(name[len(prefix) : len(prefix)+16]); err == nil {
+		if entry.Type().IsRegular() && path != keep && strings.HasPrefix(name, prefix) && ownPartial(name) {
 			_ = os.Remove(path)
 		}
 	}
+}
+
+// ownPartial reports whether name is an unfinished download overload
+// named: <file>.<16 hex digits of its digest>.part.
+func ownPartial(name string) bool {
+	stem, ok := strings.CutSuffix(name, partialSuffix)
+	if !ok || len(stem) < 18 || stem[len(stem)-17] != '.' {
+		return false
+	}
+	_, err := hex.DecodeString(stem[len(stem)-16:])
+	return err == nil
 }
 
 // Path is where a repository file is stored.
@@ -562,6 +595,16 @@ func (store Store) Clean() (int64, error) {
 		return 0, err
 	}
 	defer unlock()
+	unlockServices, err := store.lock(".services.lock")
+	if err != nil {
+		return 0, err
+	}
+	defer unlockServices()
+	manifest, err := store.readManifest()
+	if err != nil {
+		return 0, err
+	}
+	installed := store.manifestPaths(manifest)
 	services, err := store.Services()
 	if err != nil {
 		return 0, err
@@ -579,6 +622,9 @@ func (store Store) Clean() (int64, error) {
 	var freed int64
 	var still []string
 	for _, path := range retired {
+		if installed[path] {
+			continue
+		}
 		if loaded[path] {
 			still = append(still, path)
 			continue
@@ -591,11 +637,7 @@ func (store Store) Clean() (int64, error) {
 			store.removeEmptyParents(filepath.Dir(path))
 		}
 	}
-	data, err := json.MarshalIndent(still, "", "  ")
-	if err != nil {
-		return freed, err
-	}
-	if err := writeFileAtomic(filepath.Join(store.Dir, "retired.json"), data); err != nil {
+	if err := store.writeRetired(still); err != nil {
 		return freed, err
 	}
 	err = filepath.WalkDir(store.Dir, func(path string, entry fs.DirEntry, err error) error {
@@ -605,7 +647,7 @@ func (store Store) Clean() (int64, error) {
 			}
 			return err
 		}
-		if entry.Type().IsRegular() && strings.HasSuffix(entry.Name(), partialSuffix) {
+		if entry.Type().IsRegular() && ownPartial(entry.Name()) {
 			info, err := entry.Info()
 			if err != nil {
 				return err

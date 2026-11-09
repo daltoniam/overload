@@ -211,7 +211,7 @@ func TestPullResumesAndVerifies(t *testing.T) {
 	if err != nil || used < int64(len(content)) || free <= 0 {
 		t.Fatalf("usage = %d, %d, %v", used, free, err)
 	}
-	if err := os.WriteFile(filepath.Join(store.Dir, "stale.gguf.part"), []byte("12345"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(store.Dir, "stale.gguf.0123456789abcdef.part"), []byte("12345"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if freed, err := store.Clean(); err != nil || freed < 5 {
@@ -296,6 +296,16 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	if _, err := os.Stat(unrelated); err != nil {
 		t.Fatal("clean deleted a GGUF overload did not write")
 	}
+	foreign := filepath.Join(store.Dir, "mine", "video.mp4.part")
+	if err := os.WriteFile(foreign, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Clean(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatal("clean deleted another program's partial download")
+	}
 	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -314,6 +324,41 @@ func TestPullFromAnotherRepositoryRemovesTheOldFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Dir, "old")); !os.IsNotExist(err) {
 		t.Fatal("the replaced repository's files were orphaned")
+	}
+}
+
+func TestCleanKeepsRetiredFilesThatAreInstalledAgain(t *testing.T) {
+	store := NewStore(t.TempDir())
+	entry := Installed{ID: "recursive-flint", Quant: "Q4_K_M", Repository: "a/flint", Files: []File{{Path: "flint-Q4_K_M.gguf", Size: 1}}}
+	path := store.Path(entry.Repository, entry.Files[0].Path)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeManifest([]Installed{entry}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.writeRetired([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	if freed, err := store.Clean(); err != nil || freed != 0 {
+		t.Fatalf("clean = %d, %v", freed, err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("clean deleted an installed file")
+	}
+	if retired, _ := store.retired(); len(retired) != 0 {
+		t.Fatalf("an installed file stayed retired: %v", retired)
+	}
+}
+
+func TestOwnPartial(t *testing.T) {
+	for name, want := range map[string]bool{"a.gguf.0123456789abcdef.part": true, "a.gguf.mine.part": false, "video.mp4.part": false, "a.gguf.0123456789abcdeg.part": false, ".0123456789abcdef.part": false} {
+		if ownPartial(name) != want {
+			t.Errorf("%s: %v", name, !want)
+		}
 	}
 }
 

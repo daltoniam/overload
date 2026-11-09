@@ -298,6 +298,9 @@ func (command modelsCommand) pull(ctx context.Context, args []string) error {
 		return err
 	}
 	_, err = fmt.Fprintf(command.out, "Downloaded %s %s (%s, revision %.12s) to %s\n", installed.ID, installed.Quant, gigabytes(installed.Size()), installed.Revision, store.Dir)
+	if err == nil && installed.Warning != "" {
+		_, err = fmt.Fprintf(command.out, "Warning: %s\n", installed.Warning)
+	}
 	switch {
 	case err != nil:
 	case installed.Served:
