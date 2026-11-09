@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -279,6 +280,10 @@ func (command modelsCommand) pull(ctx context.Context, args []string) error {
 	}
 	reported := map[string]int64{}
 	installed, err := store.Pull(ctx, command.hub, model, *quant, *repository, func(path string, done, total int64, verifying bool) {
+		if verifying && done > 0 {
+			_, _ = fmt.Fprintf(command.out, "%s: resuming at %s of %s\n", path, gigabytes(done), gigabytes(total))
+			return
+		}
 		if verifying {
 			_, _ = fmt.Fprintf(command.out, "%s: already downloaded, verifying %s\n", path, gigabytes(total))
 			return
@@ -509,10 +514,17 @@ func removeModelServices(dir, label string) error {
 	for _, plist := range plists {
 		labels[strings.TrimSuffix(filepath.Base(plist), ".plist")] = true
 	}
+	var failures []error
 	for service := range labels {
 		if err := launchd.Remove(service); err != nil {
-			return err
+			failures = append(failures, err)
 		}
+	}
+	if len(failures) > 0 {
+		return errors.Join(failures...)
+	}
+	if err := os.Remove(filepath.Join(dir, "services.json")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }

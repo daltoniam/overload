@@ -38,8 +38,9 @@ against `checksums.txt` and installs it into `~/.local/bin`
 
 Running `install` again keeps the configuration and restarts the services.
 `overload status` shows services and health. `overload uninstall` removes the
-launchd agents and keeps the data; `--purge` deletes the install directory
-too. `--home`, `--label` and `--port` allow side-by-side installs.
+launchd agents (model services included) and keeps the data; `--purge`
+deletes the install directory too, including downloaded model weights unless
+`OVERLOAD_MODELS_DIR` points elsewhere. `--home`, `--label` and `--port` allow side-by-side installs.
 
 `make install-test` (and the macOS CI job) installs under a throwaway label
 and port and checks login, `install-check`, a saved model surviving restarts
@@ -163,7 +164,8 @@ overload models clean                                 # delete partial downloads
   file is checked against the SHA-256 Hugging Face publishes for it; a
   mismatch deletes the partial file. A download that would leave less than
   2 GB free is refused. Gated models need `HF_TOKEN` or a token saved by
-  `hf auth login`; the token is not sent on redirects to other hosts.
+  `hf auth login`; the token is sent only to Hugging Face and its
+  subdomains, never on redirects elsewhere.
 - `check` and `serve` compare `llama-server --version` with the catalog's
   minimum build (Flint needs b11801) and say how to upgrade; a build that
   reports no number (built from source without git) needs

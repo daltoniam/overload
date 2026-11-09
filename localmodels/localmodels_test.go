@@ -251,6 +251,15 @@ func TestPullFailsOnUnexpectedStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	stale := destination + ".00000000deadbeef" + partialSuffix
+	odd := store.Path("test/flint-GGUF", "[odd].gguf") + ".00000000deadbeef" + partialSuffix
+	if err := os.WriteFile(odd, []byte("other file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if _, err := os.Stat(odd); err != nil {
+			t.Error("a partial file of another file was removed")
+		}
+	})
 	if err := os.WriteFile(stale, []byte("old revision"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +327,9 @@ func TestSelectQuant(t *testing.T) {
 	files := []File{{Path: "flint-Q4_K_M.gguf"}, {Path: "flint-Q4_K_M_L.gguf"}, {Path: "Q8_0/flint-Q8_0-00002-of-00002.gguf"}, {Path: "Q8_0/flint-Q8_0-00001-of-00002.gguf"}, {Path: "mmproj-Q8_0.gguf"}, {Path: "flint-IQ3_XXS.gguf"}, {Path: "a-Q6_K.gguf"}, {Path: "b-Q6_K.gguf"}, {Path: "x-Q5_K-00001-of-00003.gguf"}, {Path: "x-Q5_K-00002-of-00003.gguf"}}
 	if _, err := SelectQuant([]File{{Path: "flint-IQ4_XS.gguf"}}, "XS"); err == nil {
 		t.Error("a quantization matched the tail of another")
+	}
+	if selected, err := SelectQuant([]File{{Path: "model_Q4_K_M.gguf"}}, "Q4_K_M"); err != nil || len(selected) != 1 {
+		t.Errorf("an underscore-separated name: %v", err)
 	}
 	for quant, want := range map[string]string{"Q4_K_M": "flint-Q4_K_M.gguf", "q8_0": "Q8_0/flint-Q8_0-00001-of-00002.gguf,Q8_0/flint-Q8_0-00002-of-00002.gguf", "IQ3_XXS": "flint-IQ3_XXS.gguf"} {
 		selected, err := SelectQuant(files, quant)
@@ -417,8 +429,9 @@ func (manager *fakeManager) State(string) string { return "running" }
 
 func TestServices(t *testing.T) {
 	busy := map[int]bool{9000: true}
+	probe := PortInUse
 	PortInUse = func(port int) bool { return busy[port] }
-	t.Cleanup(func() { PortInUse = func(int) bool { return false } })
+	t.Cleanup(func() { PortInUse = probe })
 	store := NewStore(t.TempDir())
 	model := testModel()
 	installed := Installed{ID: model.ID, Quant: "Q4_K_M", Repository: "test/flint-GGUF", Files: []File{{Path: "flint-Q4_K_M.gguf"}}}

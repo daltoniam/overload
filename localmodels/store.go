@@ -104,6 +104,9 @@ func (store Store) Pull(ctx context.Context, hub Hub, model catalog.Model, quant
 		return Installed{}, err
 	}
 	defer unlock()
+	for _, file := range selected {
+		store.removeStalePartials(repository, file)
+	}
 	if err := store.checkSpace(repository, selected); err != nil {
 		return Installed{}, err
 	}
@@ -144,6 +147,25 @@ func (store Store) checkSpace(repository string, files []File) error {
 	return nil
 }
 
+// removeStalePartials deletes unfinished downloads of file from other
+// revisions. Names are matched literally, since repository paths may
+// contain glob characters.
+func (store Store) removeStalePartials(repository string, file File) {
+	destination := store.Path(repository, file.Path)
+	keep := store.partialPath(repository, file)
+	entries, err := os.ReadDir(filepath.Dir(destination))
+	if err != nil {
+		return
+	}
+	prefix := filepath.Base(destination) + "."
+	for _, entry := range entries {
+		path := filepath.Join(filepath.Dir(destination), entry.Name())
+		if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), partialSuffix) && path != keep {
+			_ = os.Remove(path)
+		}
+	}
+}
+
 // Path is where a repository file is stored.
 func (store Store) Path(repository, path string) string {
 	return filepath.Join(store.Dir, filepath.FromSlash(repository), filepath.FromSlash(path))
@@ -172,12 +194,6 @@ func (store Store) download(ctx context.Context, hub Hub, repository, revision s
 		return err
 	}
 	partial := store.partialPath(repository, file)
-	stale, _ := filepath.Glob(destination + ".*" + partialSuffix)
-	for _, old := range stale {
-		if old != partial {
-			_ = os.Remove(old)
-		}
-	}
 	if info, err := os.Stat(partial); err == nil && info.Size() > 0 && progress != nil {
 		progress(file.Path, info.Size(), file.Size, true)
 	}
