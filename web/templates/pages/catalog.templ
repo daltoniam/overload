@@ -1,0 +1,302 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/daltoniam/overload/catalog"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Catalog(models []catalog.Model, policy catalog.Policy) {
+	@layouts.Base(layouts.PageData{Title: "Model catalog", CurrentPath: "/settings"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / Catalog</p><h1>Model catalog</h1><p class="muted">Where each model comes from, what its licence allows and how it scored on overload's planted-bug eval. Name a catalog entry on a model connection so the model policy can check it.</p></div><a class="button" href="/catalog/policy">Edit model policy</a></div>
+		<section class="panel">
+			<p class="muted">{ policySummary(policy) }</p>
+			<div class="table-wrap"><table><caption class="sr-only">Catalog models</caption><thead><tr><th>Model</th><th>Origin</th><th>Licence</th><th>Hardware</th><th>Best eval</th><th>Policy</th></tr></thead><tbody>
+				for _, model := range models {
+					<tr>
+						<td><a href={ templ.URL("/catalog/" + model.ID) }>{ model.Name }</a><span class="secondary-line">{ model.Publisher } · <span class="mono">{ model.ID }</span></span></td>
+						<td>
+							{ originText(model.Origin) }
+							if lineageText(model) != "" {
+								<span class="secondary-line">{ lineageText(model) }</span>
+							}
+						</td>
+						<td>{ licenceText(model.Licence) }</td>
+						<td>{ tierText(model.Tier) }</td>
+						<td>{ bestEvalText(model) }</td>
+						<td>
+							@policyBadge(policy.Evaluate(model.ID))
+						</td>
+					</tr>
+				}
+			</tbody></table></div>
+			<p class="muted">Eval scores come from one 92-line Go file with five planted bugs on an M1 Max (see the measurements in <code>deploy/README.md</code>); treat them as directional.</p>
+		</section>
+	}
+}
+
+templ policyBadge(decision catalog.Decision) {
+	if decision.Allowed {
+		<span class="badge enabled">Allowed</span>
+	} else {
+		<span class="badge failed">Refused</span><span class="secondary-line">{ strings.Join(decision.Reasons, "; ") }</span>
+	}
+}
+
+templ CatalogEntry(model catalog.Model, decision catalog.Decision) {
+	@layouts.Base(layouts.PageData{Title: model.Name, CurrentPath: "/settings"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / <a href="/catalog">Catalog</a></p><h1>{ model.Name }</h1><p class="muted">{ model.Publisher } · <span class="mono">{ model.ID }</span></p></div><a href="/catalog">All catalog models</a></div>
+		<section class="panel"><h2>Provenance and licence</h2>
+			<dl>
+				<dt>Policy</dt>
+				<dd>
+					@policyBadge(decision)
+				</dd>
+				<dt>Publisher origin</dt><dd>{ originText(model.Origin) }</dd>
+				<dt>Base model</dt><dd>{ baseModelText(model) }</dd>
+				if len(model.TrainingDataOrigins) > 0 || model.TrainingDataNotes != "" {
+					<dt>Training data</dt>
+					<dd>
+						{ strings.Join(model.TrainingDataOrigins, ", ") }
+						if model.TrainingDataNotes != "" {
+							<span class="secondary-line">{ model.TrainingDataNotes }</span>
+						}
+					</dd>
+				}
+				<dt>Licence</dt>
+				<dd>
+					{ licenceText(model.Licence) }
+					if model.Licence.Notes != "" {
+						<span class="secondary-line">{ model.Licence.Notes }</span>
+					}
+				</dd>
+				if model.Architecture != "" {
+					<dt>Architecture</dt><dd>{ model.Architecture }</dd>
+				}
+				if model.ContextTokens > 0 {
+					<dt>Context</dt><dd>{ strconv.Itoa(model.ContextTokens) } tokens</dd>
+				}
+				<dt>Hardware</dt><dd>{ tierText(model.Tier) }</dd>
+			</dl>
+			if model.Notes != "" {
+				<p class="notice">{ model.Notes }</p>
+			}
+		</section>
+		if model.Runtime != nil || len(model.Weights) > 0 {
+			<section class="panel"><h2>Running it</h2>
+				if model.Runtime != nil {
+					<dl>
+						<dt>Engine</dt><dd>{ model.Runtime.Engine }</dd>
+						if model.Runtime.MinBuild > 0 {
+							<dt>Minimum build</dt><dd>b{ strconv.Itoa(model.Runtime.MinBuild) }</dd>
+						}
+						if len(model.Runtime.ServerArgs) > 0 {
+							<dt>Server arguments</dt><dd><code>{ strings.Join(model.Runtime.ServerArgs, " ") }</code></dd>
+						}
+						if model.Runtime.ServedName != "" {
+							<dt>Model ID</dt><dd><code>{ model.Runtime.ServedName }</code></dd>
+						}
+					</dl>
+				}
+				if len(model.Weights) > 0 {
+					<div class="table-wrap"><table><caption class="sr-only">Weights</caption><thead><tr><th>Quantization</th><th>Format</th><th>Size</th><th>Repository</th></tr></thead><tbody>
+						for _, weights := range model.Weights {
+							<tr><td>{ weights.Quant }</td><td>{ weights.Format }</td><td>{ sizeText(weights.SizeGB) }</td><td class="mono">{ weights.Repository }</td></tr>
+						}
+					</tbody></table></div>
+				}
+			</section>
+		}
+		<section class="panel"><h2>Overload settings</h2>
+			<dl>
+				<dt>Reasoning control</dt><dd>{ textOr(model.Settings.ReasoningParam, "automatic") }</dd>
+				<dt>Reasoning effort</dt><dd>{ textOr(model.Settings.ReasoningEffort, "not set") }</dd>
+				<dt>Max output tokens</dt><dd>{ tokensText(model.Settings.MaxOutputTokens) }</dd>
+				if model.Settings.Temperature != nil {
+					<dt>Temperature</dt><dd>{ strconv.FormatFloat(*model.Settings.Temperature, 'f', -1, 64) } (from the model's GGUF; llama-server applies it)</dd>
+				}
+			</dl>
+			<p class="muted">Add it with <code>overload settings set --name NAME --url URL --catalog { model.ID }</code>; settings you do not pass are filled from this entry.</p>
+		</section>
+		<section class="panel"><h2>Planted-bug eval</h2>
+			if len(model.Evals) == 0 {
+				<div class="empty">Not measured yet.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Eval results</caption><thead><tr><th>Setup</th><th>Found</th><th>Runs</th><th>Notes</th></tr></thead><tbody>
+					for _, eval := range model.Evals {
+						<tr><td>{ eval.Setup }</td><td>{ eval.Score() }</td><td>{ strconv.Itoa(eval.Runs) }</td><td>{ eval.Notes }</td></tr>
+					}
+				</tbody></table></div>
+			}
+			if len(model.Sources) > 0 {
+				<p class="muted">Sources:</p>
+				<ul>
+					for _, source := range model.Sources {
+						<li class="mono">{ source }</li>
+					}
+				</ul>
+			}
+		</section>
+	}
+}
+
+templ PolicyForm(policy catalog.Policy, models []catalog.Model, refused []string, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Model policy", CurrentPath: "/settings"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/settings">Models</a> / Policy</p><h1>Model policy</h1><p class="muted">Restrict which models may review code by origin and licence. Saving a refused model fails, and workflows whose agents use a refused model stop queueing new runs; runs already queued keep their pinned model.</p></div><a href="/catalog">Model catalog</a></div>
+		if len(refused) > 0 {
+			<section class="panel"><h2>Models this policy refuses</h2><ul>
+				for _, line := range refused {
+					<li>{ line }</li>
+				}
+			</ul></section>
+		}
+		<section class="panel"><form method="post" action="/catalog/policy"><input type="hidden" name="csrf" value={ nonce }/>
+			<label class="field"><span>Allowed publisher countries</span><input name="allowed_origins" value={ strings.Join(policy.AllowedOrigins, ", ") } placeholder="US, CA, FR" autocomplete="off"/><small>Two-letter country codes, comma separated. When set, only these are allowed and models whose origin is not recorded are refused. Leave empty to allow any country not blocked.</small></label>
+			<label class="field"><span>Blocked countries</span><input name="blocked_origins" value={ strings.Join(policy.BlockedOrigins, ", ") } placeholder="CN" autocomplete="off"/></label>
+			<label class="check"><input type="checkbox" name="check_lineage" value="true" checked?={ policy.CheckLineage }/> Apply the country rules to base models and to models that generated training data</label>
+			<label class="check"><input type="checkbox" name="require_commercial_use" value="true" checked?={ policy.RequireCommercialUse }/> Require a licence that allows our commercial use</label>
+			<label class="field"><span>Annual revenue in US dollars (optional)</span><input name="annual_revenue_usd" type="number" min="0" step="1" value={ revenueValue(policy.AnnualRevenueUSD) }/><small>Some licences are free only below a revenue cap; without a figure those models are refused when a commercial licence is required.</small></label>
+			<fieldset class="field"><legend>Licences reviewed by an administrator</legend><small>Pass the licence rule for models whose terms you have confirmed, for example under a separate licence. Country rules still apply.</small>
+				for _, model := range models {
+					if model.Licence.Commercial != catalog.CommercialYes && model.Licence.Commercial != catalog.CommercialProvider {
+						<label class="check"><input type="checkbox" name="licence_reviewed" value={ model.ID } checked?={ contains(policy.LicenceReviewed, model.ID) }/> { model.Name } <span class="muted">({ licenceText(model.Licence) })</span></label>
+					}
+				}
+			</fieldset>
+			<label class="check"><input type="checkbox" name="refuse_uncataloged" value="true" checked?={ policy.RefuseUncataloged }/> Refuse model connections that name no catalog entry</label>
+			<div class="actions"><button type="submit">Save policy</button><a class="button secondary" href="/catalog">Cancel</a></div>
+		</form></section>
+	}
+}
+
+func contains(values []string, value string) bool {
+	for _, candidate := range values {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
+}
+
+func revenueValue(value int64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatInt(value, 10)
+}
+
+func policySummary(policy catalog.Policy) string {
+	if !policy.Restrictive() {
+		return "No model policy is set: every model is allowed."
+	}
+	var parts []string
+	if len(policy.AllowedOrigins) > 0 {
+		parts = append(parts, "publishers from "+strings.Join(policy.AllowedOrigins, ", ")+" only")
+	}
+	if len(policy.BlockedOrigins) > 0 {
+		parts = append(parts, strings.Join(policy.BlockedOrigins, ", ")+" blocked")
+	}
+	if policy.CheckLineage {
+		parts = append(parts, "lineage checked")
+	}
+	if policy.RequireCommercialUse {
+		parts = append(parts, "commercial licence required")
+	}
+	if policy.RefuseUncataloged {
+		parts = append(parts, "uncataloged models refused")
+	}
+	return "Model policy: " + strings.Join(parts, "; ") + "."
+}
+
+func originText(origin string) string {
+	if origin == "" {
+		return "Not recorded"
+	}
+	return origin
+}
+
+func lineageText(model catalog.Model) string {
+	var parts []string
+	if len(model.BaseOrigins) > 0 {
+		parts = append(parts, "base "+strings.Join(model.BaseOrigins, ", "))
+	}
+	if len(model.TrainingDataOrigins) > 0 {
+		parts = append(parts, "training data "+strings.Join(model.TrainingDataOrigins, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func baseModelText(model catalog.Model) string {
+	switch {
+	case model.TrainedFromScratch:
+		return "Trained from scratch"
+	case model.BaseModel == "":
+		return "Not recorded"
+	case len(model.BaseOrigins) > 0:
+		return model.BaseModel + " (" + strings.Join(model.BaseOrigins, ", ") + ")"
+	default:
+		return model.BaseModel
+	}
+}
+
+func licenceText(licence catalog.Licence) string {
+	switch licence.Commercial {
+	case catalog.CommercialYes:
+		return licence.Name + ", commercial use allowed"
+	case catalog.CommercialNo:
+		return textOr(licence.Name, "Licence") + ", non-commercial"
+	case catalog.CommercialRevenueCap:
+		return fmt.Sprintf("%s, free below $%dM annual revenue", licence.Name, licence.RevenueCapUSD/1_000_000)
+	case catalog.CommercialProvider:
+		return "Provider's service terms"
+	default:
+		return "Not recorded"
+	}
+}
+
+func tierText(tier string) string {
+	switch tier {
+	case "developer":
+		return "Developer Mac (32 to 64 GB)"
+	case "team_node":
+		return "Mac Studio"
+	case "team_cluster":
+		return "Mac Studio cluster"
+	case "hosted":
+		return "Hosted API"
+	default:
+		return tier
+	}
+}
+
+func bestEvalText(model catalog.Model) string {
+	best, ok := model.BestEval()
+	if !ok {
+		return "Not measured"
+	}
+	return best.Score()
+}
+
+func sizeText(size float64) string {
+	if size == 0 {
+		return "Not recorded"
+	}
+	return strconv.FormatFloat(size, 'f', -1, 64) + " GB"
+}
+
+func textOr(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
+func tokensText(tokens int) string {
+	if tokens == 0 {
+		return "default"
+	}
+	return strconv.Itoa(tokens)
+}

@@ -73,6 +73,10 @@ func run(args []string) error {
 		return inlineReview(args[1:])
 	case "settings":
 		return manageSettings(args[1:])
+	case "catalog":
+		return manageCatalog(args[1:], os.Stdout)
+	case "policy":
+		return managePolicy(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:

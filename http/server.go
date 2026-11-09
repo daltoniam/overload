@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -181,9 +182,25 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			http.Error(w, "Unable to load settings", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.Models(settings).Render(r.Context(), w)
+		refused := map[string]string{}
+		if policies, ok := reader.(PolicyStore); ok {
+			policy, err := policies.LoadModelPolicy(r.Context())
+			if err != nil {
+				http.Error(w, "Unable to load the model policy", http.StatusInternalServerError)
+				return
+			}
+			for _, setting := range settings {
+				if decision := policy.Evaluate(setting.Catalog); !decision.Allowed {
+					refused[setting.Name] = strings.Join(decision.Reasons, "; ")
+				}
+			}
+		}
+		_ = pages.Models(settings, refused).Render(r.Context(), w)
 	})
 	registerModels(mux, reader, csrf)
+	if policies, ok := reader.(PolicyStore); ok {
+		registerCatalog(mux, policies, csrf)
+	}
 	mux.HandleFunc("GET /webhooks", func(w http.ResponseWriter, r *http.Request) {
 		state := parseUI(r)
 		var deliveries []postgres.Delivery

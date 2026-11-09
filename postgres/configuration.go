@@ -301,7 +301,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		var tools []byte
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &entryID, &tools)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,m.catalog_id,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &agent.Model.Catalog, &entryID, &tools)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return result, fmt.Errorf("%w: agent %s is disabled, missing or for a different job type", ErrWorkflowUnavailable, agentName)
 		}
@@ -318,6 +318,15 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	}
 	if len(result.Agents) == 0 {
 		return result, errors.New("workflow has no agents")
+	}
+	policy, err := loadModelPolicy(ctx, q)
+	if err != nil {
+		return result, err
+	}
+	for _, agent := range result.Agents {
+		if err := policy.Evaluate(agent.Model.Catalog).Error(); err != nil {
+			return result, fmt.Errorf("%w: model %s of agent %s is not allowed by the model policy: %v", ErrWorkflowUnavailable, agent.Model.Name, agent.Name, err)
+		}
 	}
 	return result, nil
 }

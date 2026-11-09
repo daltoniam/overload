@@ -77,6 +77,41 @@ of an API key's environment variable is stored, never the key, and names of
 overload's own secrets (`DATABASE_URL`, `OVERLOAD_*`, `GITHUB_*`, `PG*`) are
 refused.
 
+### Catalog and model policy
+
+Overload ships a catalog of the models measured in this file and other open
+models a team might run: publisher and country, base model and training-data
+sources, licence terms, hardware tier, known-good settings and planted-bug
+eval results. See it under Models, Catalog and policy, or with
+`overload catalog list` and `overload catalog show ID`.
+
+Name a model connection's catalog entry (`--catalog ID`, or the Catalog
+entry field) so the model policy can check it. `overload settings set
+--catalog recursive-flint --name flint --url http://127.0.0.1:8080/v1` fills
+the model ID and reasoning settings from the entry; flags you pass win.
+
+The model policy restricts which models may review code. With no policy
+every model is allowed. For example, to allow only US, Canadian and French
+publishers, apply that to base models and training data too, and require a
+licence that permits commercial use:
+
+```sh
+overload policy set --allow-origins US,CA,FR --check-lineage \
+  --require-commercial-use --annual-revenue-usd 25000000
+overload policy show    # the policy and any saved models it refuses
+```
+
+Licences the catalog has not recorded count as not permitting commercial
+use; after reading a model's terms, list it with `--licence-reviewed ID`
+(this also covers a separately purchased licence). `--refuse-uncataloged`
+refuses connections that name no catalog entry. Every `policy set` replaces
+the whole policy, and `policy set` with no flags clears it.
+
+A refused model cannot be saved, and a workflow whose agents use one stops
+queueing runs: the webhook records why it was skipped and `overload review`
+fails with the reason. Runs queued before the change keep their pinned
+model.
+
 ### DwarfStar on Metal
 
 [DwarfStar](https://dwarfstar.sh/) (`github.com/antirez/ds4`, MIT) serves a

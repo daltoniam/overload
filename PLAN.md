@@ -175,6 +175,7 @@ overload/
   harness/tools/       read_file, search, list_dir, get_diff (path-confined)
   sandbox/             Agent Sandbox implementation of SandboxRunner + local exec fake
   eval/                eval sets, scoring, reports
+  catalog/             model catalog (provenance, licences, settings, evals) and the model policy
   http/                router, middleware (auth, CSRF, logging), webhook + UI handlers
   web/templates/       templ: layouts/, components/, pages/ (Switchboard pattern)
   web/static/          CSS (embedded)
@@ -1426,7 +1427,7 @@ Section 16 is built in phases, one pull request each, stacked in this order.
 Each phase ships tested code, CLI and UI where it applies, and updates this
 plan and deploy/README.md.
 
-1. **Model catalog and origin policy** (16.4 item 1, 16.5): a built-in
+1. **Model catalog and origin policy** (16.4 item 1, 16.5; done): a built-in
    catalog of open models with origin, base model, training-data sources,
    licence terms, known-good settings and measured eval results; model
    connections can name a catalog entry; an administrator policy restricts
