@@ -189,11 +189,14 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 			}
 			check := BudgetCheck{Period: period.name, Scope: budget.Repository, Cap: *period.cap, Expected: expected, SkipStatus: budget.SkipStatus}
 			scoped := budget.Repository != ""
-			if err := q.QueryRow(ctx, `SELECT COALESCE(sum(c.usd), 0) FROM run_costs c JOIN runs r ON r.id = c.run_id WHERE c.at >= $1 AND c.at <= $2 AND (NOT $3 OR r.repository_id = $4)`, period.since, now, scoped, repoID).Scan(&check.Spent); err != nil {
-				return BudgetCheck{}, err
-			}
-			pending := fmt.Sprintf(`SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND (NOT $1 OR r.repository_id = $2) AND NOT COALESCE(r.status = 'queued' AND r.repository_id = $2 AND r.pr_number = $3 AND r.head_sha <> $4, false)`, "r.config_snapshot")
-			if err := q.QueryRow(ctx, pending, scoped, repoID, replaces.pr, replaces.head).Scan(&check.Pending); err != nil {
+			// Spent and pending come from one statement, so they share a
+			// snapshot: a run that records its cost and finishes is counted
+			// in exactly one of them. Spend recorded up to the moment the
+			// statement runs counts, not only up to now.
+			totals := fmt.Sprintf(`SELECT
+  (SELECT COALESCE(sum(c.usd), 0) FROM run_costs c JOIN runs r ON r.id = c.run_id WHERE c.at >= $1 AND c.at <= GREATEST($2::timestamptz, clock_timestamp()) AND (NOT $3 OR r.repository_id = $4)),
+  (SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND (NOT $3 OR r.repository_id = $4) AND NOT COALESCE(r.status = 'queued' AND r.repository_id = $4 AND r.pr_number = $5 AND r.head_sha <> $6, false))`, "r.config_snapshot")
+			if err := q.QueryRow(ctx, totals, period.since, now, scoped, repoID, replaces.pr, replaces.head).Scan(&check.Spent, &check.Pending); err != nil {
 				return BudgetCheck{}, err
 			}
 			if check.Spent+check.Pending+expected > check.Cap || check.Spent >= check.Cap {

@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/daltoniam/overload/eval"
 )
 
 func TestParsePRList(t *testing.T) {
@@ -64,5 +67,30 @@ func TestReadLabels(t *testing.T) {
 	}
 	if _, err := readLabels(bad); err == nil {
 		t.Fatal("accepted a label without a line")
+	}
+}
+
+func TestWriteEvalReportRefusesAliasedOutputs(t *testing.T) {
+	dir := t.TempDir()
+	jsonPath, csvPath := filepath.Join(dir, "results.json"), filepath.Join(dir, "results.csv")
+	// results.csv is a dangling symlink to results.json until the JSON is
+	// written, so the paths look different when options are parsed.
+	if err := os.Symlink(jsonPath, csvPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseEvalOptions([]string{"prs", "--repo", "acme/app", "--prs", "1", "--workflows", "sol", "--out", jsonPath}); err != nil {
+		t.Fatalf("options: %v", err)
+	}
+	report := eval.Report{Repository: "acme/app"}
+	if err := writeEvalReport(report, jsonPath, csvPath); err == nil {
+		t.Fatal("wrote the CSV over the JSON report")
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil || !strings.Contains(string(data), `"acme/app"`) {
+		t.Fatalf("JSON report lost: %q %v", data, err)
+	}
+	other := filepath.Join(dir, "summary.csv")
+	if err := writeEvalReport(report, jsonPath, other); err != nil {
+		t.Fatal(err)
 	}
 }

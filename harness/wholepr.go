@@ -211,7 +211,7 @@ func runWholePR(ctx context.Context, workflow overload.ResolvedWorkflow, positio
 			}
 			message := overload.TruncateUTF8(err.Error(), 300)
 			runs.failures[position].CompareAndSwap(nil, &message)
-			runs.failed[position].Add(1)
+			runs.failed[position].Add(int64(len(request.files)))
 			return nil
 		}
 		byFile := map[string][]overload.Finding{}

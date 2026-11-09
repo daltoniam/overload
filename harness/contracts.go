@@ -164,14 +164,24 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 		removed = append(removed, definitionsIn(section.patch, name, "-")...)
 	}
 	var index contractsIndex
-	seen := map[string]bool{}
+	// A definition is identified by its file and name: two modules may
+	// each change their own validate.
+	type scoped struct{ path, name string }
+	seen := map[scoped]bool{}
 	for _, def := range removed {
-		if seen[def.name] || len(def.name) < 3 || commonNames[def.name] {
+		key := scoped{def.path, def.name}
+		if seen[key] || len(def.name) < 3 || commonNames[def.name] {
 			continue
 		}
-		seen[def.name] = true
+		seen[key] = true
 		change := contractChange{Symbol: def.name, Kind: "removed", Path: def.path, Before: truncateLine(def.line)}
-		if again := added[def.name]; len(again) > 0 {
+		// The new definition is looked for in the same file first; only a
+		// definition that left its file is matched elsewhere (a move).
+		again := slices.DeleteFunc(slices.Clone(added[def.name]), func(other definition) bool { return other.path != def.path })
+		if len(again) == 0 {
+			again = added[def.name]
+		}
+		if len(again) > 0 {
 			if slices.ContainsFunc(again, func(other definition) bool { return other.line == def.line }) {
 				continue
 			}
@@ -182,11 +192,15 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 	if len(index.Changes) == 0 || repo == nil {
 		return index
 	}
-	names := make([]string, len(index.Changes))
-	position := map[string]int{}
+	var names []string
+	// position lists the changes of each symbol; a use of a name several
+	// files define counts for each of them.
+	position := map[string][]int{}
 	for i, change := range index.Changes {
-		names[i] = regexp.QuoteMeta(change.Symbol)
-		position[change.Symbol] = i
+		if _, ok := position[change.Symbol]; !ok {
+			names = append(names, regexp.QuoteMeta(change.Symbol))
+		}
+		position[change.Symbol] = append(position[change.Symbol], i)
 	}
 	pattern := regexp.MustCompile(`(?:` + strings.Join(names, "|") + `)`)
 	uses := make([][]symbolUse, len(index.Changes))
@@ -226,8 +240,9 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 				if isDefinitionOf(line, name, symbol) {
 					continue
 				}
-				i := position[symbol]
-				uses[i] = append(uses[i], symbolUse{Path: name, Line: number + 1, Text: truncateUse(line), InDiff: inDiff[name]})
+				for _, i := range position[symbol] {
+					uses[i] = append(uses[i], symbolUse{Path: name, Line: number + 1, Text: truncateUse(line), InDiff: inDiff[name]})
+				}
 			}
 		}
 		return nil
@@ -344,7 +359,7 @@ func identifierByte(b byte) bool {
 // identifiersIn returns the identifiers in line that are listed symbols,
 // one per occurrence. Splitting the line into identifiers checks both
 // boundaries of every name, so First(Second()) yields both.
-func identifiersIn(line string, symbols map[string]int) []string {
+func identifiersIn[V any](line string, symbols map[string]V) []string {
 	var found []string
 	for start := 0; start < len(line); {
 		if !identifierByte(line[start]) {

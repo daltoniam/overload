@@ -55,6 +55,15 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 			t.Errorf("%s change counted as unchanged", name)
 		}
 	}
+	inCharge := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -10,3 +10,3 @@ func Charge() {\n \tok := true\n-\treturn nil\n+\treturn err\n"
+	inRefund := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -40,3 +40,3 @@ func Refund() {\n \tok := true\n-\treturn nil\n+\treturn err\n"
+	if len(UnchangedFiles(inCharge, inRefund)) != 0 {
+		t.Error("the same edit moved to another function counted as unchanged")
+	}
+	movedDown := strings.Replace(inCharge, "@@ -10,3 +10,3 @@", "@@ -25,3 +25,3 @@", 1)
+	if len(UnchangedFiles(inCharge, movedDown)) != 1 {
+		t.Error("the same edit in the same function at another line counted as changed")
+	}
 	rebased := "diff --git a/a.go b/a.go\nindex 9999999..8888888 100644\n--- a/a.go\n+++ b/a.go\n@@ -5 +5 @@\n-x\n+y\n"
 	original := "diff --git a/a.go b/a.go\nindex 1111111..2222222 100644\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n"
 	if len(UnchangedFiles(original, rebased)) != 1 {

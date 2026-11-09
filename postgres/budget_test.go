@@ -218,6 +218,43 @@ func TestBudgetCountsSpendWhenItHappened(t *testing.T) {
 	}
 }
 
+func TestBudgetCountsSpendRecordedAfterItsClockReading(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := fmt.Sprintf("test-budget-late-%d/api", time.Now().UnixNano())
+	var repoID, runID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM budgets WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	daily := 5.0
+	if err := store.SaveBudget(ctx, Budget{Repository: repo, DailyUSD: &daily}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status) VALUES ($1, 1, '', '', 'webhook', 'completed') RETURNING id`, repoID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddRunCost(ctx, runID, overload.Spend{USD: 4.5}); err != nil {
+		t.Fatal(err)
+	}
+	// The check's clock reading is a moment before the cost was recorded
+	// (same UTC day): the $4.50 still counts.
+	recordedAt := time.Now().UTC()
+	earlier := recordedAt.Add(-time.Second)
+	if earlier.Day() != recordedAt.Day() {
+		t.Skip("too close to midnight UTC")
+	}
+	store.Now = func() time.Time { return earlier }
+	check, err := store.CheckBudget(ctx, repoID, 1)
+	if err != nil || !check.Exceeded || math.Abs(check.Spent-4.5) > 1e-9 {
+		t.Fatalf("check = %+v %v", check, err)
+	}
+}
+
 func TestGlobalBudgetCountsScheduledJobs(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

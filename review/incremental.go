@@ -11,9 +11,10 @@ import (
 
 // FilePatchHashes identifies each file's change in a diff by its changed
 // and context lines (carriage returns and final-newline markers
-// included), its source path, file modes and rename or copy source, and
-// for binary files the new content's blob ID. Hunk positions and other index lines are left out, so the same
-// change hashes the same after a rebase or a merge from the base branch.
+// included), each hunk's section heading, its source path, file modes and
+// rename or copy source, and for binary files the new content's blob ID.
+// Hunk positions and other index lines are left out, so the same change
+// hashes the same after a rebase or a merge from the base branch.
 func FilePatchHashes(patch string) map[string]string {
 	hashes := map[string]string{}
 	var name string
@@ -66,7 +67,13 @@ func FilePatchHashes(patch string) map[string]string {
 			}
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
-			body.WriteString("@@\n")
+			// Keep the section text after the coordinates (the enclosing
+			// function), not the line numbers.
+			section := ""
+			if end := strings.Index(line[2:], "@@"); end >= 0 {
+				section = line[2+end+2:]
+			}
+			body.WriteString("@@" + section + "\n")
 		case inHunk && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") || strings.HasPrefix(line, " ") || strings.HasPrefix(line, `\`)):
 			body.WriteString(line)
 			body.WriteByte('\n')

@@ -244,8 +244,23 @@ func writeEvalReport(report eval.Report, jsonPath, csvPath string) error {
 	if err := os.WriteFile(jsonPath, append(data, '\n'), 0o600); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(csvPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	// Open without truncating and compare with the JSON file now that both
+	// exist: a symlink can make the two paths one file.
+	file, err := os.OpenFile(csvPath, os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
+		return err
+	}
+	csvInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return err
+	}
+	if jsonInfo, err := os.Stat(jsonPath); err == nil && os.SameFile(jsonInfo, csvInfo) {
+		_ = file.Close()
+		return fmt.Errorf("%s and %s are the same file; the JSON results are in %s", csvPath, jsonPath, jsonPath)
+	}
+	if err := file.Truncate(0); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if err := report.WriteCSV(file); err != nil {

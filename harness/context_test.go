@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -49,6 +50,31 @@ func TestContractsIndexListsCallersOutsideTheDiff(t *testing.T) {
 		t.Fatalf("rendered:\n%s", rendered)
 	}
 	if links := index.linked(); len(links["svc/users.py"]) != 1 || links["svc/users.py"][0] != "api/handlers.py" {
+		t.Fatalf("links = %+v", links)
+	}
+}
+
+func TestContractsIndexKeepsSameNamedDefinitionsApart(t *testing.T) {
+	// Two modules each change their own validate; the second module's
+	// change must not be dropped or given the first one's signature.
+	diff := "diff --git a/billing/check.py b/billing/check.py\n--- a/billing/check.py\n+++ b/billing/check.py\n@@ -1 +1 @@\n-def validate(invoice):\n+def validate(invoice, strict):\n" +
+		"diff --git a/users/check.py b/users/check.py\n--- a/users/check.py\n+++ b/users/check.py\n@@ -1 +1 @@\n-def validate(user):\n+def validate(user, role):\n"
+	parsed, err := parseReviewDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := fstest.MapFS{"api/signup.py": {Data: []byte("from users.check import validate\n\nvalidate(user)\n")}}
+	index := buildContractsIndex(context.Background(), parsed, repo, 8)
+	if len(index.Changes) != 2 {
+		t.Fatalf("changes = %+v", index.Changes)
+	}
+	for _, change := range index.Changes {
+		want := map[string]string{"billing/check.py": "def validate(invoice, strict):", "users/check.py": "def validate(user, role):"}[change.Path]
+		if change.Kind != "changed" || change.After != want {
+			t.Fatalf("change in %s = %+v, want after %q", change.Path, change, want)
+		}
+	}
+	if links := index.linked(); !slices.Contains(links["users/check.py"], "api/signup.py") {
 		t.Fatalf("links = %+v", links)
 	}
 }
@@ -353,5 +379,36 @@ func TestLineCountsSeeChangedLinesThatLookLikeHeaders(t *testing.T) {
 	}
 	if header, _ := planSummary(reviewSection{path: "c.go", patch: patch}); header != "### c.go (+2 -1)\n" {
 		t.Fatalf("planner summary = %q", header)
+	}
+}
+
+func TestFailedWholePRGroupCountsEveryFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"bad request"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+	spec := contextSpec(server.URL)
+	parsed, err := parseReviewDiff(spec.Diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := parsed.paths()
+	if len(files) < 2 {
+		t.Fatalf("want a multi-file diff, got %v", files)
+	}
+	fileIndex := map[string]int{}
+	for index, name := range files {
+		fileIndex[name] = index
+	}
+	agent, plan, err := newAgent(context.Background(), spec.Workflow.Agents[0].Model, "Review.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := newAgentRuns(1, len(files))
+	if err := runWholePR(context.Background(), spec.Workflow, 0, agent, plan, [][]string{files}, "", parsed, fileIndex, runs, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if failed := runs.failed[0].Load(); failed != int64(len(files)) || runs.completed[0].Load() != 0 {
+		t.Fatalf("failed = %d completed = %d, want %d failed", failed, runs.completed[0].Load(), len(files))
 	}
 }
