@@ -15,6 +15,9 @@ import (
 // ErrUserDisabled means an administrator disabled the user.
 var ErrUserDisabled = errors.New("user disabled")
 
+// ErrUserNotFound means no user has the ID.
+var ErrUserNotFound = errors.New("user not found")
+
 // ErrNoSession means the session cookie is unknown, expired or belongs to a
 // disabled user.
 var ErrNoSession = errors.New("no session")
@@ -51,34 +54,39 @@ func randomToken() string {
 	return base64.RawURLEncoding.EncodeToString(buf[:])
 }
 
+// maxSessionIdle is the longest idle time a session can be configured
+// with; sessions idle longer are swept.
+const maxSessionIdle = 30 * 24 * time.Hour
+
 // CreateSession starts a session for the user and returns the cookie value.
-func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (string, error) {
+// idToken is the provider's ID token, kept as the sign-out hint.
+func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Duration, idToken string) (string, error) {
 	token := randomToken()
-	if _, err := s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE expires_at < now()`); err != nil {
+	if _, err := s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE expires_at < now() OR last_seen_at < now() - make_interval(secs => $1)`, maxSessionIdle.Seconds()); err != nil {
 		return "", err
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO user_sessions (token_hash, user_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3))`, sessionHash(token), userID, ttl.Seconds())
+	_, err := s.Pool.Exec(ctx, `INSERT INTO user_sessions (token_hash, user_id, expires_at, id_token) VALUES ($1, $2, now() + make_interval(secs => $3), $4)`, sessionHash(token), userID, ttl.Seconds(), idToken)
 	return token, err
 }
 
-// SessionUser returns the user of a live session, ending sessions idle for
-// longer than idle.
+// SessionUser returns the user of a live session and marks it seen.
+// Sessions idle for longer than idle are ended. Both checks use the
+// database clock.
 func (s *Store) SessionUser(ctx context.Context, token string, idle time.Duration) (overload.User, error) {
 	var user overload.User
-	var lastSeen time.Time
-	err := s.Pool.QueryRow(ctx, `SELECT u.id, u.issuer, u.subject, u.email, u.name, u.role, u.last_login_at, s.last_seen_at FROM user_sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1 AND s.expires_at > now() AND NOT u.disabled`, sessionHash(token)).Scan(&user.ID, &user.Issuer, &user.Subject, &user.Email, &user.Name, &user.Role, &user.LastLoginAt, &lastSeen)
+	var stale bool
+	err := s.Pool.QueryRow(ctx, `SELECT u.id, u.issuer, u.subject, u.email, u.name, u.role, u.last_login_at, s.last_seen_at < now() - interval '1 minute' FROM user_sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1 AND s.expires_at > now() AND s.last_seen_at > now() - make_interval(secs => $2) AND NOT u.disabled`, sessionHash(token), idle.Seconds()).Scan(&user.ID, &user.Issuer, &user.Subject, &user.Email, &user.Name, &user.Role, &user.LastLoginAt, &stale)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if _, err := s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE token_hash = $1`, sessionHash(token)); err != nil {
+			return overload.User{}, err
+		}
 		return overload.User{}, ErrNoSession
 	}
 	if err != nil {
 		return overload.User{}, err
 	}
-	if time.Since(lastSeen) > idle {
-		_, _ = s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE token_hash = $1`, sessionHash(token))
-		return overload.User{}, ErrNoSession
-	}
-	if time.Since(lastSeen) > time.Minute {
+	if stale {
 		if _, err := s.Pool.Exec(ctx, `UPDATE user_sessions SET last_seen_at = now() WHERE token_hash = $1`, sessionHash(token)); err != nil {
 			return overload.User{}, err
 		}
@@ -86,10 +94,14 @@ func (s *Store) SessionUser(ctx context.Context, token string, idle time.Duratio
 	return user, nil
 }
 
-// EndSession deletes a session.
-func (s *Store) EndSession(ctx context.Context, token string) error {
-	_, err := s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE token_hash = $1`, sessionHash(token))
-	return err
+// EndSession deletes a session and returns its ID token, if it had one.
+func (s *Store) EndSession(ctx context.Context, token string) (string, error) {
+	var idToken string
+	err := s.Pool.QueryRow(ctx, `DELETE FROM user_sessions WHERE token_hash = $1 RETURNING id_token`, sessionHash(token)).Scan(&idToken)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return idToken, err
 }
 
 // ListUsers returns everyone who has signed in, by email.
@@ -123,7 +135,7 @@ func (s *Store) SetUserDisabled(ctx context.Context, id int64, disabled bool) er
 		return err
 	}
 	if command.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+		return ErrUserNotFound
 	}
 	if disabled {
 		if _, err := tx.Exec(ctx, `DELETE FROM user_sessions WHERE user_id = $1`, id); err != nil {

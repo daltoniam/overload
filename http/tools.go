@@ -67,7 +67,7 @@ func registerTools(mux *http.ServeMux, store ToolServerStore, csrf string) {
 			slices.Sort(names)
 			check.Tools = names
 		}
-		_ = pages.ToolServerForm(server, check, csrf).Render(r.Context(), w)
+		_ = pages.ToolServerForm(server, check, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/tools", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {

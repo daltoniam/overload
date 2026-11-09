@@ -140,7 +140,7 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 		}
 		nonce := ""
 		if _, ok := reader.(ReviewRequester); ok {
-			nonce = csrf
+			nonce = formTokenFor(r, csrf)
 		}
 		_ = pages.RunDetail(run, events, findings, output, routing, nonce).Render(r.Context(), w)
 	})
@@ -278,7 +278,7 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	var auth *oidcAuth
 	if settings != nil {
 		if sessions, ok := reader.(SessionStore); ok {
-			auth = &oidcAuth{settings: settings, store: sessions, client: &http.Client{Timeout: 10 * time.Second}}
+			auth = newOIDCAuth(settings, sessions)
 			registerAuth(mux, auth, csrf)
 		} else {
 			authErr = errors.New("OIDC sign-in needs the database store")
@@ -290,6 +290,13 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 // publicPaths answer without signing in: health checks, signed webhooks
 // and the sign-in flow itself.
 var publicPaths = map[string]bool{"/healthz": true, "/webhooks/github": true, "/auth/login": true, "/auth/callback": true, "/auth/signed-out": true}
+
+// isPublic reports whether a path answers without signing in. The embedded
+// stylesheets and scripts are public so the sign-in and signed-out pages
+// can load them.
+func isPublic(path string) bool {
+	return publicPaths[path] || strings.HasPrefix(path, "/assets/")
+}
 
 func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.Handler {
 	user := os.Getenv("OVERLOAD_UI_USER")
@@ -327,15 +334,15 @@ func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.
 				http.Error(w, "Sign in through Cloudflare Access", http.StatusForbidden)
 				return
 			}
-		case auth != nil && publicPaths[r.URL.Path]:
+		case auth != nil && isPublic(r.URL.Path):
 			who = identity{}
 		case auth != nil:
-			if signedIn, ok := auth.sessionUser(r); ok {
-				who = identity{user: &signedIn, role: signedIn.Role}
+			if signedIn, token, ok := auth.sessionUser(r); ok {
+				who = identity{user: &signedIn, role: signedIn.Role, formToken: auth.formToken(token)}
 			} else if basicAuth(r) {
 				who.breakGlass = true
 				if r.Method != http.MethodGet && r.Method != http.MethodHead {
-					slog.Warn("break-glass change", "method", r.Method, "path", r.URL.Path)
+					slog.Warn("break-glass change", "method", r.Method, "path", r.URL.Path, "remote_addr", r.RemoteAddr, "user_agent", r.UserAgent())
 				}
 			} else {
 				denySignedOut(w, r, user != "" && password != "")
@@ -362,15 +369,17 @@ func secure(next http.Handler, auth *oidcAuth, authErr error, csrf string) http.
 		ctx, cancel := context.WithTimeout(withIdentity(r.Context(), who), 10*time.Second)
 		defer cancel()
 		if who.user != nil {
-			ctx = layouts.WithViewer(ctx, layouts.Viewer{Email: who.user.Email, Role: who.role, CSRF: csrf})
+			ctx = layouts.WithViewer(ctx, layouts.Viewer{Name: displayName(*who.user), Role: who.role, CSRF: who.formToken})
 		}
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// denySignedOut answers a request without a session: pages go to sign-in,
-// HTMX requests are told to load the sign-in page, and
-// ?break-glass=1 asks the browser for the shared break-glass login.
+// denySignedOut answers a request without a session: page loads go to
+// sign-in, HTMX requests are told to load the sign-in page, and
+// ?break-glass=1 asks the browser for the shared break-glass login. Other
+// requests (event streams, scripts, form posts) get a 401 rather than
+// starting a sign-in each.
 func denySignedOut(w http.ResponseWriter, r *http.Request, breakGlass bool) {
 	switch {
 	case breakGlass && r.URL.Path == "/" && r.URL.Query().Get("break-glass") == "1":
@@ -379,11 +388,22 @@ func denySignedOut(w http.ResponseWriter, r *http.Request, breakGlass bool) {
 	case r.Header.Get("HX-Request") == "true":
 		w.Header().Set("HX-Redirect", "/auth/login")
 		http.Error(w, "Sign in again", http.StatusUnauthorized)
-	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+	case (r.Method == http.MethodGet || r.Method == http.MethodHead) && isNavigation(r):
 		http.Redirect(w, r, "/auth/login?next="+url.QueryEscape(r.URL.RequestURI()), http.StatusSeeOther)
 	default:
-		http.Error(w, "Sign in again", http.StatusUnauthorized)
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = pages.SignInProblem("Your session ended", "Sign in again to continue; anything you were submitting was not saved.").Render(r.Context(), w)
 	}
+}
+
+// isNavigation reports whether a request loads a page. Browsers say so with
+// Sec-Fetch-Mode; without it, event streams are the only non-page GETs left
+// once assets are public.
+func isNavigation(r *http.Request) bool {
+	if mode := r.Header.Get("Sec-Fetch-Mode"); mode != "" {
+		return mode == "navigate"
+	}
+	return !strings.Contains(r.Header.Get("Accept"), "text/event-stream")
 }
 
 func ValidateAuth() error {

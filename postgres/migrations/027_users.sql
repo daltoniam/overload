@@ -13,13 +13,15 @@ CREATE TABLE IF NOT EXISTS users (
     last_login_at timestamptz,
     UNIQUE (issuer, subject)
 );
--- Dashboard sessions. Only a SHA-256 of the cookie value is stored.
+-- Dashboard sessions. Only a SHA-256 of the cookie value is stored, with
+-- the provider's ID token as the hint for signing out of the provider.
 CREATE TABLE IF NOT EXISTS user_sessions (
     token_hash bytea PRIMARY KEY,
     user_id bigint NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NOT NULL,
-    last_seen_at timestamptz NOT NULL DEFAULT now()
+    last_seen_at timestamptz NOT NULL DEFAULT now(),
+    id_token text NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS user_sessions_user ON user_sessions (user_id);
 -- Sign-ins in progress: the state sent to the provider (hashed), with the

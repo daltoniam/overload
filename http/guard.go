@@ -18,7 +18,7 @@ func validForm(w http.ResponseWriter, r *http.Request, csrf string) bool {
 		http.Error(w, "Invalid form", http.StatusBadRequest)
 		return false
 	}
-	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("csrf")), []byte(csrf)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(r.PostForm.Get("csrf")), []byte(formTokenFor(r, csrf))) != 1 {
 		http.Error(w, "Invalid form token", http.StatusForbidden)
 		return false
 	}

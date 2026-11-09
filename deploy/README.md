@@ -528,37 +528,65 @@ the model reads untrusted pull request content.
 ## Signing in
 
 A single-user install signs in with the generated Basic Auth login. Teams
-can sign in with any OpenID Connect provider (Okta, Entra ID, Google
-Workspace, Keycloak, Authentik, Dex) instead; Cloudflare Access remains an
-alternative front door, but not together with OIDC.
+can sign in with an OpenID Connect provider whose ID tokens list the
+person's groups (Okta, Keycloak, Authentik, Dex, or Entra ID with the notes
+below) instead; Cloudflare Access remains an alternative front door, but
+not together with OIDC.
 
 | Variable | Meaning |
 |---|---|
 | `OVERLOAD_OIDC_ISSUER` | The provider's issuer URL; turns OIDC sign-in on |
 | `OVERLOAD_OIDC_CLIENT_ID`, `OVERLOAD_OIDC_CLIENT_SECRET` | The client registered for overload |
-| `OVERLOAD_BASE_URL` | The https address people use; the redirect URI is `<base>/auth/callback` |
+| `OVERLOAD_BASE_URL` | The https address people use (http only for localhost) |
 | `OVERLOAD_OIDC_ADMIN_GROUPS`, `OVERLOAD_OIDC_MEMBER_GROUPS`, `OVERLOAD_OIDC_VIEWER_GROUPS` | Comma-separated provider groups for each role |
-| `OVERLOAD_OIDC_GROUPS_CLAIM` | The ID token claim that lists groups (default `groups`) |
+| `OVERLOAD_OIDC_GROUPS_CLAIM` | The ID token claim that lists groups (default `groups`); a dotted name such as `realm_access.roles` reads a nested claim |
 | `OVERLOAD_OIDC_SCOPES` | Extra scopes, if the provider needs one to include groups |
-| `OVERLOAD_SESSION_HOURS`, `OVERLOAD_SESSION_IDLE_HOURS` | Session length (default 12) and idle limit (default 2) |
+| `OVERLOAD_SESSION_HOURS`, `OVERLOAD_SESSION_IDLE_HOURS` | Session length (default 12) and idle limit (default 2), in hours up to 720 |
+
+Register `<base>/auth/callback` as the client's redirect URI and `<base>/`
+as its post-logout redirect URI.
+
+- **Entra ID** puts group object IDs (GUIDs) in the `groups` claim, so map
+  the GUIDs, or configure the app to emit group names (cloud-only groups)
+  or app roles with `OVERLOAD_OIDC_GROUPS_CLAIM=roles`. Someone in more
+  groups than Entra puts in a token (the overage limit, about 200) gets no
+  `groups` claim and is refused; assign the app to groups or use app roles.
+- **Google Workspace** ID tokens carry no groups, so it cannot assign roles
+  on its own; put a provider that adds groups in front of it (Dex,
+  Keycloak or Authentik brokering Google sign-in).
+
+How it works:
 
 - Sign-in uses the authorization code flow with PKCE, and checks the
   `state` (bound to the browser by a cookie) and `nonce`. ID tokens are
-  verified against the provider's discovery document and keys.
+  verified against the provider's discovery document and keys. A sign-in
+  started at another address (such as `127.0.0.1`) is sent to the base URL
+  first, since its cookie must reach the callback. One address may start
+  30 sign-ins a minute.
+- The provider's discovery document is fetched once, when someone first
+  signs in; if the provider is down, sign-ins fail at once for 30 seconds
+  before it is tried again, and overload keeps serving signed-in people.
 - Sessions live in Postgres; the browser holds an opaque HttpOnly,
-  SameSite=Lax cookie (Secure over https), and only its hash is stored.
-  Signing out, or an administrator disabling the person under Users (or
-  `overload users disable ID`), ends sessions at once.
+  SameSite=Lax cookie (`__Host-overload_session`, Secure, over https), and
+  only its hash is stored. Signing in again ends the browser's previous
+  session. Signing out, or an administrator disabling the person under
+  Users (or `overload users disable ID`), ends sessions at once. Each
+  session has its own form token, so forms rendered for one person do not
+  work for another.
 - Roles come from the groups at every sign-in. Admins change anything;
   members also queue reviews and run schedules; viewers only read. People
   in no mapped group are refused.
+- Signed-out page loads go to sign-in; scripts, stylesheets and event
+  streams do not start sign-ins.
 - Break-glass: with `OVERLOAD_UI_USER` and `OVERLOAD_UI_PASSWORD` also set,
   open `/?break-glass=1` to sign in with that shared login as an admin
-  while the provider is down; changes made that way are logged.
+  while the provider is down; changes made that way are logged with the
+  client address and browser.
 - Signing out ends the overload session; the signed-out page links to the
-  provider's own sign-out when it advertises one.
+  provider's own sign-out, with the session's ID token as `id_token_hint`
+  (Okta requires it), when the provider advertises one.
 
-Tests use an in-process OIDC provider; SCIM provisioning and checking
+Tests use an in-process OIDC provider. SCIM provisioning and a test
 against Dex in kind are later additions.
 
 ## Linux servers

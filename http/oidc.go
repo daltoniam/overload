@@ -3,14 +3,18 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +23,8 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/web/templates/layouts"
+	"github.com/daltoniam/overload/web/templates/pages"
 	"golang.org/x/oauth2"
 )
 
@@ -26,9 +32,9 @@ import (
 // progress.
 type SessionStore interface {
 	SignInUser(context.Context, overload.User) (overload.User, error)
-	CreateSession(ctx context.Context, userID int64, ttl time.Duration) (string, error)
+	CreateSession(ctx context.Context, userID int64, ttl time.Duration, idToken string) (string, error)
 	SessionUser(ctx context.Context, token string, idle time.Duration) (overload.User, error)
-	EndSession(ctx context.Context, token string) error
+	EndSession(ctx context.Context, token string) (idToken string, err error)
 	StartLogin(ctx context.Context, state string, login postgres.OIDCLogin, ttl time.Duration) error
 	TakeLogin(ctx context.Context, state string) (postgres.OIDCLogin, error)
 	ListUsers(context.Context) ([]overload.User, error)
@@ -37,8 +43,18 @@ type SessionStore interface {
 
 const (
 	sessionCookie = "overload_session"
-	loginCookie   = "overload_login"
-	loginTTL      = 10 * time.Minute
+	// secureSessionCookie is the session cookie's name over https: the
+	// __Host- prefix makes browsers refuse it unless it is Secure, for
+	// this host only and for every path.
+	secureSessionCookie = "__Host-overload_session"
+	loginCookie         = "overload_login"
+	loginTTL            = 10 * time.Minute
+	// discoveryRetry is how long a failed discovery is remembered, so a
+	// provider outage does not make every sign-in wait on a fetch.
+	discoveryRetry = 30 * time.Second
+	// loginsPerMinute caps sign-ins started from one address, since each
+	// stores state before the person has signed in.
+	loginsPerMinute = 30
 )
 
 // oidcSettings configures sign-in with an OpenID Connect provider.
@@ -82,7 +98,11 @@ func oidcFromEnv() (*oidcSettings, error) {
 	if claim := strings.TrimSpace(os.Getenv("OVERLOAD_OIDC_GROUPS_CLAIM")); claim != "" {
 		settings.groupsClaim = claim
 	}
-	settings.scopes = append(settings.scopes, strings.Fields(strings.ReplaceAll(os.Getenv("OVERLOAD_OIDC_SCOPES"), ",", " "))...)
+	for _, scope := range strings.Fields(strings.ReplaceAll(os.Getenv("OVERLOAD_OIDC_SCOPES"), ",", " ")) {
+		if !slices.Contains(settings.scopes, scope) {
+			settings.scopes = append(settings.scopes, scope)
+		}
+	}
 	for _, mapping := range []struct{ variable, role string }{{"OVERLOAD_OIDC_VIEWER_GROUPS", overload.RoleViewer}, {"OVERLOAD_OIDC_MEMBER_GROUPS", overload.RoleMember}, {"OVERLOAD_OIDC_ADMIN_GROUPS", overload.RoleAdmin}} {
 		for _, group := range strings.Split(os.Getenv(mapping.variable), ",") {
 			if group = strings.TrimSpace(group); group != "" {
@@ -123,27 +143,78 @@ type oidcAuth struct {
 	settings *oidcSettings
 	store    SessionStore
 	client   *http.Client
+	logins   *rateLimiter
 
 	mu       sync.Mutex
 	provider *oidc.Provider
+	fetching chan struct{}
+	failed   error
+	failedAt time.Time
+	now      func() time.Time
+}
+
+func newOIDCAuth(settings *oidcSettings, store SessionStore) *oidcAuth {
+	return &oidcAuth{settings: settings, store: store, client: &http.Client{Timeout: 10 * time.Second}, logins: newRateLimiter(loginsPerMinute, time.Minute), now: time.Now}
 }
 
 func (auth *oidcAuth) secureCookies() bool {
 	return strings.HasPrefix(auth.settings.baseURL, "https://")
 }
 
+func (auth *oidcAuth) sessionCookieName() string {
+	if auth.secureCookies() {
+		return secureSessionCookie
+	}
+	return sessionCookie
+}
+
+// discover returns the provider's configuration, fetching it once at a time
+// and remembering a failure for discoveryRetry.
 func (auth *oidcAuth) discover(ctx context.Context) (*oidc.Provider, error) {
+	for {
+		auth.mu.Lock()
+		switch {
+		case auth.provider != nil:
+			provider := auth.provider
+			auth.mu.Unlock()
+			return provider, nil
+		case auth.failed != nil && auth.now().Sub(auth.failedAt) < discoveryRetry:
+			err := auth.failed
+			auth.mu.Unlock()
+			return nil, err
+		case auth.fetching != nil:
+			fetching := auth.fetching
+			auth.mu.Unlock()
+			select {
+			case <-fetching:
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		fetching := make(chan struct{})
+		auth.fetching = fetching
+		auth.mu.Unlock()
+		provider, err := oidc.NewProvider(oidc.ClientContext(context.WithoutCancel(ctx), auth.client), auth.settings.issuer)
+		auth.mu.Lock()
+		auth.fetching = nil
+		if err != nil {
+			auth.failed, auth.failedAt = err, auth.now()
+		} else {
+			auth.provider, auth.failed = provider, nil
+		}
+		auth.mu.Unlock()
+		close(fetching)
+		return provider, err
+	}
+}
+
+// cachedProvider returns the provider's configuration if it has already
+// been fetched.
+func (auth *oidcAuth) cachedProvider() *oidc.Provider {
 	auth.mu.Lock()
 	defer auth.mu.Unlock()
-	if auth.provider != nil {
-		return auth.provider, nil
-	}
-	provider, err := oidc.NewProvider(oidc.ClientContext(ctx, auth.client), auth.settings.issuer)
-	if err != nil {
-		return nil, err
-	}
-	auth.provider = provider
-	return provider, nil
+	return auth.provider
 }
 
 func (auth *oidcAuth) oauthConfig(provider *oidc.Provider) oauth2.Config {
@@ -168,15 +239,26 @@ func localPath(next string) string {
 }
 
 func (auth *oidcAuth) login(w http.ResponseWriter, r *http.Request) {
+	// The sign-in cookie only reaches the callback on the base URL's host,
+	// so start there.
+	if base, err := url.Parse(auth.settings.baseURL); err == nil && !strings.EqualFold(r.Host, base.Host) {
+		http.Redirect(w, r, auth.settings.baseURL+r.URL.RequestURI(), http.StatusFound)
+		return
+	}
+	if !auth.logins.allow(clientAddress(r)) {
+		w.Header().Set("Retry-After", "60")
+		signInProblem(w, r, http.StatusTooManyRequests, "Too many sign-ins", "Too many sign-ins were started from this address. Wait a minute and sign in again.")
+		return
+	}
 	provider, err := auth.discover(r.Context())
 	if err != nil {
 		slog.Warn("OIDC discovery failed", "issuer", auth.settings.issuer, "error", err)
-		http.Error(w, "The sign-in provider is unavailable. Administrators can use break-glass access at /?break-glass=1.", http.StatusBadGateway)
+		signInProblem(w, r, http.StatusBadGateway, "The sign-in provider is unavailable", "Try again in a minute. Administrators can use break-glass access at /?break-glass=1.")
 		return
 	}
 	state, nonce, verifier := randomString(), randomString(), oauth2.GenerateVerifier()
 	if err := auth.store.StartLogin(r.Context(), state, postgres.OIDCLogin{Nonce: nonce, Verifier: verifier, Next: localPath(r.URL.Query().Get("next"))}, loginTTL); err != nil {
-		http.Error(w, "Unable to start sign-in", http.StatusInternalServerError)
+		signInProblem(w, r, http.StatusInternalServerError, "Unable to start sign-in", "Overload could not save the sign-in. Try again.")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: loginCookie, Value: state, Path: "/auth/", MaxAge: int(loginTTL.Seconds()), HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
@@ -190,87 +272,97 @@ func (auth *oidcAuth) callback(w http.ResponseWriter, r *http.Request) {
 	state := query.Get("state")
 	http.SetCookie(w, &http.Cookie{Name: loginCookie, Path: "/auth/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
 	if err != nil || state == "" || cookie.Value != state {
-		http.Error(w, "Sign-in expired or was started in another browser. Sign in again.", http.StatusBadRequest)
+		signInProblem(w, r, http.StatusBadRequest, "Sign-in expired", "The sign-in expired or was started in another browser or at another address.")
 		return
 	}
 	login, err := auth.store.TakeLogin(r.Context(), state)
 	if err != nil {
-		http.Error(w, "Sign-in expired. Sign in again.", http.StatusBadRequest)
+		signInProblem(w, r, http.StatusBadRequest, "Sign-in expired", "Sign-ins must finish within 10 minutes, and each can be used once.")
 		return
 	}
 	if problem := query.Get("error"); problem != "" {
-		http.Error(w, "The sign-in provider refused the sign-in.", http.StatusForbidden)
+		slog.Info("OIDC provider refused the sign-in", "error", overload.TruncateUTF8(problem, 100))
+		signInProblem(w, r, http.StatusForbidden, "The sign-in provider refused the sign-in", "Check with your provider's administrator that overload is assigned to you.")
 		return
 	}
 	provider, err := auth.discover(r.Context())
 	if err != nil {
-		http.Error(w, "The sign-in provider is unavailable.", http.StatusBadGateway)
+		signInProblem(w, r, http.StatusBadGateway, "The sign-in provider is unavailable", "Try again in a minute. Administrators can use break-glass access at /?break-glass=1.")
 		return
 	}
 	config := auth.oauthConfig(provider)
 	token, err := config.Exchange(oidc.ClientContext(r.Context(), auth.client), query.Get("code"), oauth2.VerifierOption(login.Verifier))
 	if err != nil {
 		slog.Warn("OIDC code exchange failed", "error", err)
-		http.Error(w, "Sign-in failed.", http.StatusForbidden)
+		signInProblem(w, r, http.StatusForbidden, "Sign-in failed", "The provider did not confirm the sign-in.")
 		return
 	}
 	rawIDToken, _ := token.Extra("id_token").(string)
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: auth.settings.clientID}).Verify(oidc.ClientContext(r.Context(), auth.client), rawIDToken)
 	if err != nil || idToken.Nonce != login.Nonce {
 		slog.Warn("OIDC ID token rejected", "error", err)
-		http.Error(w, "Sign-in failed.", http.StatusForbidden)
+		signInProblem(w, r, http.StatusForbidden, "Sign-in failed", "The provider's answer could not be verified.")
 		return
 	}
 	var claims map[string]json.RawMessage
 	if err := idToken.Claims(&claims); err != nil {
-		http.Error(w, "Sign-in failed.", http.StatusForbidden)
+		signInProblem(w, r, http.StatusForbidden, "Sign-in failed", "The provider's answer could not be read.")
 		return
 	}
 	email, name := stringClaim(claims["email"]), stringClaim(claims["name"])
-	role := auth.settings.roleFor(groupsClaim(claims[auth.settings.groupsClaim]))
+	role := auth.settings.roleFor(groupsClaim(claims, auth.settings.groupsClaim))
 	if role == "" {
 		slog.Info("OIDC sign-in without a role", "subject", idToken.Subject, "email", email)
-		http.Error(w, "Your account is not in a group that has access to overload. Ask an administrator.", http.StatusForbidden)
+		signInProblem(w, r, http.StatusForbidden, "No access to overload", "Your account is not in a group that has access to overload. Ask an administrator to add you.")
 		return
 	}
 	user, err := auth.store.SignInUser(r.Context(), overload.User{Issuer: idToken.Issuer, Subject: idToken.Subject, Email: email, Name: name, Role: role})
 	if errors.Is(err, postgres.ErrUserDisabled) {
-		http.Error(w, "Your overload account is disabled. Ask an administrator.", http.StatusForbidden)
+		signInProblem(w, r, http.StatusForbidden, "Your account is disabled", "An administrator disabled your overload account. Ask them to enable it.")
 		return
 	}
 	if err != nil {
-		http.Error(w, "Unable to sign in", http.StatusInternalServerError)
+		signInProblem(w, r, http.StatusInternalServerError, "Unable to sign in", "Overload could not record the sign-in. Try again.")
 		return
 	}
-	session, err := auth.store.CreateSession(r.Context(), user.ID, auth.settings.sessionTTL)
+	if previous, err := r.Cookie(auth.sessionCookieName()); err == nil && previous.Value != "" {
+		if _, err := auth.store.EndSession(r.Context(), previous.Value); err != nil {
+			slog.Warn("ending the previous session failed", "error", err)
+		}
+	}
+	session, err := auth.store.CreateSession(r.Context(), user.ID, auth.settings.sessionTTL, rawIDToken)
 	if err != nil {
-		http.Error(w, "Unable to sign in", http.StatusInternalServerError)
+		signInProblem(w, r, http.StatusInternalServerError, "Unable to sign in", "Overload could not start a session. Try again.")
 		return
 	}
 	slog.Info("signed in", "user_id", user.ID, "role", role)
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: session, Path: "/", MaxAge: int(auth.settings.sessionTTL.Seconds()), HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	http.SetCookie(w, &http.Cookie{Name: auth.sessionCookieName(), Value: session, Path: "/", MaxAge: int(auth.settings.sessionTTL.Seconds()), HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
 	http.Redirect(w, r, localPath(login.Next), http.StatusSeeOther)
 }
 
-// logout ends the session. The provider's own session is ended from the
-// signed-out page, because a redirect after a form post would break the
-// form-action policy.
+// logout ends the session and shows the signed-out page, which links to the
+// provider's own sign-out with the session's ID token as a hint. It renders
+// rather than redirects because a redirect to the provider after a form post
+// would break the form-action policy.
 func (auth *oidcAuth) logout(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(sessionCookie); err == nil {
-		if err := auth.store.EndSession(r.Context(), cookie.Value); err != nil {
-			http.Error(w, "Unable to sign out", http.StatusInternalServerError)
+	var idToken string
+	if cookie, err := r.Cookie(auth.sessionCookieName()); err == nil {
+		idToken, err = auth.store.EndSession(r.Context(), cookie.Value)
+		if err != nil {
+			signInProblem(w, r, http.StatusInternalServerError, "Unable to sign out", "Overload could not end the session. Try again.")
 			return
 		}
 	}
-	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
-	http.Redirect(w, r, "/auth/signed-out", http.StatusSeeOther)
+	http.SetCookie(w, &http.Cookie{Name: auth.sessionCookieName(), Path: "/", MaxAge: -1, HttpOnly: true, Secure: auth.secureCookies(), SameSite: http.SameSiteLaxMode})
+	_ = pages.SignedOut(auth.endSessionURL(idToken)).Render(layouts.WithoutViewer(r.Context()), w)
 }
 
-// endSessionURL is the provider's RP-initiated logout address, if it has
-// one.
-func (auth *oidcAuth) endSessionURL(ctx context.Context) string {
-	provider, err := auth.discover(ctx)
-	if err != nil {
+// endSessionURL is the provider's RP-initiated logout address, if the
+// provider's configuration is already known and has one. It never fetches,
+// so the signed-out page does not wait on the provider.
+func (auth *oidcAuth) endSessionURL(idToken string) string {
+	provider := auth.cachedProvider()
+	if provider == nil {
 		return ""
 	}
 	var metadata struct {
@@ -286,24 +378,44 @@ func (auth *oidcAuth) endSessionURL(ctx context.Context) string {
 	query := parsed.Query()
 	query.Set("client_id", auth.settings.clientID)
 	query.Set("post_logout_redirect_uri", auth.settings.baseURL+"/")
+	if idToken != "" {
+		query.Set("id_token_hint", idToken)
+	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
 }
 
-// sessionUser returns the signed-in user, if any.
-func (auth *oidcAuth) sessionUser(r *http.Request) (overload.User, bool) {
-	cookie, err := r.Cookie(sessionCookie)
+// sessionUser returns the signed-in user and their session token, if any.
+func (auth *oidcAuth) sessionUser(r *http.Request) (overload.User, string, bool) {
+	cookie, err := r.Cookie(auth.sessionCookieName())
 	if err != nil || cookie.Value == "" {
-		return overload.User{}, false
+		return overload.User{}, "", false
 	}
-	user, err := auth.store.SessionUser(r.Context(), cookie.Value, auth.settings.idleTTL)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	user, err := auth.store.SessionUser(ctx, cookie.Value, auth.settings.idleTTL)
 	if err != nil {
 		if !errors.Is(err, postgres.ErrNoSession) {
 			slog.Warn("session lookup failed", "error", err)
 		}
-		return overload.User{}, false
+		return overload.User{}, "", false
 	}
-	return user, true
+	return user, cookie.Value, true
+}
+
+// formToken is the form token for a session. It is derived from the session
+// token, which only the signed-in browser has, so each person's forms carry
+// their own token and it stops working when they sign out.
+func (auth *oidcAuth) formToken(session string) string {
+	sum := sha256.Sum256([]byte("overload-form:" + session))
+	return hex.EncodeToString(sum[:])
+}
+
+// signInProblem shows a sign-in failure with a way to try again.
+func signInProblem(w http.ResponseWriter, r *http.Request, status int, title, detail string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_ = pages.SignInProblem(title, detail).Render(r.Context(), w)
 }
 
 func stringClaim(raw json.RawMessage) string {
@@ -314,8 +426,23 @@ func stringClaim(raw json.RawMessage) string {
 	return overload.TruncateUTF8(value, 320)
 }
 
-// groupsClaim reads a groups claim given as a list or a single string.
-func groupsClaim(raw json.RawMessage) []string {
+// groupsClaim reads the groups claim, given as a list or a single string.
+// A dotted name such as realm_access.roles reaches into nested claims.
+func groupsClaim(claims map[string]json.RawMessage, name string) []string {
+	raw, ok := claims[name]
+	if path := strings.Split(name, "."); !ok && len(path) > 1 {
+		raw, ok = claims[path[0]], true
+		for _, key := range path[1:] {
+			var nested map[string]json.RawMessage
+			if json.Unmarshal(raw, &nested) != nil {
+				return nil
+			}
+			raw = nested[key]
+		}
+	}
+	if !ok {
+		return nil
+	}
 	var groups []string
 	if json.Unmarshal(raw, &groups) == nil {
 		return groups
@@ -324,4 +451,41 @@ func groupsClaim(raw json.RawMessage) []string {
 		return []string{single}
 	}
 	return nil
+}
+
+// clientAddress is the address a request came from, without its port.
+func clientAddress(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// rateLimiter allows a number of events per address in each window.
+type rateLimiter struct {
+	limit  int
+	window time.Duration
+	now    func() time.Time
+
+	mu      sync.Mutex
+	started time.Time
+	counts  map[string]int
+}
+
+func newRateLimiter(limit int, window time.Duration) *rateLimiter {
+	return &rateLimiter{limit: limit, window: window, now: time.Now, counts: map[string]int{}}
+}
+
+func (limiter *rateLimiter) allow(address string) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if now := limiter.now(); now.Sub(limiter.started) >= limiter.window {
+		limiter.started, limiter.counts = now, map[string]int{}
+	}
+	if limiter.counts[address] >= limiter.limit {
+		return false
+	}
+	limiter.counts[address]++
+	return true
 }

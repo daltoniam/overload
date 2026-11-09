@@ -9,8 +9,8 @@ import (
 	"strconv"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
-	"github.com/jackc/pgx/v5"
 )
 
 // identity is who made a request and the role they act with.
@@ -20,6 +20,29 @@ type identity struct {
 	// breakGlass marks the shared Basic Auth login used while OIDC is
 	// configured.
 	breakGlass bool
+	// formToken is the signed-in person's own form token; empty for the
+	// shared logins, which use the install's token.
+	formToken string
+}
+
+// formTokenFor is the form token to render for a request: the signed-in
+// person's own, or the install's for shared logins.
+func formTokenFor(r *http.Request, csrf string) string {
+	if who := identityFrom(r.Context()); who.formToken != "" {
+		return who.formToken
+	}
+	return csrf
+}
+
+// displayName is how a signed-in person is shown: email, else name, else
+// the provider's subject.
+func displayName(user overload.User) string {
+	for _, value := range []string{user.Email, user.Name, user.Subject} {
+		if value != "" {
+			return value
+		}
+	}
+	return "unknown"
 }
 
 type identityKey struct{}
@@ -75,7 +98,7 @@ func registerAuth(mux *http.ServeMux, auth *oidcAuth, csrf string) {
 		auth.logout(w, r)
 	})
 	mux.HandleFunc("GET /auth/signed-out", func(w http.ResponseWriter, r *http.Request) {
-		_ = pages.SignedOut(auth.endSessionURL(r.Context())).Render(r.Context(), w)
+		_ = pages.SignedOut(auth.endSessionURL("")).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /users", func(w http.ResponseWriter, r *http.Request) {
 		users, err := auth.store.ListUsers(r.Context())
@@ -87,7 +110,7 @@ func registerAuth(mux *http.ServeMux, auth *oidcAuth, csrf string) {
 		if who := identityFrom(r.Context()); who.user != nil {
 			self = who.user.ID
 		}
-		_ = pages.Users(users, self, csrf).Render(r.Context(), w)
+		_ = pages.Users(users, self, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	for action, disabled := range map[string]bool{"disable": true, "enable": false} {
 		mux.HandleFunc("POST /users/{id}/"+action, func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +128,7 @@ func registerAuth(mux *http.ServeMux, auth *oidcAuth, csrf string) {
 				return
 			}
 			if err := auth.store.SetUserDisabled(r.Context(), id, disabled); err != nil {
-				if errors.Is(err, pgx.ErrNoRows) {
+				if errors.Is(err, postgres.ErrUserNotFound) {
 					http.NotFound(w, r)
 					return
 				}

@@ -100,12 +100,12 @@ templ Base(data PageData) {
 				@NavigationLink("/configure/tools", "Tools", data.CurrentPath)
 				@NavigationLink("/setup/github", "GitHub", data.CurrentPath)
 				@NavigationLink("/webhooks", "Webhooks", data.CurrentPath)
-				if viewer, ok := ViewerFrom(ctx); ok && viewer.Role == "admin" {
+				if viewer, ok := ViewerFrom(ctx); ok && viewer.IsAdmin() {
 					@NavigationLink("/users", "Users", data.CurrentPath)
 				}
 			</nav></details><div class="sidebar-footer">
 				if viewer, ok := ViewerFrom(ctx); ok {
-					<form class="signed-in" method="post" action="/auth/logout"><input type="hidden" name="csrf" value={ viewer.CSRF }/><span class="secondary-line">Signed in as { viewer.Email } ({ viewer.Role })</span><button class="secondary" type="submit">Sign out</button></form>
+					<form class="signed-in" method="post" action="/auth/logout"><input type="hidden" name="csrf" value={ viewer.CSRF }/><span class="secondary-line">Signed in as { viewer.Name } ({ viewer.Role })</span><button class="secondary" type="submit">Sign out</button></form>
 				}<label class="theme-control"><span>Appearance</span><select id="theme-select" aria-label="Color theme"><option value="auto">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div></aside>
 			<div class="content"><main class="shell" id="page-content" tabindex="-1"><p id="ui-status" class="notice error" role="status" hidden></p><div id="form-errors" tabindex="-1" role="alert"></div>{ children... }</main></div></div>
 			<div id="modal-root"></div>

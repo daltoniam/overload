@@ -37,7 +37,7 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 				return
 			}
 		}
-		_ = pages.ModelForm(selected, csrf).Render(r.Context(), w)
+		_ = pages.ModelForm(selected, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /settings", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {

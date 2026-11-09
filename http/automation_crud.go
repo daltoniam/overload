@@ -79,7 +79,7 @@ func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf strin
 			selected.Kind = kind
 			selected.Agents = nil
 		}
-		_ = pages.WorkflowForm(selected, agents, csrf).Render(r.Context(), w)
+		_ = pages.WorkflowForm(selected, agents, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/workflows/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
@@ -124,7 +124,7 @@ func registerAutomation(mux *http.ServeMux, store ConfigurationStore, csrf strin
 				return
 			}
 		}
-		_ = pages.ScheduleForm(selected, workflows, csrf).Render(r.Context(), w)
+		_ = pages.ScheduleForm(selected, workflows, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/schedules/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {

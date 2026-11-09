@@ -39,7 +39,7 @@ func publicBaseURL(r *http.Request) string {
 func registerGitHubSetup(mux *http.ServeMux, store GitHubAppStore, csrf string) {
 	states := newOneTimeTokens(15 * time.Minute)
 	render := func(w http.ResponseWriter, r *http.Request, message string) {
-		data := pages.GitHubSetupData{CSRF: csrf, DefaultName: "overload-" + strings.NewReplacer(":", "-", ".", "-").Replace(strings.Split(r.Host, ":")[0]), Error: message}
+		data := pages.GitHubSetupData{CSRF: formTokenFor(r, csrf), DefaultName: "overload-" + strings.NewReplacer(":", "-", ".", "-").Replace(strings.Split(r.Host, ":")[0]), Error: message}
 		if len(data.DefaultName) > 34 {
 			data.DefaultName = data.DefaultName[:34]
 		}

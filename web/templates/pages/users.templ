@@ -53,6 +53,16 @@ templ SignedOut(endSession string) {
 	}
 }
 
+// SignInProblem explains why signing in did not work and how to retry.
+templ SignInProblem(title, detail string) {
+	@layouts.Base(layouts.PageData{Title: title}) {
+		<div class="page-header"><div><h1>{ title }</h1><p class="muted">{ detail }</p></div></div>
+		<section class="panel">
+			<div class="actions"><a class="button" href="/auth/login">Sign in again</a></div>
+		</section>
+	}
+}
+
 func lastLogin(user overload.User) string {
 	if user.LastLoginAt == nil {
 		return "Never"

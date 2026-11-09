@@ -169,8 +169,16 @@ templ ValidationError(message string) {
 	<p class="notice error">{ message }</p>
 }
 
-templ Confirmation(action string, nonce string, values map[string][]string) {
-	<div class="page-header"><div><p class="eyebrow">Confirm removal</p><h1>Delete this resource?</h1><p class="muted">This cannot be undone. Resources with dependent configuration or history cannot be removed.</p></div></div>
+// ConfirmPrompt describes a destructive action awaiting confirmation.
+type ConfirmPrompt struct {
+	Eyebrow string
+	Title   string
+	Detail  string
+	Button  string
+}
+
+templ Confirmation(action string, nonce string, values map[string][]string, prompt ConfirmPrompt) {
+	<div class="page-header"><div><p class="eyebrow">{ prompt.Eyebrow }</p><h1>{ prompt.Title }</h1><p class="muted">{ prompt.Detail }</p></div></div>
 	<section class="panel danger-zone"><form method="post" action={ templ.URL(action) }>
 		<input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="confirmed" value="true"/>
 		for name, entries := range values {
@@ -180,7 +188,7 @@ templ Confirmation(action string, nonce string, values map[string][]string) {
 				}
 			}
 		}
-		<div class="actions"><a class="button secondary" href="/">Cancel</a><button class="danger" type="submit">Confirm deletion</button></div>
+		<div class="actions"><a class="button secondary" href="/">Cancel</a><button class="danger" type="submit">{ prompt.Button }</button></div>
 	</form></section>
 }
 

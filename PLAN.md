@@ -1215,7 +1215,8 @@ users and no long-lived shared secrets.
   alternative front door. A break-glass local admin is available when the
   provider is down. SCIM provisioning is a later addition.
 - Tests run against Dex (an open-source OIDC provider) in the kind
-  environment.
+  environment. Phase 4 (16.11) tests against an in-process provider; the
+  Dex test in kind is deferred.
 
 **Workloads (OIDC for automation)**
 - Accept GitHub Actions OIDC tokens (issuer
@@ -1444,8 +1445,10 @@ plan and deploy/README.md.
    provider through Fantasy, with adaptive thinking and effort, so Claude
    models can think.
 4. **OIDC sign-in, sessions and roles** (16.7 People; done): authorization code
-   with PKCE, Postgres sessions, roles from a groups claim, logout, and Basic
-   Auth kept as break-glass access.
+   with PKCE, Postgres sessions with per-session form tokens, roles from a
+   groups claim, logout with the provider's sign-out, and Basic Auth kept as
+   break-glass access. Follow-ups: the Dex test in kind, and hiding admin
+   controls from members and viewers (the server already refuses them).
 5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7): hashed,
    scoped, expiring keys; OpenAI and Anthropic compatible endpoints in front
    of saved models, with the origin policy, a fair per-model queue and usage
