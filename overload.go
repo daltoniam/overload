@@ -168,8 +168,8 @@ func ValidateReasoning(param, effort string, maxOutputTokens int) error {
 }
 
 // validateAPIKeyEnv rejects variables that hold overload's own secrets. The
-// named variable's value is sent as a bearer token to the model URL, which
-// anyone who can edit models controls.
+// named variable's value is sent to the model URL (as a bearer token, or in
+// X-Api-Key for Anthropic), which anyone who can edit models controls.
 func validateAPIKeyEnv(name string) error {
 	if name == "" {
 		return nil
@@ -264,6 +264,9 @@ func (settings ReviewSettings) Validate() error {
 func validateAnthropic(settings ReviewSettings) error {
 	if settings.API != "" {
 		return errors.New("the API setting applies to OpenAI-compatible connections only")
+	}
+	if parsed, err := url.Parse(settings.BaseURL); err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/v1") {
+		return errors.New("an Anthropic endpoint URL does not end in /v1 (the Messages API adds it): use https://api.anthropic.com or the gateway's Anthropic base URL")
 	}
 	switch settings.ReasoningParam {
 	case ReasoningAuto, ReasoningNone:

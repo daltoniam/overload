@@ -47,7 +47,10 @@ type Proxy struct {
 // http://overload.overload.svc:8083).
 func New(base string) *Proxy {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	return &Proxy{base: strings.TrimRight(base, "/"), client: &http.Client{Transport: transport}, now: time.Now, grants: map[string]grant{}}
+	// Never follow redirects: Go keeps X-Api-Key on a redirect to another
+	// host, and the sandbox should not choose where the key goes.
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	return &Proxy{base: strings.TrimRight(base, "/"), client: client, now: time.Now, grants: map[string]grant{}}
 }
 
 // Grant returns a base URL that reaches model for ttl, and a function that
@@ -131,10 +134,11 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case provider == overload.ProviderAnthropic:
-		for _, name := range []string{"Anthropic-Version", "Anthropic-Beta"} {
-			if value := r.Header.Get(name); value != "" {
-				upstream.Header.Set(name, value)
-			}
+		// Anthropic-Beta is not forwarded: reviews need no beta features,
+		// and some (the MCP connector) would let a sandbox make Anthropic
+		// reach URLs of its choosing with the control plane's key.
+		if value := r.Header.Get("Anthropic-Version"); value != "" {
+			upstream.Header.Set("Anthropic-Version", value)
 		}
 		if model.APIKeyEnv != "" {
 			upstream.Header.Set("X-Api-Key", os.Getenv(model.APIKeyEnv))

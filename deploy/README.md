@@ -54,11 +54,12 @@ blocks DNS-rebinding pages from reaching a local UI.
 
 ## Models
 
-Any OpenAI-compatible `/v1/chat/completions` server works. Each model
-connection has:
+Any OpenAI-compatible `/v1/chat/completions` server works, as does
+Anthropic's Messages API (below). Each model connection has:
 
 | Setting | CLI flag | Meaning |
 |---|---|---|
+| Provider API | `--provider openaicompat\|anthropic` | OpenAI-compatible (default) or the Anthropic Messages API |
 | Connection | `--connection-kind local\|hosted` | Hosted models need `--api-key-env` |
 | Reasoning control | `--reasoning-param` | How thinking is requested (below) |
 | Reasoning effort | `--reasoning-effort` | none, minimal, low, medium, high, xhigh, max |
@@ -70,7 +71,7 @@ connection has:
 | Automatic (default) | local: `chat_template_kwargs.reasoning_effort=xhigh`; hosted: nothing | llama.cpp models |
 | `none` | nothing | Servers that reject reasoning fields |
 | `chat_template` | `chat_template_kwargs.reasoning_effort=<effort>` | llama.cpp chat templates (Bonsai) |
-| `reasoning_effort` | top-level `reasoning_effort=<effort>` | DwarfStar `ds4-server`, OpenAI-style APIs |
+| `reasoning_effort` | top-level `reasoning_effort=<effort>`; for Anthropic, `output_config.effort=<effort>` with adaptive thinking | DwarfStar `ds4-server`, OpenAI-style APIs, Claude |
 
 If a call runs out of tokens while thinking, that file is retried once at
 `medium` and the run records `effort_fallbacks`. Settings are pinned into
@@ -94,13 +95,22 @@ overload settings set --name opus --provider anthropic --connection-kind hosted 
   --reasoning-param reasoning_effort --reasoning-effort high
 ```
 
-The URL has no `/v1`; a gateway's Anthropic endpoint works too. The effort
-(low, medium, high, xhigh or max) is sent as `output_config.effort` with
-adaptive thinking; `--reasoning-param none` leaves both to the model's
-defaults. `--catalog claude-opus-5.5` fills the provider and effort. The key
-is sent as `x-api-key`; overload never sends `ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN` from its own environment. In sandbox mode the model
-proxy adds the key, as for OpenAI-compatible models.
+The URL has no `/v1` (a URL ending in `/v1` is refused); a gateway's
+Anthropic endpoint works too. The effort (low, medium, high, xhigh or max)
+is sent as `output_config.effort` with adaptive thinking; `--reasoning-param
+none` leaves both to the model's defaults. `--catalog claude-opus-5.5` fills
+the provider and effort; with `--provider openaicompat` it leaves the
+effort unset, since OpenAI-compatible endpoints ignore it for Claude.
+Requests stream, so long thinking is bounded only by the call timeout
+(hosted 15 minutes) and output limits above about 21,000 tokens work.
+
+The key is sent as `x-api-key`, and redirects are never followed, so the
+key cannot be forwarded to another host. Overload never sends Anthropic
+credentials, profiles or `ANTHROPIC_CUSTOM_HEADERS` from its own
+environment; a connection without `--api-key-env` sends no key. In sandbox
+mode the model proxy adds the key, as for OpenAI-compatible models, and
+forwards only the `anthropic-version` header, so a sandbox cannot turn on
+beta features with the control plane's key.
 
 ### Catalog and model policy
 

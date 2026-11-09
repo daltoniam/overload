@@ -450,7 +450,7 @@ func (command modelsCommand) serve(ctx context.Context, args []string) error {
 		_, err := fmt.Fprintf(command.out, "Ready. Add it with: overload settings set --name %s --url %s --model %s --catalog %s --concurrency %d\n", model.ID, service.BaseURL(), service.ModelName, model.ID, *parallel)
 		return err
 	}
-	setting := overload.ReviewSettings{Name: *connect, Provider: "openaicompat", ConnectionKind: "local", BaseURL: service.BaseURL(), Model: service.ModelName, PromptProfile: "context", Concurrency: *parallel, Catalog: model.ID}
+	setting := overload.ReviewSettings{Name: *connect, Provider: overload.ProviderOpenAICompat, ConnectionKind: "local", BaseURL: service.BaseURL(), Model: service.ModelName, PromptProfile: "context", Concurrency: *parallel, Catalog: model.ID}
 	if err := applyCatalogDefaults(&setting, map[string]bool{"model": true}); err != nil {
 		return err
 	}

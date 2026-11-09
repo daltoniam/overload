@@ -56,7 +56,7 @@ func manageSettings(args []string) error {
 		provider := flags.String("provider", overload.ProviderOpenAICompat, "API: openaicompat, or anthropic for the Messages API (Claude models need it to think)")
 		model := flags.String("model", "", "model ID")
 		keyEnv := flags.String("api-key-env", "", "environment variable name containing API key")
-		connectionKind := flags.String("connection-kind", "local", "local or hosted OpenAI-compatible connection")
+		connectionKind := flags.String("connection-kind", "local", "local (a model server you run) or hosted (a paid API)")
 		prompt := flags.String("prompt", "context", "context or switchboard-go")
 		asDefault := flags.Bool("default", false, "make default")
 		reasoningParam := flags.String("reasoning-param", "", "how thinking is requested: empty (auto), none, chat_template or reasoning_effort")

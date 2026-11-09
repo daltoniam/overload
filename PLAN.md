@@ -1003,7 +1003,8 @@ After:
 - **Cloud model providers**: Anthropic's Messages API is supported
   (`--provider anthropic`); Fantasy also supports Bedrock, Google and
   OpenRouter natively; add them to model profiles as needed. Prefer an
-  overload-hosted model gateway (OpenAI-compatible proxy in the control plane)
+  overload-hosted model gateway (a proxy in the control plane for
+  OpenAI-compatible and Anthropic Messages requests)
   so API keys never enter sandboxes and token usage is metered centrally.
   Native Anthropic support matters for quality, not just choice: through an
   OpenAI-compatible endpoint (including Cloudflare AI Gateway's) Claude

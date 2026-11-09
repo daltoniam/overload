@@ -12,7 +12,7 @@ import (
 // policy's reason for refusing it.
 templ Models(models []overload.ReviewSettings, refused map[string]string) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><div class="actions"><a class="button secondary" href="/catalog">Catalog and policy</a><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div></div>
+		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted models through an OpenAI-compatible API or the Anthropic Messages API. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><div class="actions"><a class="button secondary" href="/catalog">Catalog and policy</a><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div></div>
 		<section class="panel">
 			if len(models) == 0 {
 				<div class="empty">No models yet. <a href="/settings/new">Add a model connection</a> to begin.</div>
@@ -20,7 +20,7 @@ templ Models(models []overload.ReviewSettings, refused map[string]string) {
 				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Catalog</th><th>Parallel files</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, model := range models {
 						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span>
-							if model.Provider == "anthropic" {
+							if model.Provider == overload.ProviderAnthropic {
 								<span class="secondary-line">Anthropic</span>
 							}
 						</td><td><code>{ model.Model }</code></td><td>
@@ -44,8 +44,8 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 				<input type="hidden" name="existing" value={ model.Name }/>
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ model.Name } readonly?={ model.Name != "" } placeholder="local-bonsai"/></label>
-			<label class="field"><span>Connection type</span><select name="connection_kind" required><option value="local" selected?={ model.ConnectionKind != "hosted" }>Local model server</option><option value="hosted" selected?={ model.ConnectionKind == "hosted" }>Hosted API</option></select><small>Both currently use an OpenAI-compatible API. Hosted models need a key environment variable; credentials are never stored.</small></label>
-			<label class="field"><span>API</span><select name="provider"><option value="openaicompat" selected?={ model.Provider != "anthropic" }>OpenAI-compatible</option><option value="anthropic" selected?={ model.Provider == "anthropic" }>Anthropic Messages API</option></select><small>Claude models think only through the Anthropic Messages API; OpenAI-compatible endpoints, including gateways, run them without thinking.</small></label>
+			<label class="field"><span>Connection type</span><select name="connection_kind" required><option value="local" selected?={ model.ConnectionKind != "hosted" }>Local model server</option><option value="hosted" selected?={ model.ConnectionKind == "hosted" }>Hosted API</option></select><small>Hosted models need a key environment variable; credentials are never stored.</small></label>
+			<label class="field"><span>Provider API</span><select name="provider"><option value={ overload.ProviderOpenAICompat } selected?={ model.Provider != overload.ProviderAnthropic }>OpenAI-compatible</option><option value={ overload.ProviderAnthropic } selected?={ model.Provider == overload.ProviderAnthropic }>Anthropic Messages API</option></select><small>Claude models think only through the Anthropic Messages API; OpenAI-compatible endpoints, including gateways, run them without thinking.</small></label>
 			<label class="field"><span>Endpoint URL</span><input name="base_url" type="url" required value={ model.BaseURL } placeholder="http://127.0.0.1:8080/v1"/><small>OpenAI-compatible URLs end in <code>/v1</code>. Anthropic URLs do not: <code>https://api.anthropic.com</code>, or a gateway's Anthropic endpoint.</small></label>
 			<label class="field"><span>Model ID</span><input name="model" required value={ model.Model } placeholder="bonsai-2-27b"/></label>
 			<label class="field"><span>Catalog entry (optional)</span><select name="catalog"><option value="" selected?={ model.Catalog == "" }>None</option>
@@ -55,7 +55,7 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			</select><small>Records where the model comes from so the <a href="/catalog/policy">model policy</a> can check it. The <a href="/catalog">catalog</a> lists known-good settings.</small></label>
 			<label class="field"><span>API key environment variable (optional for local)</span><input name="api_key_env" value={ model.APIKeyEnv } autocomplete="off" placeholder="MODEL_API_KEY"/><small>Only enter a variable name; supply its value in the worker environment.</small></label>
 			<details class="advanced"><summary>Advanced review settings</summary>
-			<label class="field"><span>API</span><select name="api"><option value="" selected?={ model.API == "" }>Chat Completions (most servers)</option><option value="responses" selected?={ model.API == "responses" }>OpenAI Responses API</option></select><small>Newer OpenAI reasoning models only accept tools together with a reasoning effort through the Responses API. The endpoint URL stays the same (for example <code>https://api.openai.com/v1</code>).</small></label>
+			<label class="field"><span>OpenAI API</span><select name="api"><option value="" selected?={ model.API == "" }>Chat Completions (most servers)</option><option value="responses" selected?={ model.API == "responses" }>OpenAI Responses API</option></select><small>OpenAI-compatible connections only; leave it on Chat Completions for Anthropic. Newer OpenAI reasoning models only accept tools together with a reasoning effort through the Responses API. The endpoint URL stays the same (for example <code>https://api.openai.com/v1</code>).</small></label>
 			<label class="field"><span>Reasoning control</span><select name="reasoning_param"><option value="" selected?={ model.ReasoningParam == "" }>Automatic (local: chat template at xhigh; hosted: none)</option><option value="none" selected?={ model.ReasoningParam == "none" }>Don't send a reasoning setting</option><option value="chat_template" selected?={ model.ReasoningParam == "chat_template" }>Chat template switch (llama.cpp models such as Bonsai)</option><option value="reasoning_effort" selected?={ model.ReasoningParam == "reasoning_effort" }>Effort (OpenAI reasoning_effort, DwarfStar ds4, Anthropic output effort with adaptive thinking)</option></select></label>
 			<label class="field"><span>Reasoning effort</span><select name="reasoning_effort"><option value="" selected?={ model.ReasoningEffort == "" }>Not set</option>
 				for _, level := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {

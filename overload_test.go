@@ -143,6 +143,9 @@ func TestReviewSettingsAnthropic(t *testing.T) {
 		"responses API":    {func(s *ReviewSettings) { s.API = APIResponses }, false},
 		"unknown":          {func(s *ReviewSettings) { s.Provider = "bedrock" }, false},
 		"hosted needs key": {func(s *ReviewSettings) { s.APIKeyEnv = "" }, false},
+		"gateway path":     {func(s *ReviewSettings) { s.BaseURL = "https://gateway.example/anthropic" }, true},
+		"OpenAI /v1 URL":   {func(s *ReviewSettings) { s.BaseURL = "https://api.anthropic.com/v1" }, false},
+		"OpenAI /v1/ URL":  {func(s *ReviewSettings) { s.BaseURL = "https://gateway.example/v1/" }, false},
 	} {
 		settings := base
 		test.change(&settings)
