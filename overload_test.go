@@ -114,3 +114,17 @@ func TestValidRepositoryName(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewSettingsCatalogLabel(t *testing.T) {
+	base := ReviewSettings{Name: "m", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8080/v1", PromptProfile: "context"}
+	for _, test := range []struct {
+		catalog, model string
+		valid          bool
+	}{{"recursive-flint", "flint", true}, {"recursive-flint", "my-alias", true}, {"recursive-flint", "qwen3.8-flash-next", false}, {"nope", "x", false}, {"", "qwen3.8-flash-next", true}} {
+		settings := base
+		settings.Catalog, settings.Model = test.catalog, test.model
+		if err := settings.Validate(); (err == nil) != test.valid {
+			t.Errorf("%s/%s: %v", test.catalog, test.model, err)
+		}
+	}
+}

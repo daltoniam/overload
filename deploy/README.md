@@ -108,10 +108,11 @@ overload policy show    # the policy and any saved models it refuses
 ```
 
 - Models whose publisher country is not recorded are refused when origins
-  are allowlisted. With `--check-lineage` and an allowlist, models whose
-  base model is not recorded are refused until you confirm it with
-  `--lineage-reviewed ID`. Training-data sources are recorded only where a
-  model card names them.
+  are allowlisted. With `--check-lineage` and an allowlist, open models
+  whose base model is not recorded (Gemma, Granite, North and others) are
+  refused until you confirm it with `--lineage-reviewed ID`; hosted models
+  are checked by their provider's country only. Training-data sources are
+  recorded only where a model card names them.
 - Licences the catalog has not recorded count as not permitting commercial
   use; after reading a model's terms, list it with `--licence-reviewed ID`
   (this also covers a separately purchased licence).
@@ -122,10 +123,16 @@ overload policy show    # the policy and any saved models it refuses
   flags clears it.
 
 A refused model cannot be saved. A workflow whose agents use one stops
-queueing runs: the webhook records why it was skipped, a due schedule moves
-to its next time, and `overload review` fails with the reason. A run queued
-before the policy changed fails with `model_policy` when it starts, rather
-than reviewing with the refused model.
+queueing runs: the webhook records why it was skipped, a due schedule
+records a failed run with the reason and moves to its next time (a paused
+schedule can still be saved), and `overload review` fails with the reason.
+A run queued before the policy changed fails with `model_policy` when it
+starts, rather than reviewing with the refused model; GitHub only sees
+"Review refused by the model policy".
+
+The policy trusts the catalog entry a connection names unless its model ID
+is a different entry's. It keeps reviews on approved models; it is not a
+control against someone who can edit model connections and the policy.
 
 ### DwarfStar on Metal
 

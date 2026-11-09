@@ -49,6 +49,9 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	if status != "queued" {
 		return nil
 	}
+	if refused, err := w.refuseByPolicy(ctx, tx, runID); err != nil || refused {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`, runID); err != nil {
 		return err
 	}
@@ -62,12 +65,6 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	run, resolved, repoName, err := w.Store.LoadRunWorkflow(ctx, runID)
 	if err != nil || resolved.Kind != "pr_review" || resolved.Verify() != nil {
 		return w.failRun(ctx, runID, "invalid_workflow", "Pinned PR workflow is unavailable")
-	}
-	if err := w.Store.CheckModelPolicy(ctx, resolved); err != nil {
-		if errors.Is(err, postgres.ErrModelPolicy) {
-			return w.failRun(ctx, runID, "model_policy", overload.TruncateUTF8(err.Error(), 500))
-		}
-		return err
 	}
 	source := w.Source
 	if source == nil {
@@ -132,6 +129,32 @@ func appClient(ctx context.Context, store *postgres.Store) (*github.Client, erro
 		return nil, err
 	}
 	return github.NewClient(app.AppID, []byte(app.PrivateKey))
+}
+
+// refuseByPolicy fails a queued run, inside the transaction that locked it,
+// when the model policy now refuses one of its pinned models. A run whose
+// workflow cannot be loaded is left to the normal path, which fails it.
+func (w *ReviewWorker) refuseByPolicy(ctx context.Context, tx pgx.Tx, runID int64) (bool, error) {
+	_, pinned, _, err := w.Store.LoadRunWorkflow(ctx, runID)
+	if err != nil {
+		return false, nil
+	}
+	policyErr := w.Store.CheckModelPolicy(ctx, pinned)
+	if !errors.Is(policyErr, postgres.ErrModelPolicy) {
+		return false, policyErr
+	}
+	message := overload.TruncateUTF8(policyErr.Error(), 500)
+	if _, err := tx.Exec(ctx, `UPDATE runs SET status='failed',error_code='model_policy',error_message=$2,finished_at=now() WHERE id=$1`, runID, message); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'error', 'failed', $2)`, runID, message); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	reportStatus(ctx, w.Store, w.Status, runID, statusError, "Review refused by the model policy")
+	return true, nil
 }
 
 func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message string) error {

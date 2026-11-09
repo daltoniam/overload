@@ -231,8 +231,10 @@ func (settings ReviewSettings) Validate() error {
 	default:
 		return errors.New("API must be empty (Chat Completions) or responses")
 	}
-	if _, ok := catalog.Lookup(settings.Catalog); settings.Catalog != "" && !ok {
-		return fmt.Errorf("catalog entry %q does not exist", settings.Catalog)
+	if settings.Catalog != "" {
+		if _, _, err := catalog.Identify(settings.Catalog, settings.Model); err != nil {
+			return err
+		}
 	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {

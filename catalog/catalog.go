@@ -202,6 +202,8 @@ func (model Model) validate() error {
 		return fmt.Errorf("hosted models have no weights or runtime")
 	case model.TrainedFromScratch && model.BaseModel != "":
 		return fmt.Errorf("a model trained from scratch has no base model")
+	case model.BaseModel != "" && len(model.BaseOrigins) == 0:
+		return fmt.Errorf("a base model needs its origins")
 	}
 	for _, origin := range append(slices.Clone(model.BaseOrigins), model.TrainingDataOrigins...) {
 		if !originPattern.MatchString(origin) {

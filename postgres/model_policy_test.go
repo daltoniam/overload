@@ -65,7 +65,7 @@ func TestModelPolicy(t *testing.T) {
 		t.Fatalf("reading a refused workflow for display: %v", err)
 	}
 	_, err = store.ResolveRunnableWorkflow(ctx, "review")
-	if !errors.Is(err, postgres.ErrWorkflowUnavailable) || !strings.Contains(err.Error(), "model qwen of agent reviewer is not allowed") {
+	if !errors.Is(err, postgres.ErrWorkflowUnavailable) || !strings.Contains(err.Error(), "model not allowed by the model policy: model qwen of agent reviewer: its publisher is from CN") {
 		t.Fatalf("resolve after policy: %v", err)
 	}
 	if _, err := store.ResolveRunnableWorkflow(ctx, "summary"); !errors.Is(err, postgres.ErrWorkflowUnavailable) {
@@ -89,6 +89,18 @@ func TestModelPolicy(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT next_run_at FROM schedules WHERE name='daily'`).Scan(&next); err != nil || !next.After(time.Now()) {
 		t.Fatalf("refused schedule was not moved to its next time: %v %v", next, err)
 	}
+	var code, message string
+	if err := store.Pool.QueryRow(ctx, `SELECT r.error_code, r.error_message FROM schedule_occurrences o JOIN runs r ON r.id=o.run_id WHERE o.schedule_id=(SELECT id FROM schedules WHERE name='daily') AND r.status='failed'`).Scan(&code, &message); err != nil || code != "model_policy" || !strings.Contains(message, "from CN") {
+		t.Fatalf("skipped occurrence not recorded: %q %q %v", code, message, err)
+	}
+	schedule.Enabled = false
+	if err := store.SaveSchedule(ctx, schedule); err != nil {
+		t.Fatalf("pausing a refused schedule: %v", err)
+	}
+	schedule.Enabled = true
+	if err := store.SaveSchedule(ctx, schedule); !errors.Is(err, postgres.ErrWorkflowUnavailable) {
+		t.Fatalf("enabling a refused schedule: %v", err)
+	}
 	if _, err := store.RunScheduleNow(ctx, client, "daily"); !errors.Is(err, postgres.ErrWorkflowUnavailable) {
 		t.Fatalf("run now with a refused model: %v", err)
 	}
@@ -98,7 +110,7 @@ func TestModelPolicy(t *testing.T) {
 		t.Fatalf("saving a refused model: %v", err)
 	}
 	mislabelled := overload.ReviewSettings{Name: "sneaky", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8000/v1", Model: "qwen3.8-flash-next", PromptProfile: "context", Catalog: "recursive-flint"}
-	if err := store.SaveReviewSettings(ctx, mislabelled); !errors.Is(err, postgres.ErrModelPolicy) {
+	if err := store.SaveReviewSettings(ctx, mislabelled); err == nil || !strings.Contains(err.Error(), "is catalog entry qwen3.8-flash-next") {
 		t.Fatalf("saving a mislabelled model: %v", err)
 	}
 	flint := overload.ReviewSettings{Name: "flint", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8080/v1", Model: "flint", PromptProfile: "context", Catalog: "recursive-flint"}

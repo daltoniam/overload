@@ -71,16 +71,13 @@ func (s *Store) CheckModelPolicy(ctx context.Context, workflow overload.Resolved
 	if err != nil {
 		return err
 	}
-	if err := checkWorkflowPolicy(policy, workflow); err != nil {
-		return fmt.Errorf("%w: %w", ErrModelPolicy, err)
-	}
-	return nil
+	return checkWorkflowPolicy(policy, workflow)
 }
 
 func checkWorkflowPolicy(policy catalog.Policy, workflow overload.ResolvedWorkflow) error {
 	for _, agent := range workflow.Agents {
 		if err := policy.Check(agent.Model.Catalog, agent.Model.Model).Error(); err != nil {
-			return fmt.Errorf("model %s of agent %s is not allowed by the model policy: %w", agent.Model.Name, agent.Name, err)
+			return fmt.Errorf("%w: model %s of agent %s: %v", ErrModelPolicy, agent.Model.Name, agent.Name, err)
 		}
 	}
 	return nil

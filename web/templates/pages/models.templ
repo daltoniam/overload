@@ -20,7 +20,7 @@ templ Models(models []overload.ReviewSettings, refused map[string]string) {
 				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Catalog</th><th>Parallel files</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, model := range models {
 						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>
-							{ catalogName(model.Catalog) }
+							{ catalogName(model.Catalog, model.Model) }
 							if reason, ok := refused[model.Name]; ok {
 								<span class="badge failed">Refused by policy</span><span class="secondary-line">{ reason }</span>
 							}
@@ -69,14 +69,18 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 	}
 }
 
-func catalogName(id string) string {
-	if id == "" {
+func catalogName(id, modelName string) string {
+	entry, ok, err := catalog.Identify(id, modelName)
+	switch {
+	case err != nil:
+		return id
+	case !ok:
 		return "None"
-	}
-	if entry, ok := catalog.Lookup(id); ok {
+	case id == "":
+		return entry.Name + " (matched by model ID)"
+	default:
 		return entry.Name
 	}
-	return id
 }
 
 func modelDefaultLabel(isDefault bool) string {

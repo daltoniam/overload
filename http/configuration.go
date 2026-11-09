@@ -327,6 +327,10 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 			http.NotFound(w, r)
 			return
 		}
+		if errors.Is(err, postgres.ErrWorkflowUnavailable) {
+			http.Error(w, "Not saved: "+strings.TrimPrefix(err.Error(), postgres.ErrWorkflowUnavailable.Error()+": ")+".", http.StatusConflict)
+			return
+		}
 		if err != nil {
 			http.Error(w, "Invalid configuration", http.StatusBadRequest)
 			return

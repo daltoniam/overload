@@ -44,7 +44,13 @@ func (s *Store) SaveSchedule(ctx context.Context, schedule overload.Schedule) er
 	if kind != "scheduled_prompt" {
 		return errors.New("workflow is not a scheduled prompt")
 	}
-	resolved, err := s.ResolveRunnableWorkflow(ctx, schedule.Workflow)
+	resolve := s.ResolveRunnableWorkflow
+	if !schedule.Enabled {
+		// A paused schedule queues nothing, so the model policy is checked
+		// when it is enabled again; this keeps pausing possible.
+		resolve = s.ResolveWorkflow
+	}
+	resolved, err := resolve(ctx, schedule.Workflow)
 	if err != nil {
 		return err
 	}
@@ -123,7 +129,7 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 		resolved, err := resolveRunnableWorkflow(ctx, tx, item.workflow)
 		if errors.Is(err, ErrWorkflowUnavailable) {
 			slog.Warn("scheduled run skipped", "schedule", item.name, "error", err)
-			if _, err := tx.Exec(ctx, `UPDATE schedules SET next_run_at=$2 WHERE id=$1`, item.id, next); err != nil {
+			if err := recordSkippedOccurrence(ctx, tx, item.id, item.at, item.input, next, err); err != nil {
 				return 0, err
 			}
 			continue
@@ -161,6 +167,28 @@ func (s *Store) EnqueueDueSchedules(ctx context.Context, client *river.Client[pg
 		return 0, err
 	}
 	return queued, nil
+}
+
+// recordSkippedOccurrence stores a due occurrence that could not run as a
+// failed run, so the Runs page shows why, and moves the schedule on.
+func recordSkippedOccurrence(ctx context.Context, tx pgx.Tx, scheduleID int64, at time.Time, input []byte, next time.Time, cause error) error {
+	code := "workflow_unavailable"
+	if errors.Is(cause, ErrModelPolicy) {
+		code = "model_policy"
+	}
+	message := overload.TruncateUTF8(cause.Error(), 1000)
+	var runID int64
+	if err := tx.QueryRow(ctx, `INSERT INTO runs(kind,pr_number,trigger,status,dry_run,input_snapshot,schedule_id,scheduled_for,error_code,error_message,finished_at) VALUES ('scheduled_prompt',NULL,'cron','failed',true,$1,$2,$3,$4,$5,now()) RETURNING id`, input, scheduleID, at, code, message).Scan(&runID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'error', 'skipped', $2)`, runID, message); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO schedule_occurrences(schedule_id,scheduled_for,run_id) VALUES ($1,$2,$3)`, scheduleID, at, runID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `UPDATE schedules SET next_run_at=$2 WHERE id=$1`, scheduleID, next)
+	return err
 }
 
 type ScheduleArgs struct {

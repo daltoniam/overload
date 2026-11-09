@@ -39,15 +39,16 @@ func TestCatalogLoads(t *testing.T) {
 
 func TestParseRejectsInvalidEntries(t *testing.T) {
 	for name, data := range map[string]string{
-		"unknown field":   `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"extra":1}]`,
-		"bad origin":      `[{"id":"a","name":"A","publisher":"P","origin":"usa","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
-		"bad kind":        `[{"id":"a","name":"A","publisher":"P","kind":"closed","tier":"developer","licence":{"commercial":"yes"}}]`,
-		"cap without sum": `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"revenue_cap"}}]`,
-		"duplicate":       `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}},{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
-		"bad eval":        `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"evals":[{"setup":"x","found":6,"possible":5,"runs":1}]}]`,
-		"hosted weights":  `[{"id":"a","name":"A","publisher":"P","kind":"hosted","tier":"hosted","licence":{"commercial":"yes"},"weights":[{"quant":"Q8_0","format":"gguf"}]}]`,
-		"reserved id":     `[{"id":"policy","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
-		"lineage origin":  `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"base_origins":["China"]}]`,
+		"unknown field":        `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"extra":1}]`,
+		"bad origin":           `[{"id":"a","name":"A","publisher":"P","origin":"usa","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
+		"bad kind":             `[{"id":"a","name":"A","publisher":"P","kind":"closed","tier":"developer","licence":{"commercial":"yes"}}]`,
+		"cap without sum":      `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"revenue_cap"}}]`,
+		"duplicate":            `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}},{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
+		"bad eval":             `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"evals":[{"setup":"x","found":6,"possible":5,"runs":1}]}]`,
+		"hosted weights":       `[{"id":"a","name":"A","publisher":"P","kind":"hosted","tier":"hosted","licence":{"commercial":"yes"},"weights":[{"quant":"Q8_0","format":"gguf"}]}]`,
+		"base without origins": `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"base_model":"B"}]`,
+		"reserved id":          `[{"id":"policy","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"}}]`,
+		"lineage origin":       `[{"id":"a","name":"A","publisher":"P","kind":"open","tier":"developer","licence":{"commercial":"yes"},"base_origins":["China"]}]`,
 	} {
 		if _, err := parse([]byte(data)); err == nil {
 			t.Errorf("%s: parsed", name)
@@ -76,6 +77,7 @@ func TestPolicyEvaluate(t *testing.T) {
 		{"from scratch lineage", Policy{AllowedOrigins: []string{"US"}, CheckLineage: true}, "recursive-flint", true, ""},
 		{"unrecorded base model refused", Policy{AllowedOrigins: []string{"US"}, CheckLineage: true}, "gemma-4-31b", false, "base model is not recorded"},
 		{"unrecorded base model with block list", Policy{BlockedOrigins: []string{"CN"}, CheckLineage: true}, "gemma-4-31b", true, ""},
+		{"hosted models are not refused for an unrecorded base", Policy{AllowedOrigins: []string{"US"}, CheckLineage: true}, "claude-opus-5.5", true, ""},
 		{"reviewed lineage", Policy{AllowedOrigins: []string{"US"}, CheckLineage: true, LineageReviewed: []string{"gemma-4-31b"}}, "gemma-4-31b", true, ""},
 		{"non-commercial refused", Policy{RequireCommercialUse: true}, "twil-8b", false, "does not allow commercial use"},
 		{"reviewed licence allowed", Policy{RequireCommercialUse: true, LicenceReviewed: []string{"twil-8b"}}, "twil-8b", true, ""},

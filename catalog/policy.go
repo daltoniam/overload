@@ -154,7 +154,7 @@ func (policy Policy) Evaluate(id string) Decision {
 			reasons = append(reasons, fmt.Sprintf("%s is from %s, which the model policy does not allow", subject, origin))
 		}
 	}
-	if policy.CheckLineage && len(policy.AllowedOrigins) > 0 && !model.TrainedFromScratch && model.BaseModel == "" && !slices.Contains(policy.LineageReviewed, id) {
+	if policy.CheckLineage && len(policy.AllowedOrigins) > 0 && model.Kind == KindOpen && !model.TrainedFromScratch && model.BaseModel == "" && !slices.Contains(policy.LineageReviewed, id) {
 		reasons = append(reasons, "its base model is not recorded in the catalog; review it and mark its lineage reviewed")
 	}
 	if policy.RequireCommercialUse && !slices.Contains(policy.LicenceReviewed, id) {

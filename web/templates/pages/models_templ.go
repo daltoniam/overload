@@ -149,9 +149,9 @@ func Models(models []overload.ReviewSettings, refused map[string]string) templ.C
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var9 string
-					templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(catalogName(model.Catalog))
+					templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(catalogName(model.Catalog, model.Model))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/models.templ`, Line: 23, Col: 35}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/models.templ`, Line: 23, Col: 48}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 					if templ_7745c5c3_Err != nil {
@@ -674,14 +674,18 @@ func ModelForm(model overload.ReviewSettings, nonce string) templ.Component {
 	})
 }
 
-func catalogName(id string) string {
-	if id == "" {
+func catalogName(id, modelName string) string {
+	entry, ok, err := catalog.Identify(id, modelName)
+	switch {
+	case err != nil:
+		return id
+	case !ok:
 		return "None"
-	}
-	if entry, ok := catalog.Lookup(id); ok {
+	case id == "":
+		return entry.Name + " (matched by model ID)"
+	default:
 		return entry.Name
 	}
-	return id
 }
 
 func modelDefaultLabel(isDefault bool) string {

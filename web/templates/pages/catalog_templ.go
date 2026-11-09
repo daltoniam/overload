@@ -1093,7 +1093,7 @@ func PolicyForm(policy catalog.Policy, models []catalog.Model, refused []string,
 					}
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, "</fieldset><fieldset class=\"field\"><legend>Lineage reviewed by an administrator</legend><small>When lineage is checked against allowed countries, models whose base model the catalog does not record are refused until you confirm it.</small> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 105, "</fieldset><fieldset class=\"field\"><legend>Lineage reviewed by an administrator</legend><small>When lineage is checked against allowed countries, open models whose base model the catalog does not record are refused until you confirm it. Hosted models are checked by their provider's country only.</small> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
