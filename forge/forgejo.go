@@ -101,7 +101,9 @@ func (forgejo *Forgejo) PullRequestWithDiff(ctx context.Context, repository stri
 			return overload.PullRequest{}, "", err
 		}
 		if after.Head.SHA == raw.Head.SHA && after.Base.SHA == raw.Base.SHA {
-			return forgejoPR(raw), patch, nil
+			// The latest read also carries any state change (closed,
+			// draft) made while the diff was fetched.
+			return forgejoPR(after), patch, nil
 		}
 		raw = after
 	}

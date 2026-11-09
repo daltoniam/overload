@@ -192,6 +192,8 @@ func TestSavedRepositoryIsScopedToItsHost(t *testing.T) {
 		{"new GitHub", "repositories", url.Values{"name": {"acme/api"}}, 1},
 		{"binding on GitHub", "bindings", url.Values{"repository": {"acme/api"}, "repository_id": {"1"}}, 1},
 		{"binding on Forgejo", "bindings", url.Values{"repository": {"acme/api"}, "repository_id": {"2"}}, 2},
+		{"binding on Forgejo without an ID", "bindings", url.Values{"repository": {"acme/api"}, "source": {"forgejo"}}, 2},
+		{"binding on GitHub without an ID", "bindings", url.Values{"repository": {"acme/api"}}, 1},
 	} {
 		if got := savedRepository(test.resource, test.form, repos); got != test.want {
 			t.Errorf("%s: %d, want %d", test.name, got, test.want)

@@ -319,6 +319,12 @@ func (gitlab *GitLab) PostReview(ctx context.Context, repository string, number 
 			slog.Warn("GitLab approval not given", "repository", repository, "merge_request", number, "error", err)
 		}
 	case overload.ReviewRequestChanges:
+		// A review of an older commit never withdraws an approval a
+		// review of the current head may have given.
+		if !strings.EqualFold(mr.SHA, sha) {
+			slog.Info("GitLab approval left in place: the merge request has a newer head than the review", "repository", repository, "merge_request", number)
+			break
+		}
 		if _, err := gitlab.api.do(ctx, http.MethodPost, path+"/unapprove", nil, nil); err != nil && statusOf(err) != http.StatusNotFound {
 			slog.Warn("GitLab approval not withdrawn", "repository", repository, "merge_request", number, "error", err)
 		}

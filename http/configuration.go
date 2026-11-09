@@ -399,13 +399,21 @@ func savedRepository(resource string, form url.Values, repos []overload.Reposito
 		id, name = form.Get("repository_id"), form.Get("repository")
 	}
 	for _, repo := range repos {
-		if id != "" {
+		switch {
+		case id != "":
 			if strconv.FormatInt(repo.ID, 10) == id && repo.FullName == name {
 				return repo.ID
 			}
-			continue
-		}
-		if repo.FullName == name && repo.Forge == form.Get("forge") {
+		case resource == "bindings":
+			// The same host rule the binding save used.
+			source := form.Get("source")
+			if source == "" {
+				source = overload.ForgeGitHub
+			}
+			if repo.FullName == name && repo.Host() == source {
+				return repo.ID
+			}
+		case repo.FullName == name && repo.Forge == form.Get("forge"):
 			return repo.ID
 		}
 	}

@@ -588,3 +588,38 @@ func TestForgejoDiffMatchesItsHead(t *testing.T) {
 		t.Fatalf("head %s with diff %q: %v", pr.HeadSHA, patch, err)
 	}
 }
+
+func TestGitLabStaleReviewKeepsANewerApproval(t *testing.T) {
+	host, server := newFakeHost(t, "PRIVATE-TOKEN", "glpat-test")
+	mr := gitlabProjectPath + "/merge_requests/7"
+	newer := strings.Repeat("c", 40)
+	host.json("GET "+mr, 200, map[string]any{"iid": 7, "state": "opened", "sha": newer, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": newer, "start_sha": baseSHA}})
+	host.json("GET "+mr+"/versions", 200, []map[string]any{{"head_commit_sha": headSHA, "base_commit_sha": baseSHA, "start_commit_sha": baseSHA}})
+	host.json("POST "+mr+"/notes", 201, map[string]any{"id": 1})
+	host.json("POST "+mr+"/unapprove", 201, map[string]any{})
+	if _, err := gitlabClient(t, server).PostReview(context.Background(), "group/sub/api", 7, headSHA, overload.ReviewRequestChanges, "s", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.find("POST", mr+"/unapprove")) != 0 {
+		t.Fatal("a review of an older commit withdrew the approval")
+	}
+}
+
+func TestForgejoReturnsTheLatestState(t *testing.T) {
+	host, server := newFakeHost(t, "Authorization", "token fj-test")
+	reads := 0
+	host.routes["GET "+forgejoRepoPath+"/pulls/3"] = func(w http.ResponseWriter, _ *http.Request) {
+		reads++
+		state := "open"
+		if reads > 1 {
+			state = "closed"
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"number": 3, "state": state, "head": map[string]any{"sha": headSHA}, "base": map[string]any{"sha": baseSHA}})
+	}
+	host.routes["GET "+forgejoRepoPath+"/pulls/3.diff"] = func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("diff --git a/x b/x\n"))
+	}
+	if pr, _, err := forgejoClient(t, server).PullRequestWithDiff(context.Background(), "acme/api", 3); err != nil || pr.State != "closed" {
+		t.Fatalf("state = %q %v", pr.State, err)
+	}
+}
