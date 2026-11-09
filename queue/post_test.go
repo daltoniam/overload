@@ -25,6 +25,17 @@ type fakePoster struct {
 	resolved  [][]overload.Finding
 }
 
+func (poster *fakePoster) ReviewComments(_ context.Context, _ int64, _ string, _ int, reviewID int64) ([]github.PostedComment, error) {
+	if reviewID != poster.existing || len(poster.posts) == 0 {
+		return nil, nil
+	}
+	var comments []github.PostedComment
+	for index, finding := range poster.posts[len(poster.posts)-1] {
+		comments = append(comments, github.PostedComment{ID: 5000 + int64(index), Path: finding.Path, Line: finding.Line, Body: "**" + finding.Title + "** (" + finding.Severity + ")\n\n" + finding.Body})
+	}
+	return comments, nil
+}
+
 func (poster *fakePoster) ResolveThreads(_ context.Context, _ int64, _ string, _ int, fixed []overload.Finding) (int, error) {
 	poster.resolved = append(poster.resolved, fixed)
 	return len(fixed), nil
@@ -135,6 +146,10 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if len(poster.posts) != 1 || len(poster.posts[0]) != 1 || poster.posts[0][0].Title != "New bug" || !strings.Contains(poster.summary, fmt.Sprintf("overload-run:%d", runID)) {
 		t.Fatalf("posts=%+v summary=%q", poster.posts, poster.summary)
 	}
+	var commentID *int64
+	if err := store.Pool.QueryRow(ctx, `SELECT github_comment_id FROM findings WHERE run_id=$1 AND title='New bug'`, runID).Scan(&commentID); err != nil || commentID == nil || *commentID != 5000 {
+		t.Fatalf("posted finding's comment = %v %v", commentID, err)
+	}
 	if err := worker.Work(ctx, job); err != nil || len(poster.posts) != 1 {
 		t.Fatalf("second run posted again: %d %v", len(poster.posts), err)
 	}
@@ -155,7 +170,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET config_snapshot='{"rereview":{"resolve_threads":true}}' WHERE id=$1`, crashed); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Pool.Exec(ctx, `UPDATE findings SET resolved_by_run_id=$1 WHERE run_id=$2 AND title='Old bug'`, crashed, runID); err != nil {
+	if _, err := store.Pool.Exec(ctx, `UPDATE findings SET resolved_by_run_id=$1, github_comment_id=CASE WHEN status='posted' THEN 777 END WHERE title='Old bug' AND run_id IN (SELECT id FROM runs WHERE repository_id=$2)`, crashed, repoID); err != nil {
 		t.Fatal(err)
 	}
 	poster.existing = 555
@@ -165,7 +180,9 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if len(poster.posts) != 1 {
 		t.Fatal("re-posted a review that GitHub already had")
 	}
-	if len(poster.resolved) != 1 || len(poster.resolved[0]) != 1 || poster.resolved[0][0].Title != "Old bug" {
+	// Both copies of the fixed issue resolve one thread: the posted copy's
+	// comment.
+	if len(poster.resolved) != 1 || len(poster.resolved[0]) != 1 || poster.resolved[0][0].Title != "Old bug" || poster.resolved[0][0].CommentID != 777 {
 		t.Fatalf("threads resolved on recovery = %+v", poster.resolved)
 	}
 	if err := store.Pool.QueryRow(ctx, `SELECT github_review_id FROM runs WHERE id=$1`, crashed).Scan(&reviewID); err != nil || reviewID != 555 {

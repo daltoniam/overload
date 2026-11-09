@@ -66,3 +66,63 @@ func TestPriorRepliesAndResolveThreads(t *testing.T) {
 		t.Fatalf("resolved %d %v: %v", count, resolved, err)
 	}
 }
+
+func TestFindingsFollowTheirOwnComment(t *testing.T) {
+	var resolved []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/user":
+			_, _ = io.WriteString(w, `{"login":"overload-bot"}`)
+		case "/repos/acme/api/pulls/7/reviews/900/comments":
+			_, _ = io.WriteString(w, `[{"id":21,"path":"a.go","original_line":3,"body":"**Nil map** (high)\n\nnew"}]`)
+		case "/repos/acme/api/pulls/7/comments":
+			// Two revisions each left a "Nil map" comment on a.go line 3.
+			_, _ = io.WriteString(w, `[
+				{"id":11,"path":"a.go","original_line":3,"body":"**Nil map** (high)\n\nold","user":{"login":"overload-bot"}},
+				{"id":12,"path":"a.go","body":"about the old one","in_reply_to_id":11,"user":{"login":"dev"}},
+				{"id":21,"path":"a.go","original_line":3,"body":"**Nil map** (high)\n\nnew","user":{"login":"overload-bot"}},
+				{"id":22,"path":"a.go","body":"about the new one","in_reply_to_id":21,"user":{"login":"dev"}}
+			]`)
+		case "/graphql":
+			var request struct {
+				Query     string         `json:"query"`
+				Variables map[string]any `json:"variables"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if strings.HasPrefix(request.Query, "mutation") {
+				resolved = append(resolved, request.Variables["thread"].(string))
+				_, _ = io.WriteString(w, `{"data":{"resolveReviewThread":{"thread":{"id":"x"}}}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
+				{"id":"OLD","isResolved":false,"comments":{"nodes":[{"databaseId":11,"path":"a.go","originalLine":3,"body":"**Nil map** (high)\n\nold","author":{"login":"overload-bot"}}]}},
+				{"id":"NEW","isResolved":false,"comments":{"nodes":[{"databaseId":21,"path":"a.go","originalLine":3,"body":"**Nil map** (high)\n\nnew","author":{"login":"overload-bot"}}]}}
+			]}}}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	client, err := NewTokenClient("test-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.api.BaseURL, _ = url.Parse(server.URL + "/")
+	comments, err := client.ReviewComments(context.Background(), 0, "acme/api", 7, 900)
+	if err != nil {
+		t.Fatal(err)
+	}
+	posted := []overload.Finding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map"}, {ID: 6, Path: "b.go", Line: 1, Title: "Other"}}
+	if matched := MatchComments(posted, comments); len(matched) != 1 || matched[5] != 21 {
+		t.Fatalf("matched = %v", matched)
+	}
+	replies, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map", CommentID: 21}})
+	if err != nil || len(replies[5]) != 1 || replies[5][0] != "dev: about the new one" {
+		t.Fatalf("replies = %+v %v", replies, err)
+	}
+	count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map", CommentID: 21}})
+	if err != nil || count != 1 || strings.Join(resolved, ",") != "NEW" {
+		t.Fatalf("resolved %d %v: %v", count, resolved, err)
+	}
+}

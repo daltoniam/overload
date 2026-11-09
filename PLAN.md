@@ -1014,7 +1014,12 @@ After:
    shape, beyond the planted-bug fixtures. Started (7.12): `overload eval
    prs` runs workflows over past pull requests as dry runs and reports
    recall against a labels file, findings per PR, and cost and time at
-   p50 and p90. Next: run it on real repositories with labeled bugs.
+   p50 and p90. It evaluates GitHub repositories only (heads are read
+   through the GitHub App or a token), and pins the exact repository row
+   it resolved. When GitLab and Forgejo support lands alongside it, the
+   command must route by the repository's forge or refuse non-GitHub
+   repositories before reading heads. Next: run it on real repositories
+   with labeled bugs.
 4a. Cost, context and re-reviews (7.12): implemented and tested with fake
    GitHub and recorded model responses. Next: measure prompt-cache hit
    rates and transfer times on a large monorepo, and decide on archive

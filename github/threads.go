@@ -22,10 +22,10 @@ func commentTitle(title string) string {
 }
 
 // PriorReplies returns, for each earlier finding, the replies people left
-// on overload's review comment for it, oldest first. Overload's own
-// comments are matched by author, path, the line they were posted on and
-// title, so same-title findings on different lines keep their own
-// replies; replies by overload are left out.
+// on overload's review comment for it, oldest first. A finding is matched
+// to its comment by the comment's ID when it was recorded at posting, and
+// otherwise by author, path, the line it was posted on and title; replies
+// by overload are left out.
 func (client *Client) PriorReplies(ctx context.Context, installationID int64, repository string, number int, prior []overload.PriorFinding) (map[int64][]string, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
@@ -52,13 +52,23 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 		}
 		options.Page = response.NextPage
 	}
+	// A finding that knows its comment is matched by the comment's ID;
+	// older findings fall back to path, posted line and title.
 	findingOf := map[int64]int64{}
+	for _, finding := range prior {
+		if finding.CommentID != 0 {
+			findingOf[finding.CommentID] = finding.ID
+		}
+	}
 	for _, comment := range comments {
 		if !strings.EqualFold(comment.GetUser().GetLogin(), login) || comment.GetInReplyTo() != 0 {
 			continue
 		}
+		if _, known := findingOf[comment.GetID()]; known {
+			continue
+		}
 		for _, finding := range prior {
-			if comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
+			if finding.CommentID == 0 && comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
 				findingOf[comment.GetID()] = finding.ID
 				break
 			}
@@ -88,7 +98,7 @@ const reviewThreadsQuery = `query($owner: String!, $repo: String!, $number: Int!
     pullRequest(number: $number) {
       reviewThreads(first: 100, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id isResolved comments(first: 1) { nodes { path originalLine body author { login } } } }
+        nodes { id isResolved comments(first: 1) { nodes { databaseId path originalLine body author { login } } } }
       }
     }
   }
@@ -143,8 +153,10 @@ func (client *Client) graphQL(ctx context.Context, installationID int64, query s
 }
 
 // ResolveThreads resolves overload's open review threads for findings a
-// re-review found fixed, and returns how many it resolved. Threads are
-// matched by author, path, the line the comment was posted on, and title.
+// re-review found fixed, and returns how many it resolved. A thread is
+// matched by its first comment's ID when the finding recorded it at
+// posting, and otherwise by author, path, the line the comment was posted
+// on, and title.
 func (client *Client) ResolveThreads(ctx context.Context, installationID int64, repository string, number int, fixed []overload.Finding) (int, error) {
 	if len(fixed) == 0 {
 		return 0, nil
@@ -158,9 +170,8 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 		return 0, err
 	}
 	var threads []string
-	// Each fixed finding resolves at most one thread: the one posted on
-	// its line, so a still-open finding with the same title elsewhere in
-	// the file keeps its thread.
+	// Each fixed finding resolves at most one thread: its own, so a
+	// still-open finding with the same title keeps its thread.
 	claimed := make([]bool, len(fixed))
 	var after *string
 	for page := 0; page < 10; page++ {
@@ -177,6 +188,7 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 							IsResolved bool   `json:"isResolved"`
 							Comments   struct {
 								Nodes []struct {
+									DatabaseID   int64  `json:"databaseId"`
 									Path         string `json:"path"`
 									OriginalLine int    `json:"originalLine"`
 									Body         string `json:"body"`
@@ -204,7 +216,14 @@ func (client *Client) ResolveThreads(ctx context.Context, installationID int64, 
 				continue
 			}
 			for index, finding := range fixed {
-				if !claimed[index] && first.Path == finding.Path && first.OriginalLine == finding.Line && strings.HasPrefix(first.Body, commentTitle(finding.Title)) {
+				if claimed[index] {
+					continue
+				}
+				matches := first.DatabaseID != 0 && first.DatabaseID == finding.CommentID
+				if finding.CommentID == 0 {
+					matches = first.Path == finding.Path && first.OriginalLine == finding.Line && strings.HasPrefix(first.Body, commentTitle(finding.Title))
+				}
+				if matches {
 					claimed[index] = true
 					threads = append(threads, thread.ID)
 					break

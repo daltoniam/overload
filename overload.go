@@ -61,6 +61,9 @@ type Finding struct {
 	// DropReason is set on findings the verifier dropped. They are stored
 	// on the run but never posted.
 	DropReason string `json:"drop_reason,omitempty"`
+	// CommentID is the GitHub review comment the finding was posted as,
+	// when known.
+	CommentID int64 `json:"comment_id,omitempty"`
 }
 
 type Repository struct {
@@ -326,6 +329,9 @@ type PriorFinding struct {
 	Title    string   `json:"title"`
 	Body     string   `json:"body"`
 	Replies  []string `json:"replies,omitempty"`
+	// CommentID is the GitHub review comment the finding was posted as,
+	// when known.
+	CommentID int64 `json:"comment_id,omitempty"`
 }
 
 // PriorVerdict is a re-review's judgment of an earlier finding.

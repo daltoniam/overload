@@ -77,13 +77,15 @@ func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, er
 	if err := s.Pool.QueryRow(ctx, `SELECT COALESCE((config_snapshot->'rereview'->>'resolve_threads')::boolean, false) FROM runs WHERE id = $1`, runID).Scan(&target.ResolveThreads); err != nil {
 		return target, err
 	}
-	fixed, err := s.Pool.Query(ctx, `SELECT path, line, title, severity FROM findings WHERE resolved_by_run_id = $1 ORDER BY id`, runID)
+	// One finding per fixed issue, preferring the copy that was posted
+	// (it knows its GitHub comment).
+	fixed, err := s.Pool.Query(ctx, `SELECT path, line, title, severity, comment_id FROM (SELECT DISTINCT ON (fingerprint) id, path, line, title, severity, COALESCE(github_comment_id, 0) AS comment_id FROM findings WHERE resolved_by_run_id = $1 ORDER BY fingerprint, github_comment_id IS NULL, id) fixed ORDER BY id`, runID)
 	if err != nil {
 		return target, err
 	}
 	target.Fixed, err = pgx.CollectRows(fixed, func(row pgx.CollectableRow) (overload.Finding, error) {
 		var finding overload.Finding
-		err := row.Scan(&finding.Path, &finding.Line, &finding.Title, &finding.Severity)
+		err := row.Scan(&finding.Path, &finding.Line, &finding.Title, &finding.Severity, &finding.CommentID)
 		return finding, err
 	})
 	if err != nil {
@@ -110,6 +112,17 @@ FROM findings f JOIN runs r ON r.id = f.run_id WHERE f.run_id = $1 AND f.status 
 		}
 	}
 	return target, rows.Err()
+}
+
+// SetFindingComments records the GitHub review comment each posted finding
+// became, by finding ID.
+func (s *Store) SetFindingComments(ctx context.Context, comments map[int64]int64) error {
+	for findingID, commentID := range comments {
+		if _, err := s.Pool.Exec(ctx, `UPDATE findings SET github_comment_id = $2 WHERE id = $1`, findingID, commentID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // FinishPost records the outcome of posting a run. reviewID is 0 when no

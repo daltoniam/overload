@@ -81,6 +81,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		if err := w.Store.FinishPost(ctx, target, "posted", existing); err != nil {
 			return err
 		}
+		w.recordComments(ctx, poster, target, existing)
 		w.resolveThreads(ctx, poster, target)
 		return nil
 	}
@@ -126,6 +127,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
 		return err
 	}
+	w.recordComments(ctx, poster, target, reviewID)
 	w.resolveThreads(ctx, poster, target)
 	state, description := finalStatus(event, len(severities), target.Partial)
 	reportStatus(ctx, w.Store, w.Status, runID, state, description)
@@ -169,6 +171,28 @@ func reviewSummary(event string, target postgres.PostTarget, earlier int) string
 		return fmt.Sprintf("Overload found nothing at %s severity or above. %d minor issue(s) are noted as comments.", block, len(target.Findings)+earlier)
 	default:
 		return fmt.Sprintf("Overload found %d issue(s) in this pull request.%s", len(target.Findings), partial)
+	}
+}
+
+// commentLister lists the comments of a posted review.
+type commentLister interface {
+	ReviewComments(ctx context.Context, installationID int64, repository string, number int, reviewID int64) ([]github.PostedComment, error)
+}
+
+// recordComments saves the GitHub comment each posted finding became, so
+// later replies and thread resolution follow the comment itself. It is
+// best effort: without it, findings are matched by path, line and title.
+func (w *PostWorker) recordComments(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, reviewID int64) {
+	lister, ok := poster.(commentLister)
+	if !ok || reviewID <= 0 || len(target.Findings) == 0 {
+		return
+	}
+	comments, err := lister.ReviewComments(ctx, target.InstallationID, target.Repository, target.PRNumber, reviewID)
+	if err == nil {
+		err = w.Store.SetFindingComments(context.WithoutCancel(ctx), github.MatchComments(target.Findings, comments))
+	}
+	if err != nil {
+		slog.Warn("review comment IDs not recorded", "run_id", target.RunID, "error", err)
 	}
 }
 

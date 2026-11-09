@@ -205,7 +205,10 @@ the overload server (the same worker and sandbox as a webhook review;
 nothing is posted) and writes JSON plus a CSV summary: findings per pull
 request, cost and time at p50 and p90, degraded runs, and, with a labels
 file of known bugs (`[{"pr": 101, "path": "a.py", "line": 12, "window":
-3, "keywords": ["null"]}]`), the share each workflow caught.
+3, "keywords": ["null"]}]`), the share each workflow caught. Evaluation
+works on GitHub repositories overload already knows; heads are read
+through the GitHub App, or a `GITHUB_TOKEN`/`gh` token for repositories
+without an installation.
 
 Each review also records how long fetching, uploading and extracting the
 head took; `overload runs transfer` reports p50 and p90.

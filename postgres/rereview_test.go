@@ -150,11 +150,16 @@ func TestResolvedFindingsStayResolvedAcrossCopies(t *testing.T) {
 		return id
 	}
 	first, second := newRun("completed"), newRun("completed")
-	finding(first, "posted")
+	posted := finding(first, "posted")
+	if err := store.SetFindingComments(ctx, map[int64]int64{posted: 4242}); err != nil {
+		t.Fatal(err)
+	}
 	newer := finding(second, "suppressed")
 	current := newRun("running")
+	// The latest copy is the one shown, with the comment the issue was
+	// posted as.
 	_, _, prior, err := store.RereviewBase(ctx, overload.Run{ID: current, RepositoryID: repoID, PRNumber: 4}, workflow)
-	if err != nil || len(prior) != 1 || prior[0].ID != newer {
+	if err != nil || len(prior) != 1 || prior[0].ID != newer || prior[0].CommentID != 4242 {
 		t.Fatalf("prior = %+v %v", prior, err)
 	}
 	tx, err := store.Pool.Begin(ctx)
