@@ -181,7 +181,16 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			http.Error(w, "Unable to load settings", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.Models(settings).Render(r.Context(), w)
+		var budget *postgres.Budget
+		if store, ok := reader.(BudgetStore); ok {
+			budgets, err := store.Budgets(r.Context())
+			if err != nil {
+				http.Error(w, "Unable to load the budget", http.StatusInternalServerError)
+				return
+			}
+			budget = &budgets[0]
+		}
+		_ = pages.Models(settings, budget, csrf).Render(r.Context(), w)
 	})
 	registerModels(mux, reader, csrf)
 	mux.HandleFunc("GET /webhooks", func(w http.ResponseWriter, r *http.Request) {

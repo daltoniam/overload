@@ -77,6 +77,8 @@ func run(args []string) error {
 		return manageRuns(args[1:])
 	case "eval":
 		return evaluate(args[1:])
+	case "budget":
+		return manageBudget(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
@@ -139,7 +141,7 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	models, err := modelProxyFromEnvironment(ctx, runner != nil)
+	models, err := modelProxyFromEnvironment(ctx, runner != nil, store)
 	if err != nil {
 		return err
 	}
@@ -157,6 +159,7 @@ func serve() error {
 	}
 	go scanSchedules(ctx, store, client)
 	go catchUpWebhooks(ctx, store)
+	go watchBudget(ctx, store)
 	defer func() {
 		stop()
 		<-client.Stopped()

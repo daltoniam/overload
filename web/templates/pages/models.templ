@@ -4,10 +4,11 @@ import (
 	"strconv"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/layouts"
 )
 
-templ Models(models []overload.ReviewSettings) {
+templ Models(models []overload.ReviewSettings, budget *postgres.Budget, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
 		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
 		<section class="panel">
@@ -21,6 +22,20 @@ templ Models(models []overload.ReviewSettings) {
 				</tbody></table></div>
 			}
 		</section>
+		if budget != nil {
+			<section class="panel"><h2>Review budget</h2>
+				<p class="muted">Caps on what reviews spend on priced models, in US dollars per calendar month and per day (UTC). Once a cap would be passed, new reviews are skipped (shown on Webhooks) and running reviews are stopped by the model proxy shortly after. Repository caps: <code>overload budget set --repo owner/name</code>.</p>
+				if budget.FromEnvironment {
+					<p class="notice warning">OVERLOAD_BUDGET_MONTHLY_USD or OVERLOAD_BUDGET_DAILY_USD is set and takes precedence over the values saved here.</p>
+				}
+				<form method="post" action="/settings/budget"><input type="hidden" name="csrf" value={ nonce }/>
+					<label class="field"><span>Monthly cap</span><input name="monthly_usd" inputmode="decimal" value={ priceValue(budget.MonthlyUSD) } placeholder="No cap"/></label>
+					<label class="field"><span>Daily cap</span><input name="daily_usd" inputmode="decimal" value={ priceValue(budget.DailyUSD) } placeholder="No cap"/></label>
+					<label class="field"><span>Commit status when a review is skipped</span><select name="skip_status"><option value="success" selected?={ budget.SkipStatus != "error" }>success: does not block merges when overload is a required check</option><option value="error" selected?={ budget.SkipStatus == "error" }>error: blocks merges until reviewed</option></select></label>
+					<div class="actions"><button type="submit">Save budget</button></div>
+				</form>
+			</section>
+		}
 	}
 }
 

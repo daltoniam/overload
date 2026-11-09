@@ -188,6 +188,22 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if err != nil {
 		return false, err
 	}
+	expected, err := expectedRunCost(ctx, tx, snapshot)
+	if err != nil {
+		return false, err
+	}
+	budget, err := s.checkBudget(ctx, tx, repo.id, expected)
+	if err != nil {
+		return false, err
+	}
+	if budget.Exceeded {
+		if repo.installation != 0 {
+			if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: delivery.RepoName, InstallationID: repo.installation, SHA: delivery.HeadSHA, State: budget.SkipStatus, Description: budget.Description()}, nil); err != nil {
+				return false, err
+			}
+		}
+		return skip(budgetSkipReason(budget), nil)
+	}
 	if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
 		return false, err
 	}
@@ -258,4 +274,13 @@ func (s *Store) KnownDelivery(ctx context.Context, guid string) (bool, error) {
 	var known bool
 	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE source = 'github' AND delivery_id = $1)`, guid).Scan(&known)
 	return known, err
+}
+
+// budgetSkipReason explains a review the budget left out.
+func budgetSkipReason(check BudgetCheck) string {
+	scope := "global"
+	if check.Scope != "" {
+		scope = check.Scope
+	}
+	return fmt.Sprintf("%s: %s %s budget %s reached (%s spent, %s expected for queued and running reviews, %s for this one)", SkipBudgetExhausted, scope, check.Period, overload.FormatUSD(check.Cap), overload.FormatUSD(check.Spent), overload.FormatUSD(check.Pending), overload.FormatUSD(check.Expected))
 }

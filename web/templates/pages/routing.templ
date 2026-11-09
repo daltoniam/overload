@@ -118,7 +118,7 @@ templ WorkflowPreview(workflow overload.ResolvedWorkflow, form PreviewForm, prev
 			<p class="notice">{ message }</p>
 		}
 		if preview != nil {
-			<section class="panel"><h2>Summary</h2><dl><dt>Model calls</dt><dd>{ fmt.Sprint(preview.Calls) }</dd><dt>Rough duration</dt><dd>{ roughDuration(preview.Estimate) }</dd><dt>Skipped files</dt><dd>{ fmt.Sprint(len(preview.Routing.Skipped)) }</dd></dl>
+			<section class="panel"><h2>Summary</h2><dl><dt>Model calls</dt><dd>{ fmt.Sprint(preview.Calls) }</dd><dt>Rough duration</dt><dd>{ roughDuration(preview.Estimate) }</dd><dt>Rough cost</dt><dd>{ previewCost(preview) }</dd><dt>Skipped files</dt><dd>{ fmt.Sprint(len(preview.Routing.Skipped)) }</dd></dl>
 				for _, warning := range preview.Warnings {
 					<p class="notice">{ warning }</p>
 				}
@@ -132,4 +132,11 @@ templ WorkflowPreview(workflow overload.ResolvedWorkflow, form PreviewForm, prev
 			@RunRouting(preview.Routing, false)
 		}
 	}
+}
+
+func previewCost(preview *overload.Preview) string {
+	if preview.CostUSD == nil {
+		return "unpriced (add prices to the models)"
+	}
+	return fmt.Sprintf("%s (at %d input and %d output tokens per call)", overload.FormatUSD(*preview.CostUSD), overload.PreviewInputTokens, overload.PreviewOutputTokens)
 }

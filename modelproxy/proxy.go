@@ -5,10 +5,13 @@ package modelproxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -36,23 +39,38 @@ var anthropicHeader = regexp.MustCompile(`^[A-Za-z0-9._,-]{1,200}$`)
 type grant struct {
 	model   overload.ModelProfile
 	expires time.Time
+	// spent is what the grant's calls cost so far; it counts as pending
+	// spend until the grant is revoked and the run records its cost.
+	spent float64
 }
 
-// Proxy forwards granted model requests. It is safe for concurrent use.
+// BudgetGate decides whether more model calls may go out: pending is what
+// calls through the proxy cost that runs have not recorded yet. It returns
+// a reason when the budget is spent.
+type BudgetGate func(ctx context.Context, pending float64) (string, error)
+
+// maxMeteredBytes bounds the copy of an answer kept to read its usage.
+const maxMeteredBytes = 16 << 20
+
+// Proxy forwards granted model requests and meters what they cost. It is
+// safe for concurrent use.
 type Proxy struct {
 	base   string
 	client *http.Client
 	now    func() time.Time
+	// Budget, when set, refuses calls with 429 once the budget is spent:
+	// the backstop for reviews already running when it ran out.
+	Budget BudgetGate
 
 	mu     sync.Mutex
-	grants map[string]grant
+	grants map[string]*grant
 }
 
 // New returns a proxy whose grants are reachable at base (for example
 // http://overload.overload.svc:8083).
 func New(base string) *Proxy {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	return &Proxy{base: strings.TrimRight(base, "/"), client: &http.Client{Transport: transport}, now: time.Now, grants: map[string]grant{}}
+	return &Proxy{base: strings.TrimRight(base, "/"), client: &http.Client{Transport: transport}, now: time.Now, grants: map[string]*grant{}}
 }
 
 // Grant returns a base URL that reaches model for ttl, and a function that
@@ -70,7 +88,7 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 			delete(proxy.grants, existing)
 		}
 	}
-	proxy.grants[token] = grant{model: model, expires: now.Add(ttl)}
+	proxy.grants[token] = &grant{model: model, expires: now.Add(ttl)}
 	proxy.mu.Unlock()
 	return proxy.base + "/v1/m/" + token, func() {
 		proxy.mu.Lock()
@@ -87,6 +105,25 @@ func (proxy *Proxy) lookup(token string) (overload.ModelProfile, bool) {
 		return overload.ModelProfile{}, false
 	}
 	return entry.model, true
+}
+
+// Pending is what calls through live grants cost so far.
+func (proxy *Proxy) Pending() float64 {
+	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	total := 0.0
+	for _, entry := range proxy.grants {
+		total += entry.spent
+	}
+	return total
+}
+
+func (proxy *Proxy) charge(token string, usd float64) {
+	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	if entry, ok := proxy.grants[token]; ok {
+		entry.spent += usd
+	}
 }
 
 func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +145,18 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !allowedPaths[provider][path] {
 		http.NotFound(w, r)
 		return
+	}
+	if proxy.Budget != nil {
+		reason, err := proxy.Budget(r.Context(), proxy.Pending())
+		if err != nil {
+			slog.Warn("model proxy could not check the budget", "error", err)
+		}
+		if reason != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = fmt.Fprintf(w, `{"error":{"type":"budget_exhausted","message":"overload's %s review budget is spent"}}`, reason)
+			return
+		}
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
 	if err != nil || len(body) > maxRequestBytes {
@@ -160,10 +209,24 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	flusher, _ := w.(http.Flusher)
+	var metered bytes.Buffer
+	defer func() {
+		if response.StatusCode < 200 || response.StatusCode > 299 || metered.Len() >= maxMeteredBytes {
+			return
+		}
+		if usage, ok := parseUsage(provider, response.Header.Get("Content-Type"), metered.Bytes()); ok {
+			if usd, priced := model.Pricing.Cost(usage); priced {
+				proxy.charge(token, usd)
+			}
+		}
+	}()
 	buf := make([]byte, 32<<10)
 	for {
 		n, readErr := response.Body.Read(buf)
 		if n > 0 {
+			if metered.Len() < maxMeteredBytes {
+				metered.Write(buf[:min(n, maxMeteredBytes-metered.Len())])
+			}
 			if _, err := w.Write(buf[:n]); err != nil {
 				return
 			}

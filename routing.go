@@ -412,8 +412,17 @@ type Preview struct {
 	Calls    int           `json:"model_calls"`
 	Estimate time.Duration `json:"-"`
 	Minutes  int           `json:"estimate_minutes"`
-	Warnings []string      `json:"warnings,omitempty"`
+	// CostUSD is a rough cost when every model has prices: each call
+	// counted at PreviewInputTokens in and PreviewOutputTokens out.
+	CostUSD  *float64 `json:"estimate_cost_usd,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
+
+// Tokens per call assumed by preview cost estimates.
+const (
+	PreviewInputTokens  = 12000
+	PreviewOutputTokens = 2000
+)
 
 // Preview routes paths and estimates the work per model server. Servers run
 // at the same time, so the estimate is the slowest server's.
@@ -450,6 +459,10 @@ func (workflow ResolvedWorkflow) Preview(paths []string) (Preview, error) {
 	}
 	if workflow.VerifierPrompt != nil {
 		preview.Warnings = append(preview.Warnings, "The verifier adds one model call per sub-agent finding.")
+	}
+	preview.CostUSD = workflow.estimateCost(routing, planner)
+	if preview.CostUSD != nil && workflow.MaxRunCostUSD > 0 && *preview.CostUSD > workflow.MaxRunCostUSD {
+		preview.Warnings = append(preview.Warnings, fmt.Sprintf("The rough cost (%s) is over the workflow's cap of %s per review; the review would stop early and be marked partial.", FormatUSD(*preview.CostUSD), FormatUSD(workflow.MaxRunCostUSD)))
 	}
 	for _, agent := range routing.Agents {
 		if agent.WholePR && len(agent.Files) > 0 {
@@ -678,4 +691,36 @@ func validateFileChars(kind string, chars int) error {
 		return fmt.Errorf("max_file_chars must be between %d and %d (0 picks a default for the workflow's models)", MinFileChars, MaxFileCharsLimit)
 	}
 	return nil
+}
+
+// estimateCost prices a routing's calls at the preview's nominal tokens,
+// or returns nil when a model has no prices.
+func (workflow ResolvedWorkflow) estimateCost(routing Routing, planner bool) *float64 {
+	call := Usage{Input: PreviewInputTokens, Output: PreviewOutputTokens}
+	total := 0.0
+	for position, agent := range routing.Agents {
+		if position >= len(workflow.Agents) {
+			break
+		}
+		calls := len(agent.Files)
+		if agent.WholePR {
+			calls = min(calls, 1)
+		}
+		if calls == 0 {
+			continue
+		}
+		usd, ok := workflow.Agents[position].Model.Pricing.Cost(call)
+		if !ok {
+			return nil
+		}
+		total += usd * float64(calls)
+	}
+	if planner && len(workflow.Agents) > 0 {
+		usd, ok := workflow.Agents[0].Model.Pricing.Cost(call)
+		if !ok {
+			return nil
+		}
+		total += usd
+	}
+	return &total
 }

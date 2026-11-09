@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -14,7 +15,37 @@ type modelDeleter interface {
 	DeleteReviewSettings(context.Context, string) error
 }
 
+// BudgetStore keeps spending caps.
+type BudgetStore interface {
+	Budgets(context.Context) ([]postgres.Budget, error)
+	SaveBudget(context.Context, postgres.Budget) error
+}
+
 func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
+	if store, ok := reader.(BudgetStore); ok {
+		mux.HandleFunc("POST /settings/budget", func(w http.ResponseWriter, r *http.Request) {
+			if !validForm(w, r, csrf) {
+				return
+			}
+			budget := postgres.Budget{SkipStatus: r.PostForm.Get("skip_status")}
+			for _, field := range []struct {
+				name   string
+				target **float64
+			}{{"monthly_usd", &budget.MonthlyUSD}, {"daily_usd", &budget.DailyUSD}} {
+				value, err := overload.ParsePrice(r.PostForm.Get(field.name))
+				if err != nil {
+					http.Error(w, "Budget caps must be dollar amounts", http.StatusBadRequest)
+					return
+				}
+				*field.target = value
+			}
+			if err := store.SaveBudget(r.Context(), budget); err != nil {
+				http.Error(w, "Budget not saved: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		})
+	}
 	mux.HandleFunc("GET /settings/{name}", func(w http.ResponseWriter, r *http.Request) {
 		selected := overload.ReviewSettings{ConnectionKind: "local", PromptProfile: "context"}
 		if r.PathValue("name") != "new" {

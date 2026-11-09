@@ -38,3 +38,21 @@ func TestWriteCostReport(t *testing.T) {
 		}
 	}
 }
+
+func TestParseBudgetFlags(t *testing.T) {
+	five := 5.0
+	current := []postgres.Budget{{MonthlyUSD: &five, SkipStatus: "success"}, {Repository: "acme/api", DailyUSD: &five, SkipStatus: "error"}}
+	budget, err := parseBudgetFlags([]string{"--daily", "1.50"}, current)
+	if err != nil || budget.Repository != "" || *budget.MonthlyUSD != 5 || *budget.DailyUSD != 1.5 || budget.SkipStatus != "success" {
+		t.Fatalf("global = %+v %v", budget, err)
+	}
+	budget, err = parseBudgetFlags([]string{"--repo", "acme/api", "--daily", "none", "--monthly", "$300"}, current)
+	if err != nil || budget.DailyUSD != nil || *budget.MonthlyUSD != 300 || budget.SkipStatus != "error" {
+		t.Fatalf("repository = %+v %v", budget, err)
+	}
+	for _, args := range [][]string{{}, {"--monthly", "lots"}, {"extra"}} {
+		if _, err := parseBudgetFlags(args, current); err == nil {
+			t.Errorf("accepted %v", args)
+		}
+	}
+}

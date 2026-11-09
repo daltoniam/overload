@@ -20,6 +20,15 @@ var migrations embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
+	// Now is the clock budget checks use; nil means time.Now.
+	Now func() time.Time
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
