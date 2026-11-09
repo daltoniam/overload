@@ -75,6 +75,8 @@ func run(args []string) error {
 		return manageSettings(args[1:])
 	case "runs":
 		return manageRuns(args[1:])
+	case "eval":
+		return evaluate(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
