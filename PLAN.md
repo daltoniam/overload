@@ -786,7 +786,10 @@ which model and mode to use.
   Qwen3-Coder-30B-A3B-Instruct when a GPU or large-memory host is available;
   Recursive Flint (40B-A2.5B, llama.cpp GGUF, Q4_K_M and Q8_0 at its native
   256k context) is measured on the planted-bug eval (3 to 4 of 5, see
-  deploy/README.md); modes context, plan, tools.
+  deploy/README.md), as are Liquid's LFM2.5-24B-A2B (1 to 3 of 5) and
+  LFM3-1.7B (1 to 2 of 5, invalid JSON in most runs), and the non-Chinese
+  models in 16.5 (Gemma 4, Granite 4.2, Nemotron 3.5, North Mini Code,
+  Devstral Small 2); modes context, plan, tools.
 
 ## 10. UI
 
@@ -999,6 +1002,11 @@ After:
   Bedrock, Google and OpenRouter; add them to model profiles. Prefer an
   overload-hosted model gateway (OpenAI-compatible proxy in the control plane)
   so API keys never enter sandboxes and token usage is metered centrally.
+  Native Anthropic support matters for quality, not just choice: through an
+  OpenAI-compatible endpoint (including Cloudflare AI Gateway's) Claude
+  models run without thinking, and Sonnet 5.5 found 9 of 20 planted bugs
+  that way against 14 with `output_config.effort: high` and adaptive
+  thinking (deploy/README.md).
 - **CLI harnesses** (Claude Code, Crush, Codex): alternate agent images that
   run the CLI and emit `result.json` in the same schema.
 - **Generic jobs**: signed source adapters (starting with Sentry), typed
@@ -1045,3 +1053,418 @@ After:
   local models.
 - Whether a hosted model proxy (keys held outside sandboxes, per-run tokens)
   should be added so hosted models can run in sandbox mode.
+
+## 16. Product direction: a model host for Apple hardware (exploratory)
+
+Not a v1 commitment; recorded so roadmap decisions keep the door open.
+
+### 16.1 Thesis
+
+Turn overload from a PR reviewer into the software and user layer for teams
+that run open-weight models on their own Macs: an IT team racks a few Mac
+Studios (or developers keep a Mac mini under the desk), and developers point
+their agents (Claude Code, OpenCode, Cline, Crush) and overload's own jobs
+at it. Switchboard is the integration layer on top. Buyers are teams that
+put security or cost ahead of frontier quality: code may not leave the
+building, usage-based AI bills are unwelcome, and fixed hardware that can be
+depreciated is easier to approve. Frontier-first companies are not the
+target. Local models trail hosted frontier models (5/5 for GPT-6 Sol versus
+3 to 5 of 5 locally on the planted-bug eval); the bet is that "good enough,
+private and fixed-cost" keeps improving as open models do.
+
+### 16.2 Hardware tiers
+
+Be explicit about hardware; it decides what a customer can run. Speeds are
+from our M1 Max (64 GB, 400 GB/s) unless noted; newer chips are faster.
+
+| Tier | Example hardware | What fits | Expectation |
+|---|---|---|---|
+| Developer machine | MacBook Pro or Mac mini, 32 to 64 GB | 20 to 45 GB mixture-of-experts models: Flint Q4/Q8, Nemotron 3.5 Lightning, North Mini Code; dense ~30B models only at Q4 | One user; reviews in 4 to 25 min per file; dense 30B models at Q8 swapped to about 3 tokens/s on the 64 GB M1 Max with normal dev apps open; long prompts slow (a 205k-token prompt took 55 min to process) |
+| Team node | One Mac Studio M5 Max (up to 128 GB) or M5 Ultra (up to 512 GB, 1.2 TB/s) | Everything above at Q8 with parallel slots; Qwen3.8-class models; 100B to 300B models at 4 bits | A small team sharing one queue |
+| Team cluster | 2 to 4 Mac Studios over Thunderbolt 5 | 400B to 1T models (Beam 1.0 is about 1 TB at BF16, about 300 GB at 4 bits) | Frontier-adjacent open models for a team |
+
+A 64 GB Mac mini M5 Pro (307 GB/s, Thunderbolt 5) is the smallest node that
+can join a cluster; the base Mac mini has Thunderbolt 4 and cannot.
+
+### 16.3 Clustering (state as of November 2026)
+
+- **Transport**: macOS 26.2 added RDMA over Thunderbolt 5 on Apple silicon
+  Macs with Thunderbolt 5 (Apple TN3205). It is enabled once per machine from
+  Recovery (`rdma_ctl enable`). Links are point-to-point with no switch: a
+  four-node full mesh needs six cables; larger rings forward through
+  neighbours.
+- **Runtimes**:
+  - *MLX + JACCL* (MLX 0.30.1+): `mlx_lm.server` under `mlx.launch` serves
+    one model sharded across nodes, tensor parallel (faster decode) or
+    pipeline parallel (bigger models, chunked prefill). The clearest
+    supported path; not every architecture is supported.
+  - *exo* (Apache 2.0): discovery, topology-aware placement, tensor and
+    pipeline sharding over RDMA, a dashboard, and OpenAI, Responses, Claude
+    Messages and Ollama APIs. Friendlier, but every node must run the same
+    version and recent releases still fix stuck loads and RDMA regressions.
+  - *llama.cpp RPC*: now has an RDMA transport, but upstream calls it a
+    fragile, insecure proof of concept; not for production.
+- **Published scaling**: Apple reports four M5 Ultras in tensor parallel at
+  about 2.6x one node's decode speed for Qwen 3.8 27B and 3.0x for Mistral
+  Medium 3.5 128B (65 to 76 percent of linear), and an 816B model at 37
+  tokens/s on four nodes. Earlier reports put four M3 Ultras at about 30
+  tokens/s on Kimi K2 and Qwen3 235B with exo. Prefill remains the weak
+  point; pipeline chunking improves time to first token by up to about 1.8x.
+- **Operations**: machines must stay awake (Thunderbolt has no Wake-on-LAN),
+  restart after power loss and log in automatically; macOS upgrades can need
+  the GUI; MDM is the realistic way to manage a rack. Same OS and runtime
+  versions on every node.
+
+Decision: build on the MLX/JACCL server for clusters and llama.cpp for
+single machines behind one OpenAI-compatible endpoint; treat exo as a
+competitor and possible backend, and revisit after a spike on two real
+Thunderbolt 5 nodes.
+
+### 16.4 What the product needs that overload lacks
+
+1. **Runtime manager**: a model catalog with provenance (HQ country, base
+   model, synthetic-data sources), license (revenue caps, non-commercial
+   terms) and known-good settings (context, sampling, reasoning switch);
+   checksum-verified, resumable downloads; pinned runtime versions with
+   upgrades (Homebrew's llama.cpp lagged new architectures by weeks); disk
+   accounting and cleanup; start, stop and health of model servers.
+   Everything this plan's measurements had to do by hand.
+2. **Shared serving**: per-developer keys, a fair queue in front of the
+   one to four parallel slots a Mac offers, usage in tokens and minutes
+   rather than dollars, and OpenAI and Anthropic compatible endpoints so
+   agents work unchanged. The model proxy (7.10) is the starting point.
+3. **Model bake-offs**: the planted-bug eval as a feature, run against the
+   customer's own code, so buyers choose models on evidence (see the
+   measurements in deploy/README.md).
+   Finding placement matters as much as detection: Gemma 4 26B-A4B and
+   Devstral Small 2 found real bugs but cited wrong line numbers, so every
+   finding was dropped. Numbering diff lines in the prompt, or re-anchoring
+   a finding to the line its evidence uniquely matches, would let more
+   models qualify; both change review behaviour and need measuring first.
+4. **Cluster control**: node inventory, topology and link health, version
+   drift, placement of models across nodes.
+5. **Packaging**: a signed installer and launchd services per Mac (today's
+   installer is the base) plus a container for the control plane where IT
+   prefers it.
+6. **Identity (OIDC)**, built on open-source libraries
+   (`github.com/coreos/go-oidc/v3` and `golang.org/x/oauth2`) against any
+   standards-compliant provider (Okta, Entra ID, Google Workspace, Keycloak,
+   Authentik, Dex), with no dependency on a hosted auth service such as Clerk
+   or Auth0. See 16.7.
+7. **The review bot as a merge gate**: a documented recipe for making the
+   `overload` commit status a required check, with the safeguards in 16.7.
+
+### 16.5 Model policy
+
+Some buyers require US models; many accept allied (France, Canada) but not
+Chinese ones. The catalog labels every model and lets an administrator
+restrict by origin. Current open models that fit a 64 GB Mac and are not
+Chinese: Recursive Flint (US, trained from scratch, Apache 2.0), Google
+Gemma 4, IBM Granite 4.2, NVIDIA Nemotron 3.5 Lightning (US, but trained in
+part on data generated by DeepSeek, Qwen and GLM), Mistral Devstral Small 2
+(France) and Cohere North Mini Code (Canada). The strongest US open models
+(Reflection Beam 1.0, Arcee Trinity-Large-Thinking, gpt-oss-120b) need a
+Mac Studio or a cluster. Measured on the planted-bug eval (deploy/README.md):
+Flint Q8 found 15 of 20, Gemma 4 31B and North Mini Code 12, Nemotron 8,
+Granite 4.2 30B 2 in its one finished run, and Gemma 4 26B-A4B and Devstral
+Small 2 almost none because of wrong line numbers; Qwen3.8 found 20 of 20.
+No non-Chinese model that fits 64 GB matches Qwen3.8 yet. The closest
+candidate is Ricursive Ripple-65B Preview (US, trained from scratch, Apache
+2.0, dense 65B): 14 of 20 at only 3 bits, including the first non-Chinese
+5/5 run, but at 2.5 tokens/s on the M1 Max it belongs on a Mac Studio
+(Q8 is 69 GB, BF16 130 GB; one 256 GB machine holds it without clustering).
+webAI's TwIL-8B (11 of 20 at Q8) is notable for its size but carries a
+non-commercial licence.
+
+### 16.6 Risks
+
+- Prefill speed on long agent contexts; set expectations per tier.
+- Quality gap to frontier models; position as sufficient, not equal.
+- Ollama, LM Studio and exo already cover single-machine serving; the
+  difference is team management, compliance metadata, evals and
+  Switchboard integrations. TensorFold Starlight is the closest match to this
+  plan; see 16.9.
+- Apple hardware pricing and supply, and macOS fleet management.
+- Model licences vary; the catalog must enforce them.
+
+### 16.7 Identity and the review bot as a merge gate
+
+Today the UI uses one shared Basic Auth login, or Cloudflare Access in front
+of overload; webhooks are verified with a shared secret and the GitHub App
+authenticates with its private key. Security-focused buyers will want named
+users and no long-lived shared secrets.
+
+**People (OIDC login)**
+- Authorization code flow with PKCE for the dashboard; `state` and `nonce`
+  checked; ID tokens verified against the provider's discovery document and
+  JWKS (go-oidc caches and rotates keys).
+- Server-side sessions in Postgres (opaque, HttpOnly, Secure, SameSite
+  cookie), so logout and revocation take effect immediately; RP-initiated
+  logout where the provider supports it.
+- Roles from a configurable groups claim: admins manage models, nodes,
+  workflows and keys; members use models and see their own usage; viewers
+  read dashboards. Unmapped users get no access by default.
+- Per-user API keys for agents and CLIs, stored hashed, scoped and
+  expiring, and revoked when the user is disabled. Usage and audit records
+  carry the user.
+- Basic Auth stays for single-user installs; Cloudflare Access stays as an
+  alternative front door. A break-glass local admin is available when the
+  provider is down. SCIM provisioning is a later addition.
+- Tests run against Dex (an open-source OIDC provider) in the kind
+  environment.
+
+**Workloads (OIDC for automation)**
+- Accept GitHub Actions OIDC tokens (issuer
+  `https://token.actions.githubusercontent.com`, audience set to the
+  overload URL). Policy names which `repository`, `ref`, `environment` and
+  `job_workflow_ref` claims may trigger which reviews or agents, so a CI job
+  can request a review or call a model without a stored secret, and a forged
+  request cannot obtain an approval.
+- Accept Kubernetes service-account tokens the same way for in-cluster
+  callers.
+- Outbound, the GitHub App still signs with its private key (GitHub Apps
+  have no OIDC option); keep it in the platform's secret store and support
+  rotation.
+
+**The review bot as a merge gate**
+- Overload already posts an `overload` commit status and an APPROVED or
+  CHANGES_REQUESTED review. Make the status a required check in branch
+  protection or rulesets; required status checks work with GitHub Apps.
+  Check before relying on it whether an app's approving review counts
+  toward required human approvals.
+- An AI gate is an attack surface: PR text can try to talk the model into
+  approving. Keep PR content untrusted (as today), require humans alongside
+  the bot on sensitive paths (auth, migrations, CI configuration), allow
+  bot-only approval only for low-risk paths a workflow names, and never
+  fail open: a review that cannot finish, or a file that cannot be
+  reviewed, must not produce a passing status.
+
+### 16.8 Engines and model techniques to evaluate
+
+- **TensorFold** (Apache 2.0, Zig, Metal, CUDA and HIP): a model-specific
+  engine with OpenAI, Responses and Anthropic Messages endpoints, tools and
+  JSON-schema output, and speculative decoding (a small drafter proposes
+  tokens that the model verifies, so greedy output is unchanged). Its
+  recipes report Gemma 4 31B on native Metal at about 51 tokens/s plain and
+  150 to 190 with a DFlash drafter, MTP drafting for Nemotron 3.5, and
+  Qwen3.8 27B about 3x faster with its drafter. It does not yet serve Flint,
+  gpt-oss or Mistral models, and GGUF is not a native path. Measured on the
+  M1 Max (deploy/README.md): Nemotron 3.5 MLX 4-bit ran at roughly twice
+  llama.cpp's Q8 speed but found 6 of 30 planted bugs against 8 of 20 at
+  Q8; the MTP drafter corrupted sampled output on the M1 (a repeated token
+  until the limit) and was slower than no drafts at temperature 0; Gemma 4
+  31B is refused below M5. Next step: report the M1 drafter bug upstream,
+  and repeat on M5-class hardware (Gemma 4 31B with its drafter, Nemotron
+  at 8 bits) before deciding whether to support it as a backend next to
+  llama.cpp and MLX.
+- **LLM-directed weight editing** (the MIT "Weight-Space Programming"
+  report using GPT-6 Astra on Qwen3.5-0.8B): a model inspected and patched
+  0.016 percent of the weights to stop a looping failure, lifting MATH-500
+  from 7.9 to 48.1 percent. The editor is a hosted model, the gain was
+  repairing one failure rather than adding skill, and the same attempt on
+  Gemma did not help. Not actionable for code review now; revisit only for
+  a specific, measurable failure (for example wrong line numbers) with the
+  planted-bug eval guarding against regressions.
+
+### 16.9 Competitors
+
+**TensorFold Starlight** (https://github.com/ashhart/tf-starlight;
+engine at https://github.com/ashhart/TensorFold and https://tensorfold.dev)
+is the closest match. Reviewed November 4, 2026.
+
+- *What it is*: "one OpenAI- and Anthropic-compatible endpoint for [an
+  organisation's] private AI fleet". A stateless Go gateway and control
+  plane with Postgres (`starlight`, deployed with Compose, Helm or systemd),
+  a node agent that supervises TensorFold engines on macOS, Linux and
+  Windows (`starlight-node`), and a desktop sign-in and tray app with a
+  local endpoint for tools (`tensorfold-connect`).
+- *Features*:
+  - OIDC and SAML sign-on with 18 provider presets and break-glass access;
+    SCIM 2.0 provisioning.
+  - Projects, roles, API keys, service accounts and device sign-in for
+    headless tools.
+  - Limits, budgets, priorities, queueing and failover.
+  - A live console: tokens/s per node, requests in flight and queued, KV
+    cache load, drain and revoke controls.
+  - Model catalogue, placement and rollouts (including tensor-parallel
+    ranks on GPUs); configuration as code (`starlight apply -f`).
+  - Prometheus metrics; mutual TLS to nodes; secrets sealed with AES-GCM;
+    a hash-chained audit log; an offline mode that blocks cloud egress.
+  - Brokering approved frontier providers under the same identity, limits
+    and audit, and "frontier-planned local work" (plan with a frontier
+    model, build locally).
+- *Licence and stack*: Apache 2.0; Go (about 2 MB of source), Postgres 15+.
+  The same language and database as overload.
+- *Maturity*: repository created November 2, 2026, five commits, one
+  contributor (Ash Hart, TensorFold's author), one star at review time. Its
+  own qualification page says end-to-end tests use a fake engine and that
+  real hardware, identity tenants and load still need qualifying.
+- *Limits*:
+  - Runs only the TensorFold engine, which serves model families one at a
+    time: no Flint, gpt-oss or Mistral models, no native GGUF, and DeepSeek
+    not yet in release builds.
+  - No code review, GitHub integration, evaluation of models on a team's
+    own code, or model provenance and licence policy found in its docs.
+- *What it means for us*: their feature list is close to 16.4 and 16.7,
+  so identity, budgets and a fleet console alone will not differentiate
+  overload. Our edge has to be:
+  1. Engine choice: llama.cpp for new architectures on day one (Flint was
+     unsupported elsewhere), MLX for clusters, and TensorFold where it is
+     faster.
+  2. Workflows on top of the models: PR review, scheduled agents and the
+     review bot as a merge gate (16.7).
+  3. Evidence: the planted-bug eval as a bake-off on the customer's own
+     code.
+  4. Compliance metadata: model origin, base model, training-data sources
+     and licence terms, enforced by policy (16.5).
+  5. Switchboard as the integration layer.
+  Options: compete directly; support Starlight-managed TensorFold nodes as
+  one backend; or offer overload's workflows, evals and policy on top of
+  Starlight. Revisit once it has real deployments, and track its commits
+  and releases until then.
+
+**Others**
+
+| Product | Overlap | Gap relative to this plan |
+|---|---|---|
+| Ollama | Easy single-machine serving and model library | No team identity, budgets, fleet or workflows |
+| LM Studio | Desktop serving and model management | Single machine, desktop-first |
+| exo | Clustering Macs over Thunderbolt 5, dashboard, OpenAI and Claude APIs | Cluster runtime, not a team control plane |
+| TensorFold engine | Fast model-specific serving with drafters | An engine; Starlight is its control plane |
+
+Not yet reviewed: LiteLLM and other open-source gateways (team keys and
+budgets in front of any backend), and hosted private-inference offerings.
+
+### 16.10 Local multi-agent review with hosted models
+
+Developers on several teams, mostly junior and on ordinary laptops, have
+asked for the Curri Overmind PR review on their own machines. What they
+expect is the Overmind experience (a cohort of specialist reviewers, a
+judge, a posted review, then fixes until the review is clean) with overload
+managing the agent runs locally and the models hosted. Local models are an
+option for teams with a Mac Studio, not the default.
+
+**How Overmind does it today** (PR Review Flow, read through Switchboard
+and the agents repository, November 2026):
+
+1. An entry agent calls a prepare step that returns the diff, the changed
+   files and a risk tier (trivial, lite or full, from effective size and
+   sensitive paths such as schema, auth and CI).
+2. It launches a path-gated cohort in parallel: a main monorepo reviewer
+   plus security, performance, schema, query cost, test coverage, deploy
+   compatibility, docs, AGENTS.md, consolidation and Curri foot-gun
+   specialists. Each is a headless Crush with its own prompt, skills and
+   tool role, in its own pod.
+3. A coordinator dedupes and filters the findings, a comment agent posts
+   the review, and a codeowner-substitute status gates the merge. Separate
+   flows (steward, review resolver, CI fixer) push fixes, which retrigger
+   the review until it reports 5/5 confidence with no findings.
+
+Observed: 5 to 10 agents and about 110 to 190 model turns per review;
+completed reviews p10 4.6, p50 7 and p90 11 minutes; about $3.50 to $5.30
+per review with frontier models (mostly GPT-6.1 Sol, GPT-6 Luna for light
+agents).
+
+**Overload's shape for a local run:**
+
+- *Install and run* on the developer's machine (the existing installer and
+  launchd services), against a local checkout or a PR fetched with `gh`.
+- *Prepare*: diff, changed files, risk tier and specialist selection,
+  ported from Overmind's prepare and path gate.
+- *Specialists*: definitions (prompt, skills, tool allowlist, model,
+  required or optional, which tiers) stored as overload agents. They run
+  either through overload's harness or as local Crush processes started
+  with a generated configuration; overload enforces a concurrency limit and
+  a per-review budget.
+- *Judge and output*: a coordinator agent dedupes and scores; output is a
+  local report, a PR comment, or both, using the existing posting rules.
+- *Fix loop (opt-in)*: a fixer agent works in a git worktree on its own
+  branch, runs the repository's tests, and the review reruns until it
+  reaches 5/5 or a round limit. Nothing is pushed without the developer's
+  approval; a failed or unfinished review never reports success.
+- *Models*: a per-agent model chain over OpenAI-compatible endpoints (the
+  team's gateway such as Cloudflare AI Gateway or OpenRouter, or provider
+  keys) with native Anthropic support so Claude models can think. The same
+  endpoint setting can point at a local llama.cpp, MLX or Mac Studio node.
+- *Credentials*: only environment-variable names are stored (as today);
+  agents get scoped model access through the model proxy, never raw keys.
+
+**Expected cost and speed with hosted models:** the laptop only runs
+overload and the agent processes, so any modern machine works. A review
+should take about as long as Overmind's (minutes), at roughly Overmind's
+per-review model cost, billed to the team's own provider account. Quality
+tracks the chosen models: on the planted-bug eval the frontier models found
+19 or 20 of 20 at high effort (deploy/README.md).
+
+**With local models instead**, measured with Flint Q8 on the M1 Max (64 GB):
+prompt reading 404 tokens/s for one agent and 324 combined for eight;
+generation 32 tokens/s for one and about 46 combined for four or eight,
+because one GPU serves every agent. Applied to Overmind's workload that is
+an estimated 20 to 60 minutes per review on a 64 GB machine (with Flint Q4
+so eight 60k-token contexts fit), 1 to 2 hours on 32 GB with fewer agents
+at once, not viable at 16 GB, and 1.5 to 4 hours for a review and fix loop.
+Flint found 15 of 20 planted bugs against 19 to 20 for frontier models, and
+long multi-agent tool use is harder for local models than that single-shot
+test. Local-model reviews belong on a shared Mac Studio node (16.2), not on
+junior developers' laptops.
+
+**Risks**: per-review model cost; code is sent to model providers (use
+gateways with payload logging off and zero-data-retention routes); prompt
+injection from PR content into reviewers and fixers; fixer changes that
+pass tests but are wrong, which is why the loop stays opt-in and
+branch-only.
+
+**Next step**: port the main reviewer, security and schema specialists and
+the coordinator into overload, run them with hosted models on a dozen real
+Curri PRs beside Overmind, and compare findings, wall time and cost; then
+repeat with a Flint endpoint to replace the local estimates with
+measurements.
+
+### 16.11 Implementation phases
+
+Section 16 is built in phases, one pull request each, stacked in this order.
+Each phase ships tested code, CLI and UI where it applies, and updates this
+plan and deploy/README.md.
+
+1. **Model catalog and origin policy** (16.4 item 1, 16.5): a built-in
+   catalog of open models with origin, base model, training-data sources,
+   licence terms, known-good settings and measured eval results; model
+   connections can name a catalog entry; an administrator policy restricts
+   models by origin country and licence, enforced when a model is saved and
+   when a run is queued.
+2. **Runtime manager** (16.4 item 1): checksum-verified, resumable model
+   downloads; disk accounting and cleanup; the minimum llama.cpp build per
+   catalog entry checked against the installed server; llama-server launchd
+   services with the catalog's settings, with start, stop and health.
+3. **Native Anthropic connections** (13, 16.10 Models): an `anthropic`
+   provider through Fantasy, with adaptive thinking and effort, so Claude
+   models can think.
+4. **OIDC sign-in, sessions and roles** (16.7 People): authorization code
+   with PKCE, Postgres sessions, roles from a groups claim, logout, and Basic
+   Auth kept as break-glass access.
+5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7): hashed,
+   scoped, expiring keys; OpenAI and Anthropic compatible endpoints in front
+   of saved models, with the origin policy, a fair per-model queue and usage
+   in tokens and minutes per user.
+6. **Workload identity** (16.7 Workloads): GitHub Actions and Kubernetes
+   service-account tokens accepted under a claim policy, so CI can request a
+   review or call the gateway without a stored secret.
+7. **The review bot as a merge gate** (16.4 item 7, 16.7): the commit
+   status never passes a review that did not finish or skipped files;
+   protected paths that always need a human; bot approval limited to named
+   low-risk paths; a documented branch-protection recipe.
+8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
+   fixtures and from commits that fixed real bugs in the team's repositories,
+   run against chosen models, with detection, placement and time per model.
+9. **Local multi-agent review** (16.10): risk tier and specialist selection
+   by path, specialist and coordinator starter agents, a per-review budget,
+   reviews of a local checkout, and an opt-in fix loop on a branch in a git
+   worktree that never pushes.
+10. **Node inventory and cluster control** (16.4 item 4): Macs report
+    hardware, runtime versions, models and health; version drift is flagged;
+    model placements across nodes are recorded and an MLX launch
+    configuration is generated. Running models across a real Thunderbolt 5
+    cluster still waits for the hardware spike in 16.3.
+11. **Packaging** (16.4 item 5): a signed and notarized macOS package when
+    signing credentials are configured, and a published control-plane
+    container image.
