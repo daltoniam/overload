@@ -45,13 +45,14 @@ type listDirInput struct {
 // agents only. They never reach the network and stop answering after
 // limit calls.
 type repoTools struct {
-	repo  fs.FS
-	calls atomic.Int64
-	limit int64
+	repo        fs.FS
+	calls       atomic.Int64
+	limit       int64
+	searchFiles int
 }
 
 func newRepoTools(repo fs.FS, limit int) *repoTools {
-	return &repoTools{repo: repo, limit: int64(limit)}
+	return &repoTools{repo: repo, limit: int64(limit), searchFiles: maxToolSearchFiles}
 }
 
 func (tools *repoTools) used() bool {
@@ -126,9 +127,18 @@ func (tools *repoTools) agentTools() []fantasy.AgentTool {
 				}
 			}
 			var out strings.Builder
-			matches, files := 0, 0
+			matches, files, unreadable := 0, 0, 0
+			stopped := ""
 			_ = fs.WalkDir(tools.repo, ".", func(name string, entry fs.DirEntry, err error) error {
-				if err != nil || ctx.Err() != nil || matches >= maxSearchMatches || files >= maxToolSearchFiles {
+				if err != nil {
+					unreadable++
+					if entry != nil && entry.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
+				}
+				if ctx.Err() != nil {
+					stopped = "(search was cancelled; results may be incomplete)"
 					return fs.SkipAll
 				}
 				if entry.IsDir() {
@@ -140,12 +150,24 @@ func (tools *repoTools) agentTools() []fantasy.AgentTool {
 				if !entry.Type().IsRegular() || (glob != nil && !glob.MatchString(name)) {
 					return nil
 				}
+				if files >= tools.searchFiles {
+					stopped = fmt.Sprintf("(search stopped after %d files; results may be incomplete)", files)
+					return fs.SkipAll
+				}
 				info, err := entry.Info()
-				if err != nil || info.Size() > maxSearchFileBytes {
+				if err != nil {
+					unreadable++
+					return nil
+				}
+				if info.Size() > maxSearchFileBytes {
 					return nil
 				}
 				data, err := fs.ReadFile(tools.repo, name)
-				if err != nil || bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+				if err != nil {
+					unreadable++
+					return nil
+				}
+				if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
 					return nil
 				}
 				files++
@@ -160,10 +182,21 @@ func (tools *repoTools) agentTools() []fantasy.AgentTool {
 				}
 				return nil
 			})
-			if matches == 0 {
-				return fantasy.NewTextResponse("no matches"), nil
+			var notes []string
+			if stopped != "" {
+				notes = append(notes, stopped)
 			}
-			return fantasy.NewTextResponse(capResult(out.String())), nil
+			if unreadable > 0 {
+				notes = append(notes, fmt.Sprintf("(%d paths could not be read; results may be incomplete)", unreadable))
+			}
+			result := capResult(out.String())
+			if matches == 0 {
+				result = "no matches"
+			}
+			if len(notes) > 0 {
+				result = strings.TrimSuffix(result, "\n") + "\n" + strings.Join(notes, "\n")
+			}
+			return fantasy.NewTextResponse(result), nil
 		}),
 		fantasy.NewAgentTool("list_dir", "List a directory of the pull request's head."+untrustedToolNote, func(_ context.Context, input listDirInput, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if !tools.used() {

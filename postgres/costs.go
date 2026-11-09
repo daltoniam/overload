@@ -10,12 +10,16 @@ import (
 	"github.com/daltoniam/overload"
 )
 
+// spentAt is when a run's spend counts for budgets and the dashboard:
+// when its cost was recorded, or for older rows when it was created.
+const spentAt = `COALESCE(cost_at, created_at)`
+
 // SetRunCost records what a run's model calls cost.
 func (s *Store) SetRunCost(ctx context.Context, runID int64, spend overload.Spend) error {
 	if err := checkSpend(spend); err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=$2, cost_unpriced_calls=$3 WHERE id=$1`, runID, spend.USD, spend.Unpriced)
+	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=$2, cost_unpriced_calls=$3, cost_at=$4 WHERE id=$1`, runID, spend.USD, spend.Unpriced, s.now())
 	return err
 }
 
@@ -25,7 +29,7 @@ func (s *Store) AddRunCost(ctx context.Context, runID int64, spend overload.Spen
 	if err := checkSpend(spend); err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2, cost_unpriced_calls=cost_unpriced_calls+$3 WHERE id=$1`, runID, spend.USD, spend.Unpriced)
+	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2, cost_unpriced_calls=cost_unpriced_calls+$3, cost_at=$4 WHERE id=$1`, runID, spend.USD, spend.Unpriced, s.now())
 	return err
 }
 
@@ -119,7 +123,7 @@ func dayStart(now time.Time) time.Time {
 // Spend summarizes spend for the dashboard.
 func (s *Store) Spend(ctx context.Context, now time.Time) (SpendSummary, error) {
 	var summary SpendSummary
-	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd) FILTER (WHERE created_at >= $2),0), COALESCE(sum(cost_usd),0), count(*), count(*) FILTER (WHERE cost_unpriced_calls > 0) FROM runs WHERE cost_usd IS NOT NULL AND created_at >= $1 AND created_at <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
+	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd) FILTER (WHERE `+spentAt+` >= $2),0), COALESCE(sum(cost_usd),0), count(*), count(*) FILTER (WHERE cost_unpriced_calls > 0) FROM runs WHERE cost_usd IS NOT NULL AND `+spentAt+` >= $1 AND `+spentAt+` <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
 	if err != nil {
 		return summary, fmt.Errorf("spend: %w", err)
 	}
@@ -144,12 +148,16 @@ var transferSteps = []string{"fetch_seconds", "sandbox_start_seconds", "upload_s
 
 // TransferTimes summarizes repository transfer timings of runs in the
 // filter's window, to decide whether a large repository needs a faster
-// transfer.
+// transfer. An unset Until means now.
 func (s *Store) TransferTimes(ctx context.Context, filter CostFilter) ([]TransferStep, error) {
+	var until *time.Time
+	if !filter.Until.IsZero() {
+		until = &filter.Until
+	}
 	var steps []TransferStep
 	for _, step := range transferSteps {
 		summary := TransferStep{Step: step}
-		err := s.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY value), 0), COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY value), 0), COALESCE(max(value), 0) FROM (SELECT (r.metrics->'transfer'->>$4)::float8 AS value FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.created_at >= $1 AND r.created_at < $2 AND ($3='' OR repo.full_name=$3) AND jsonb_typeof(r.metrics->'transfer'->$4) = 'number') timings`, filter.Since, filter.Until, filter.Repository, step).Scan(&summary.Runs, &summary.P50, &summary.P90, &summary.Max)
+		err := s.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY value), 0), COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY value), 0), COALESCE(max(value), 0) FROM (SELECT (r.metrics->'transfer'->>$4)::float8 AS value FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.created_at >= $1 AND r.created_at < COALESCE($2::timestamptz, now()) AND ($3='' OR repo.full_name=$3) AND jsonb_typeof(r.metrics->'transfer'->$4) = 'number') timings`, filter.Since, until, filter.Repository, step).Scan(&summary.Runs, &summary.P50, &summary.P90, &summary.Max)
 		if err != nil {
 			return nil, err
 		}

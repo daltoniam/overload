@@ -85,6 +85,8 @@ func TestProxyGrantsExpire(t *testing.T) {
 	if _, ok := proxy.lookup(token); ok {
 		t.Fatal("expired grant accepted")
 	}
+	// An expired grant is kept for its settle window, then removed.
+	now = now.Add(settleWindow)
 	proxy.Grant(overload.ModelProfile{Model: "m"}, time.Minute)
 	if len(proxy.grants) != 1 {
 		t.Fatalf("expired grants not cleaned up: %d", len(proxy.grants))

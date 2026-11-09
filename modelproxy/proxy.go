@@ -39,9 +39,30 @@ var anthropicHeader = regexp.MustCompile(`^[A-Za-z0-9._,-]{1,200}$`)
 type grant struct {
 	model   overload.ModelProfile
 	expires time.Time
-	// spent is what the grant's calls cost so far; it counts as pending
-	// spend until the grant is revoked and the run records its cost.
+	// ended is when the grant was revoked or expired; it stops
+	// authorizing calls but keeps counting its spend for settleWindow.
+	ended time.Time
+	// spent is what the grant's calls cost so far, including calls that
+	// finish after the grant ended. It counts as pending spend until the
+	// run has recorded its cost.
 	spent float64
+}
+
+// settleWindow is how long a finished grant's spend keeps counting as
+// pending: long enough for its run to record the cost and for the budget
+// gate to read it again.
+const settleWindow = 2 * time.Minute
+
+func (entry *grant) live(now time.Time) bool {
+	return entry.ended.IsZero() && !now.After(entry.expires)
+}
+
+// endedAt is when the grant stopped authorizing calls.
+func (entry *grant) endedAt() time.Time {
+	if !entry.ended.IsZero() {
+		return entry.ended
+	}
+	return entry.expires
 }
 
 // BudgetGate decides whether more model calls may go out: pending is what
@@ -84,7 +105,7 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 	proxy.mu.Lock()
 	now := proxy.now()
 	for existing, entry := range proxy.grants {
-		if now.After(entry.expires) {
+		if !entry.live(now) && now.Sub(entry.endedAt()) > settleWindow {
 			delete(proxy.grants, existing)
 		}
 	}
@@ -92,7 +113,9 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 	proxy.mu.Unlock()
 	return proxy.base + "/v1/m/" + token, func() {
 		proxy.mu.Lock()
-		delete(proxy.grants, token)
+		if entry, ok := proxy.grants[token]; ok && entry.ended.IsZero() {
+			entry.ended = proxy.now()
+		}
 		proxy.mu.Unlock()
 	}
 }
@@ -101,19 +124,23 @@ func (proxy *Proxy) lookup(token string) (overload.ModelProfile, bool) {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 	entry, ok := proxy.grants[token]
-	if !ok || proxy.now().After(entry.expires) {
+	if !ok || !entry.live(proxy.now()) {
 		return overload.ModelProfile{}, false
 	}
 	return entry.model, true
 }
 
-// Pending is what calls through live grants cost so far.
+// Pending is what calls through live grants, and grants that ended within
+// settleWindow, cost so far.
 func (proxy *Proxy) Pending() float64 {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
+	now := proxy.now()
 	total := 0.0
 	for _, entry := range proxy.grants {
-		total += entry.spent
+		if entry.live(now) || now.Sub(entry.endedAt()) <= settleWindow {
+			total += entry.spent
+		}
 	}
 	return total
 }

@@ -26,17 +26,26 @@ func TestRunCostsAndSpend(t *testing.T) {
 	month := time.Date(2099, 3, 1, 0, 0, 0, 0, time.UTC)
 	now := month.Add(9*24*time.Hour + 12*time.Hour)
 	runs := []struct {
-		created time.Time
-		spend   *overload.Spend
+		created  time.Time
+		spend    *overload.Spend
+		recorded time.Time
 	}{
-		{month.Add(time.Hour), &overload.Spend{USD: 1.25}},
-		{month.Add(2 * 24 * time.Hour), &overload.Spend{USD: 0.75}},
-		{now.Add(-time.Hour), &overload.Spend{USD: 2.00}},
-		{now.Add(-2 * time.Hour), &overload.Spend{USD: 0, Unpriced: 3}},
-		{now.Add(-3 * time.Hour), nil},
-		{month.Add(-time.Hour), &overload.Spend{USD: 50}},
+		{month.Add(time.Hour), &overload.Spend{USD: 1.25}, time.Time{}},
+		{month.Add(2 * 24 * time.Hour), &overload.Spend{USD: 0.75}, time.Time{}},
+		{now.Add(-time.Hour), &overload.Spend{USD: 2.00}, time.Time{}},
+		{now.Add(-2 * time.Hour), &overload.Spend{USD: 0, Unpriced: 3}, time.Time{}},
+		{now.Add(-3 * time.Hour), nil, time.Time{}},
+		{month.Add(-time.Hour), &overload.Spend{USD: 50}, time.Time{}},
+		// Queued last month, but its model calls ran today: the spend is
+		// this month's and today's.
+		{month.Add(-time.Hour), &overload.Spend{USD: 0.50}, now.Add(-30 * time.Minute)},
 	}
 	for _, run := range runs {
+		recorded := run.created
+		if !run.recorded.IsZero() {
+			recorded = run.recorded
+		}
+		store.Now = func() time.Time { return recorded }
 		var id int64
 		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2) RETURNING id`, repoID, run.created).Scan(&id); err != nil {
 			t.Fatal(err)
@@ -62,7 +71,7 @@ func TestRunCostsAndSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if math.Abs(spend.Month-4.00) > 1e-9 || math.Abs(spend.Today-2.00) > 1e-9 || spend.MonthRuns != 4 || spend.Unpriced != 1 {
+	if math.Abs(spend.Month-4.50) > 1e-9 || math.Abs(spend.Today-2.50) > 1e-9 || spend.MonthRuns != 5 || spend.Unpriced != 1 {
 		t.Fatalf("spend = %+v", spend)
 	}
 	if err := store.SetRunCost(ctx, 1, overload.Spend{USD: math.NaN()}); err == nil {
@@ -131,16 +140,22 @@ func TestTransferTimes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	steps, err := store.TransferTimes(ctx, CostFilter{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour), Repository: repo})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, step := range steps {
-		if step.Step == "upload_seconds" && (step.Runs != 3 || step.P50 != 4 || step.Max != 40) {
-			t.Fatalf("upload = %+v", step)
+	for _, filter := range []CostFilter{
+		{Since: time.Now().Add(-time.Hour), Until: time.Now().Add(time.Hour), Repository: repo},
+		// An unset Until means now.
+		{Since: time.Now().Add(-time.Hour), Repository: repo},
+	} {
+		steps, err := store.TransferTimes(ctx, filter)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if step.Step == "extract_seconds" && step.Runs != 0 {
-			t.Fatalf("extract = %+v", step)
+		for _, step := range steps {
+			if step.Step == "upload_seconds" && (step.Runs != 3 || step.P50 != 4 || step.Max != 40) {
+				t.Fatalf("upload with until %v = %+v", filter.Until, step)
+			}
+			if step.Step == "extract_seconds" && step.Runs != 0 {
+				t.Fatalf("extract = %+v", step)
+			}
 		}
 	}
 }

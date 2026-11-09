@@ -195,7 +195,7 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if err != nil {
 		return false, err
 	}
-	budget, err := s.checkBudget(ctx, tx, repo.id, expected)
+	budget, err := s.checkBudget(ctx, tx, repo.id, pendingReplacement{pr: delivery.PR, head: delivery.HeadSHA}, expected)
 	if err != nil {
 		return false, err
 	}

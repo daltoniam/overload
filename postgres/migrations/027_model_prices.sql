@@ -10,6 +10,9 @@ ALTER TABLE model_profiles ADD COLUMN IF NOT EXISTS long_context_output_multipli
 
 -- cost_usd is the priced spend of a run's model calls; cost_unpriced_calls
 -- counts calls to models without prices. NULL cost means not recorded.
+-- cost_at is when the cost was recorded: budgets count spend in the
+-- period it happened, not the one the run was queued in.
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS cost_usd double precision;
 ALTER TABLE runs ADD COLUMN IF NOT EXISTS cost_unpriced_calls bigint NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS runs_cost_created ON runs (created_at) WHERE cost_usd IS NOT NULL;
+ALTER TABLE runs ADD COLUMN IF NOT EXISTS cost_at timestamptz;
+CREATE INDEX IF NOT EXISTS runs_cost_at ON runs ((COALESCE(cost_at, created_at))) WHERE cost_usd IS NOT NULL;

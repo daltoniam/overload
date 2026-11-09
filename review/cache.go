@@ -63,14 +63,29 @@ func (source CachedSource) DownloadHead(ctx context.Context, repository, sha str
 		return source.PullRequestSource.DownloadHead(ctx, repository, sha, writer)
 	}
 	defer func() { _ = os.Remove(temporary.Name()) }()
-	if err := source.PullRequestSource.DownloadHead(ctx, repository, sha, io.MultiWriter(temporary, writer)); err != nil {
+	copy := &bestEffort{file: temporary}
+	if err := source.PullRequestSource.DownloadHead(ctx, repository, sha, io.MultiWriter(copy, writer)); err != nil {
 		_ = temporary.Close()
 		return err
 	}
-	if err := temporary.Close(); err == nil && os.Rename(temporary.Name(), name) == nil {
+	if err := temporary.Close(); err == nil && copy.err == nil && os.Rename(temporary.Name(), name) == nil {
 		source.Cache.trim()
 	}
 	return nil
+}
+
+// bestEffort writes to the cache file until a write fails (a full disk),
+// then drops the rest without failing the download it is copied from.
+type bestEffort struct {
+	file *os.File
+	err  error
+}
+
+func (copy *bestEffort) Write(data []byte) (int, error) {
+	if copy.err == nil {
+		_, copy.err = copy.file.Write(data)
+	}
+	return len(data), nil
 }
 
 // trim removes the least recently used archives until the cache fits.

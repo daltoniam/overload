@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -239,6 +240,49 @@ func TestRepoToolsStayInsideTheRepository(t *testing.T) {
 	}
 	if text, isError := byName["list_dir"](`{}`); !isError || !strings.Contains(text, "limit reached") {
 		t.Fatalf("sixth call = %q %v", text, isError)
+	}
+}
+
+type unreadableFS struct {
+	fs.FS
+	bad string
+}
+
+func (repo unreadableFS) Open(name string) (fs.File, error) {
+	if name == repo.bad {
+		return nil, fs.ErrPermission
+	}
+	return repo.FS.Open(name)
+}
+
+func TestRepoSearchSaysWhenResultsMayBeIncomplete(t *testing.T) {
+	run := func(tools *repoTools, input string) string {
+		for _, tool := range tools.agentTools() {
+			if tool.Info().Name == "search" {
+				response, err := tool.Run(context.Background(), fantasyCall("search", input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return response.Content
+			}
+		}
+		t.Fatal("no search tool")
+		return ""
+	}
+	capped := newRepoTools(renameRepo(), 5)
+	capped.searchFiles = 1
+	if text := run(capped, `{"pattern":"return"}`); text != "api/handlers.py:6: return users.fetch_user(user_id)\n(search stopped after 1 files; results may be incomplete)" {
+		t.Fatalf("capped search = %q", text)
+	}
+	if text := run(capped, `{"pattern":"no such text"}`); text != "no matches\n(search stopped after 1 files; results may be incomplete)" {
+		t.Fatalf("capped empty search = %q", text)
+	}
+	broken := newRepoTools(unreadableFS{FS: renameRepo(), bad: "svc"}, 5)
+	if text := run(broken, `{"pattern":"def helper"}`); text != "no matches\n(1 paths could not be read; results may be incomplete)" {
+		t.Fatalf("unreadable search = %q", text)
+	}
+	if text := run(newRepoTools(renameRepo(), 5), `{"pattern":"def helper"}`); text != "svc/util.py:1: def helper():\n" {
+		t.Fatalf("complete search = %q", text)
 	}
 }
 

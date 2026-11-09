@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -78,10 +79,10 @@ func TestBudgetSkipsDeliveriesWhenSpent(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	deliver := func(pr int) (string, string) {
+	deliverHead := func(pr int, head string) (string, string) {
 		t.Helper()
-		id := fmt.Sprintf("%s-%d", name, pr)
-		delivery := PullRequestDelivery{DeliveryID: id, Action: "opened", RepoName: repo, RepoID: installation, InstallationID: installation, PR: pr, HeadSHA: strings.Repeat(fmt.Sprint(pr%10), 40), BaseSHA: strings.Repeat("a", 40), Eligible: true, Payload: []byte(fmt.Sprintf(`{"id":%q}`, id))}
+		id := fmt.Sprintf("%s-%d-%s", name, pr, head[:1])
+		delivery := PullRequestDelivery{DeliveryID: id, Action: "opened", RepoName: repo, RepoID: installation, InstallationID: installation, PR: pr, HeadSHA: head, BaseSHA: strings.Repeat("a", 40), Eligible: true, Payload: []byte(fmt.Sprintf(`{"id":%q}`, id))}
 		if _, err := store.IngestPR(ctx, client, delivery); err != nil {
 			t.Fatal(err)
 		}
@@ -91,9 +92,22 @@ func TestBudgetSkipsDeliveriesWhenSpent(t *testing.T) {
 		}
 		return outcome, reason
 	}
+	deliver := func(pr int) (string, string) {
+		t.Helper()
+		return deliverHead(pr, strings.Repeat(fmt.Sprint(pr%10), 40))
+	}
 	// $2.50 spent + $2 for this review fits under $5.
 	if outcome, reason := deliver(1); outcome != "queued" {
 		t.Fatalf("first review: %s %s", outcome, reason)
+	}
+	// A new head of the same pull request supersedes the queued review, so
+	// that review's $2 does not count: $2.50 + $2 still fits.
+	if outcome, reason := deliverHead(1, strings.Repeat("b", 40)); outcome != "queued" {
+		t.Fatalf("review of a new head: %s %s", outcome, reason)
+	}
+	var superseded int
+	if err := store.Pool.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id=$1 AND pr_number=1 AND status='superseded'`, repoID).Scan(&superseded); err != nil || superseded != 1 {
+		t.Fatalf("superseded reviews = %d %v", superseded, err)
 	}
 	// $2.50 spent + $2 queued + $2 for this one does not.
 	outcome, reason := deliver(2)
@@ -122,6 +136,58 @@ func TestBudgetSkipsDeliveriesWhenSpent(t *testing.T) {
 	}
 	if outcome, reason := deliver(4); outcome != "queued" {
 		t.Fatalf("after clearing the cap: %s %s", outcome, reason)
+	}
+}
+
+func TestBudgetCountsSpendWhenItHappened(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	month := time.Date(2099, 7, 1, 0, 0, 0, 0, time.UTC)
+	now := month.Add(36 * time.Hour)
+	store.Now = func() time.Time { return now }
+	repo := fmt.Sprintf("test-budget-period-%d/api", time.Now().UnixNano())
+	var repoID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM budgets WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	monthly, daily := 10.0, 3.0
+	if err := store.SaveBudget(ctx, Budget{Repository: repo, MonthlyUSD: &monthly, DailyUSD: &daily}); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []struct {
+		created, recorded time.Time
+		cost              float64
+	}{
+		// Queued last month, model calls today: counts this month and today.
+		{month.Add(-time.Hour), now.Add(-time.Hour), 2},
+		// Queued and spent last month: counts neither.
+		{month.Add(-48 * time.Hour), month.Add(-47 * time.Hour), 7},
+		// Queued yesterday, spent today: counts today.
+		{now.Add(-25 * time.Hour), now.Add(-30 * time.Minute), 0.5},
+	} {
+		if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at, cost_usd, cost_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2, $3, $4)`, repoID, run.created, run.cost, run.recorded); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check, err := store.CheckBudget(ctx, repoID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Today: $2.50 spent + $1 expected exceeds the $3 daily cap.
+	if !check.Exceeded || check.Period != "daily" || math.Abs(check.Spent-2.5) > 1e-9 {
+		t.Fatalf("check = %+v", check)
+	}
+	daily = 5
+	if err := store.SaveBudget(ctx, Budget{Repository: repo, MonthlyUSD: &monthly, DailyUSD: &daily}); err != nil {
+		t.Fatal(err)
+	}
+	if check, err = store.CheckBudget(ctx, repoID, 1); err != nil || check.Exceeded {
+		t.Fatalf("within budget: %+v %v", check, err)
 	}
 }
 

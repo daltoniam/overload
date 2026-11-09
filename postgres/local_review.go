@@ -78,7 +78,7 @@ func (s *Store) FinishLocalReview(ctx context.Context, runID int64, spec overloa
 	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
 		costUSD, unpriced = &spend.USD, spend.Unpriced
 	}
-	command, err := tx.Exec(ctx, `UPDATE runs SET status=$1, head_sha=$2, prompt_version=$3, error_code=$4, error_message=$5, metrics=COALESCE($6::jsonb, '{}'::jsonb), finished_at=now(), cost_usd=$8, cost_unpriced_calls=$9 WHERE id=$7 AND status='running'`, status, headSHA, spec.Workflow.Name, errorCode, errorMessage, metrics, runID, costUSD, unpriced)
+	command, err := tx.Exec(ctx, `UPDATE runs SET status=$1, head_sha=$2, prompt_version=$3, error_code=$4, error_message=$5, metrics=COALESCE($6::jsonb, '{}'::jsonb), finished_at=now(), cost_usd=$8, cost_unpriced_calls=$9, cost_at=CASE WHEN $8::float8 IS NULL THEN NULL ELSE now() END WHERE id=$7 AND status='running'`, status, headSHA, spec.Workflow.Name, errorCode, errorMessage, metrics, runID, costUSD, unpriced)
 	if err != nil {
 		return err
 	}

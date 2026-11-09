@@ -82,9 +82,21 @@ func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
 	if status := post(); status != http.StatusTooManyRequests || calls != 2 {
 		t.Fatalf("over budget: status %d after %d upstream calls", status, calls)
 	}
+	stop = false
+	// A revoked grant stops calls but its spend counts until the run has
+	// recorded it, including calls that finish after the revoke.
 	revoke()
+	if status := post(); status != http.StatusUnauthorized {
+		t.Fatalf("call after revoke: %d", status)
+	}
+	proxy.charge(strings.TrimPrefix(path, "/v1/m/"), 0.01)
+	if pending := proxy.Pending(); math.Abs(pending-0.036) > 1e-9 {
+		t.Fatalf("pending after revoke = %v", pending)
+	}
+	later := time.Now().Add(settleWindow + time.Second)
+	proxy.now = func() time.Time { return later }
 	if pending := proxy.Pending(); pending != 0 {
-		t.Fatalf("revoked grant still pending: %v", pending)
+		t.Fatalf("settled grant still pending: %v", pending)
 	}
 }
 

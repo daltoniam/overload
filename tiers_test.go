@@ -114,3 +114,19 @@ func TestDiffChangesKeepsFilesWithoutHunks(t *testing.T) {
 		t.Fatalf("binary change: %+v", decision)
 	}
 }
+
+func TestDiffChangesDecodesQuotedPaths(t *testing.T) {
+	patch := "diff --git \"a/db/migrations/caf\\303\\251.py\" \"b/db/migrations/caf\\303\\251.py\"\n--- \"a/db/migrations/caf\\303\\251.py\"\n+++ \"b/db/migrations/caf\\303\\251.py\"\n@@ -1 +1 @@\n-x\n+y\n" +
+		"diff --git a/tab\tfile b/tab\tfile\n"
+	changes := DiffChanges(patch)
+	if len(changes) != 2 || changes[0] != (FileChange{Path: "db/migrations/café.py", Lines: 2}) {
+		t.Fatalf("changes = %+v", changes)
+	}
+	if decision := tieredWorkflow().ChooseTier(changes[:1]); decision.Tier != TierFull {
+		t.Fatalf("quoted sensitive path: %+v", decision)
+	}
+	unreadable := []FileChange{{Path: "", Lines: 500}}
+	if decision := tieredWorkflow().ChooseTier(unreadable); decision.Tier != TierFull {
+		t.Fatalf("unreadable path: %+v", decision)
+	}
+}

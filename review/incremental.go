@@ -10,9 +10,10 @@ import (
 )
 
 // FilePatchHashes identifies each file's change in a diff by its changed
-// and context lines alone. Hunk positions, index lines and commit IDs are
-// left out, so the same change hashes the same after a rebase or a merge
-// from the base branch.
+// and context lines (carriage returns and final-newline markers
+// included), its file modes, and for binary files the new content's blob
+// ID. Hunk positions and other index lines are left out, so the same
+// change hashes the same after a rebase or a merge from the base branch.
 func FilePatchHashes(patch string) map[string]string {
 	hashes := map[string]string{}
 	var name string
@@ -26,17 +27,32 @@ func FilePatchHashes(patch string) map[string]string {
 		name, inHunk = "", false
 		body.Reset()
 	}
+	newBlob := ""
 	for _, line := range strings.Split(patch, "\n") {
-		line = strings.TrimSuffix(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
-		case !inHunk && strings.HasPrefix(line, "+++ "):
-			if path, ok := strings.CutPrefix(strings.TrimSuffix(strings.TrimPrefix(line, "+++ "), "\t"), "b/"); ok {
-				name = path
+			newBlob = ""
+			// Files without --- and +++ lines (binary, mode-only) are named
+			// by the header; the +++ line wins when present.
+			if oldPath, newPath := overload.GitHeaderPaths(strings.TrimPrefix(line, "diff --git ")); newPath != "" {
+				name = newPath
+			} else {
+				name = oldPath
 			}
-		case !inHunk && strings.HasPrefix(line, "--- ") && name == "":
-			if path, ok := strings.CutPrefix(strings.TrimSuffix(strings.TrimPrefix(line, "--- "), "\t"), "a/"); ok {
+		case !inHunk && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "deleted file mode ") || strings.HasPrefix(line, "old mode ") || strings.HasPrefix(line, "new mode ")):
+			body.WriteString(strings.TrimSuffix(line, "\r"))
+			body.WriteByte('\n')
+		case !inHunk && strings.HasPrefix(line, "index "):
+			if fields := strings.Fields(line); len(fields) > 1 {
+				if _, blob, ok := strings.Cut(fields[1], ".."); ok {
+					newBlob = blob
+				}
+			}
+		case !inHunk && (strings.HasPrefix(line, "Binary files ") || line == "GIT binary patch"):
+			body.WriteString("binary " + newBlob + "\n")
+		case !inHunk && strings.HasPrefix(line, "+++ "):
+			if path, ok := overload.DiffPath(strings.TrimSuffix(strings.TrimPrefix(line, "+++ "), "\r"), "b/"); ok {
 				name = path
 			}
 		case strings.HasPrefix(line, "@@"):

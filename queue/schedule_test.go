@@ -255,3 +255,83 @@ func TestScheduleWorkerRunsToolAgent(t *testing.T) {
 		t.Fatalf("run with a disabled tool server: %v", err)
 	}
 }
+
+func TestScheduleWorkerKeepsSpendWhenALaterAgentFails(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL required")
+	}
+	ctx := context.Background()
+	store, err := postgres.Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Pool.Close)
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("schedule-spend-%d", time.Now().UnixNano())
+	second := name + "-second"
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE schedule_id IN (SELECT id FROM schedules WHERE name=$1))`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM schedule_occurrences WHERE schedule_id IN (SELECT id FROM schedules WHERE name=$1)`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE schedule_id IN (SELECT id FROM schedules WHERE name=$1)`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM schedules WHERE name=$1`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM workflows WHERE name=$1`, name)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM agent_definitions WHERE name=ANY($1)`, []string{name, second})
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name=ANY($1))`, []string{"agent:" + name, "agent:" + second})
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM prompt_templates WHERE name=ANY($1)`, []string{"agent:" + name, "agent:" + second})
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM model_profiles WHERE name=$1`, name)
+	})
+	calls := 0
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			http.Error(w, `{"error":{"message":"model unavailable"}}`, http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"id":"1","object":"chat.completion","created":123,"model":"test","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"First result"}}],"usage":{"prompt_tokens":1000,"completion_tokens":100,"total_tokens":1100}}`)
+	}))
+	defer model.Close()
+	input, output := 2.0, 10.0
+	if err := store.SaveReviewSettings(ctx, overload.ReviewSettings{Name: name, Provider: "openaicompat", BaseURL: model.URL, Model: "test", PromptProfile: "context", PriceInput: &input, PriceOutput: &output}); err != nil {
+		t.Fatal(err)
+	}
+	for _, agent := range []string{name, second} {
+		if err := store.SaveAgent(ctx, overload.AgentDefinition{Name: agent, Kind: "scheduled_prompt", Model: name, Prompt: "Summarize", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "scheduled_prompt", Agents: []string{name, second}, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSchedule(ctx, overload.Schedule{Name: name, Workflow: name, Cron: "* * * * *", Timezone: "UTC", Input: []byte(`{}`), Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE schedules SET next_run_at=now()-interval '1 minute' WHERE name=$1`, name); err != nil {
+		t.Fatal(err)
+	}
+	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count, err := store.EnqueueDueSchedules(ctx, client); err != nil || count < 1 {
+		t.Fatalf("enqueue: %d %v", count, err)
+	}
+	var runID int64
+	if err := store.Pool.QueryRow(ctx, `SELECT id FROM runs WHERE schedule_id=(SELECT id FROM schedules WHERE name=$1)`, name).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	worker := &ScheduleWorker{Store: store}
+	if err := worker.Work(ctx, &river.Job[postgres.ScheduleArgs]{Args: postgres.ScheduleArgs{RunID: runID}}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := store.GetRun(ctx, runID)
+	if err != nil || run.Status != "failed" || calls < 2 {
+		t.Fatalf("run=%+v calls=%d err=%v", run, calls, err)
+	}
+	// The first agent's 1,000 input x $2 + 100 output x $10 per million.
+	if run.Cost == nil || math.Abs(run.Cost.USD-0.003) > 1e-9 {
+		t.Fatalf("spend of the agent that finished = %+v", run.Cost)
+	}
+}

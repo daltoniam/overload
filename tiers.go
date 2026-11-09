@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -115,6 +116,9 @@ func (workflow ResolvedWorkflow) ChooseTier(changes []FileChange) TierDecision {
 	sensitive, _ := compileGlobs(tiers.SensitivePaths)
 	lines, files := 0, 0
 	for _, change := range changes {
+		if change.Path == "" {
+			return TierDecision{Tier: TierFull, Reason: "a changed file's path could not be read"}
+		}
 		if skip.match(change.Path) {
 			continue
 		}
@@ -174,7 +178,9 @@ func (workflow ResolvedWorkflow) WithAgents(names []string) ResolvedWorkflow {
 // DiffChanges counts the changed lines of each file in a unified diff.
 // A file without text hunks (binary, renamed, or a mode change) still
 // counts, with no lines; a rename lists its old path too, so moving a
-// sensitive file is noticed.
+// sensitive file is noticed. Git's quoted paths ("a/caf\303\251.go")
+// are decoded; a file whose path cannot be read is kept with an empty
+// Path, which ChooseTier reviews in full.
 func DiffChanges(patch string) []FileChange {
 	var changes []FileChange
 	current := -1
@@ -182,23 +188,32 @@ func DiffChanges(patch string) []FileChange {
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
-			oldPath, newPath := gitHeaderPaths(strings.TrimPrefix(line, "diff --git "))
+			oldPath, newPath := GitHeaderPaths(strings.TrimPrefix(line, "diff --git "))
 			changes = append(changes, FileChange{Path: newPath, OldPath: oldPath})
 			current, inHunk = len(changes)-1, false
-		case current < 0 || inHunk && !strings.HasPrefix(line, "@@"):
-			if current >= 0 && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-")) {
+		case current < 0:
+		case inHunk && !strings.HasPrefix(line, "@@"):
+			if strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-") {
 				changes[current].Lines++
 			}
-		case strings.HasPrefix(line, "--- a/"):
-			changes[current].OldPath = strings.TrimSuffix(strings.TrimPrefix(line, "--- a/"), "\t")
-		case strings.HasPrefix(line, "+++ b/"):
-			changes[current].Path = strings.TrimSuffix(strings.TrimPrefix(line, "+++ b/"), "\t")
-		case line == "+++ /dev/null":
-			changes[current].Path = ""
+		case strings.HasPrefix(line, "--- "):
+			if name, ok := DiffPath(strings.TrimPrefix(line, "--- "), "a/"); ok {
+				changes[current].OldPath = name
+			}
+		case strings.HasPrefix(line, "+++ "):
+			if name, ok := DiffPath(strings.TrimPrefix(line, "+++ "), "b/"); ok {
+				changes[current].Path = name
+			} else if strings.TrimSpace(strings.TrimPrefix(line, "+++ ")) == "/dev/null" {
+				changes[current].Path = ""
+			}
 		case strings.HasPrefix(line, "rename from "):
-			changes[current].OldPath = strings.TrimPrefix(line, "rename from ")
+			if name, ok := DiffPath(strings.TrimPrefix(line, "rename from "), ""); ok {
+				changes[current].OldPath = name
+			}
 		case strings.HasPrefix(line, "rename to "):
-			changes[current].Path = strings.TrimPrefix(line, "rename to ")
+			if name, ok := DiffPath(strings.TrimPrefix(line, "rename to "), ""); ok {
+				changes[current].Path = name
+			}
 		case strings.HasPrefix(line, "@@"):
 			inHunk = true
 		}
@@ -211,16 +226,40 @@ func DiffChanges(patch string) []FileChange {
 			changes[index].OldPath = ""
 		}
 	}
-	return slices.DeleteFunc(changes, func(change FileChange) bool { return change.Path == "" })
+	return changes
 }
 
-// gitHeaderPaths reads the paths of a "diff --git a/X b/Y" header. Paths
-// with spaces are ambiguous there, so when both halves cannot be told
-// apart the header is split where the two paths are equally long, which
-// is right for every change except a rename (whose rename lines win).
-func gitHeaderPaths(rest string) (string, string) {
+// DiffPath reads a path from a diff header, decoding Git's C-style
+// quoting and removing prefix ("a/", "b/" or none).
+func DiffPath(text, prefix string) (string, bool) {
+	text = strings.TrimSuffix(text, "\t")
+	if strings.HasPrefix(text, `"`) {
+		unquoted, err := strconv.Unquote(text)
+		if err != nil {
+			return "", false
+		}
+		text = unquoted
+	}
+	name, ok := strings.CutPrefix(text, prefix)
+	return name, ok && name != ""
+}
+
+// GitHeaderPaths reads the paths of a "diff --git a/X b/Y" header. Quoted
+// paths are decoded. Unquoted paths with spaces are ambiguous, so the
+// header is split where the two paths are equally long, which is right
+// for every change except a rename (whose rename lines win).
+func GitHeaderPaths(rest string) (string, string) {
 	if strings.HasPrefix(rest, `"`) {
-		return "", ""
+		end := quotedEnd(rest)
+		if end < 0 {
+			return "", ""
+		}
+		oldPath, okOld := DiffPath(rest[:end+1], "a/")
+		newPath, okNew := DiffPath(strings.TrimSpace(rest[end+1:]), "b/")
+		if !okOld || !okNew {
+			return "", ""
+		}
+		return oldPath, newPath
 	}
 	if half := (len(rest) - 1) / 2; len(rest)%2 == 1 && rest[half] == ' ' && strings.HasPrefix(rest, "a/") && strings.HasPrefix(rest[half+1:], "b/") && rest[2:half] == rest[half+3:] {
 		return rest[2:half], rest[half+3:]
@@ -228,5 +267,25 @@ func gitHeaderPaths(rest string) (string, string) {
 	if before, after, ok := strings.Cut(rest, " b/"); ok && strings.HasPrefix(before, "a/") {
 		return before[2:], after
 	}
+	if before, after, ok := strings.Cut(rest, ` "b/`); ok && strings.HasPrefix(before, "a/") {
+		newPath, ok := DiffPath(`"b/`+after, "b/")
+		if ok {
+			return before[2:], newPath
+		}
+	}
 	return "", ""
+}
+
+// quotedEnd returns the index of the quote closing a C-quoted string that
+// starts at text[0], or -1.
+func quotedEnd(text string) int {
+	for index := 1; index < len(text); index++ {
+		switch text[index] {
+		case '\\':
+			index++
+		case '"':
+			return index
+		}
+	}
+	return -1
 }

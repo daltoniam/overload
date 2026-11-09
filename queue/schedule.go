@@ -101,7 +101,7 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	command, err = tx.Exec(ctx, `UPDATE runs SET status='completed',finished_at=now(),metrics=$2,cost_usd=$3,cost_unpriced_calls=$4 WHERE id=$1 AND status='running'`, runID, metrics, totals.CostUSD, totals.Unpriced)
+	command, err = tx.Exec(ctx, `UPDATE runs SET status='completed',finished_at=now(),metrics=$2,cost_usd=COALESCE(cost_usd,0),cost_at=COALESCE(cost_at,now()) WHERE id=$1 AND status='running'`, runID, metrics)
 	if err != nil {
 		return err
 	}
@@ -129,6 +129,11 @@ func (worker *ScheduleWorker) runAgent(ctx context.Context, runID int64, agent o
 		text, spend, err := harness.Complete(ctx, agent.Model, instructions, "Scheduled input:\n"+string(input))
 		output.Text = overload.TruncateUTF8(strings.TrimSpace(text), maxAgentOutput)
 		output.CostUSD, output.UnpricedCalls = spend.USD, spend.Unpriced
+		if err == nil || spend.USD > 0 || spend.Unpriced > 0 {
+			if err := worker.Store.AddRunCost(context.WithoutCancel(ctx), runID, spend); err != nil {
+				slog.Warn("run cost not recorded", "run_id", runID, "error", err)
+			}
+		}
 		return output, err
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)

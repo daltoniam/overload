@@ -158,7 +158,11 @@ const expectedCostSQL = `COALESCE(NULLIF((%[1]s->>'max_run_cost_usd')::float8, 0
 // every budget that applies to the repository: what was spent this month
 // (or today, UTC) plus what queued and running runs are expected to cost
 // plus this run must stay within each cap.
-func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, expected float64) (BudgetCheck, error) {
+//
+// replaces names the pull request and head being queued: its queued
+// reviews of other heads are about to be superseded, so they do not count
+// as pending.
+func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, replaces pendingReplacement, expected float64) (BudgetCheck, error) {
 	budgets, err := listBudgets(ctx, q)
 	if err != nil {
 		return BudgetCheck{}, err
@@ -184,11 +188,11 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, ex
 			}
 			check := BudgetCheck{Period: period.name, Scope: budget.Repository, Cap: *period.cap, Expected: expected, SkipStatus: budget.SkipStatus}
 			scoped := budget.Repository != ""
-			if err := q.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd), 0) FROM runs WHERE cost_usd IS NOT NULL AND created_at >= $1 AND created_at <= $2 AND (NOT $3 OR repository_id = $4)`, period.since, now, scoped, repoID).Scan(&check.Spent); err != nil {
+			if err := q.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd), 0) FROM runs WHERE cost_usd IS NOT NULL AND `+spentAt+` >= $1 AND `+spentAt+` <= $2 AND (NOT $3 OR repository_id = $4)`, period.since, now, scoped, repoID).Scan(&check.Spent); err != nil {
 				return BudgetCheck{}, err
 			}
-			pending := fmt.Sprintf(`SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND r.kind = 'pr_review' AND (NOT $1 OR r.repository_id = $2)`, "r.config_snapshot")
-			if err := q.QueryRow(ctx, pending, scoped, repoID).Scan(&check.Pending); err != nil {
+			pending := fmt.Sprintf(`SELECT COALESCE(sum(GREATEST(`+expectedCostSQL+` - COALESCE(r.cost_usd, 0), 0)), 0) FROM runs r WHERE r.status IN ('queued', 'running') AND r.kind = 'pr_review' AND (NOT $1 OR r.repository_id = $2) AND NOT (r.status = 'queued' AND r.repository_id = $2 AND r.pr_number = $3 AND r.head_sha <> $4)`, "r.config_snapshot")
+			if err := q.QueryRow(ctx, pending, scoped, repoID, replaces.pr, replaces.head).Scan(&check.Pending); err != nil {
 				return BudgetCheck{}, err
 			}
 			if check.Spent+check.Pending+expected > check.Cap || check.Spent >= check.Cap {
@@ -203,7 +207,13 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, ex
 // CheckBudget reports whether a review of a repository expected to cost
 // expected dollars fits its budgets.
 func (s *Store) CheckBudget(ctx context.Context, repoID int64, expected float64) (BudgetCheck, error) {
-	return s.checkBudget(ctx, s.Pool, repoID, expected)
+	return s.checkBudget(ctx, s.Pool, repoID, pendingReplacement{}, expected)
+}
+
+// pendingReplacement is the pull request and head a new review is for.
+type pendingReplacement struct {
+	pr   int
+	head string
 }
 
 // expectedRunCost estimates what a review with the pinned workflow will
