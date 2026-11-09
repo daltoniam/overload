@@ -103,7 +103,7 @@ func TestRunDetailShowsRouting(t *testing.T) {
 	response := httptest.NewRecorder()
 	Handler(store).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/runs/7", nil))
 	body := response.Body.String()
-	for _, want := range []string{"Agents and files", "Main agent", "Sub-agent", "900 / 40", "Skipped by skip paths: 1 file<", "Planner: planner added 1", "Partial review:", "3 / 1", "Added by the planner:", "Failed: bad request", "Reported by security", "Not posted. verifier: not real"} {
+	for _, want := range []string{"Agents and files", "Main agent", "Sub-agent", "900 (0) / 40", "Skipped by skip paths: 1 file<", "Planner: planner added 1", "Partial review:", "3 / 1", "Added by the planner:", "Failed: bad request", "Reported by security", "Not posted. verifier: not real"} {
 		if response.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Fatalf("run detail missing %q: %d %s", want, response.Code, body)
 		}

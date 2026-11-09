@@ -63,13 +63,30 @@ func manageSettings(args []string) error {
 		maxOutputTokens := flags.Int("max-output-tokens", 0, "output token limit per review call, thinking included (0 = default)")
 		concurrency := flags.Int("concurrency", 1, "changed files reviewed at once (match the model server's parallel slots)")
 		api := flags.String("api", "", "request style: empty for Chat Completions, or responses for OpenAI's Responses API (newer OpenAI models need it for tools with reasoning)")
+		priceInput := flags.String("price-input", "", "US dollars per million input tokens (with --price-output; empty leaves calls unpriced)")
+		priceCachedInput := flags.String("price-cached-input", "", "US dollars per million cached input tokens (default: the input price)")
+		priceCacheWrite := flags.String("price-cache-write", "", "US dollars per million tokens written to the prompt cache (default: the input price)")
+		priceOutput := flags.String("price-output", "", "US dollars per million output tokens, thinking included")
+		longContextTokens := flags.Int64("long-context-tokens", 0, "prompt tokens in one call above which long-context prices apply (0 = none)")
+		longContextInput := flags.Float64("long-context-input-multiplier", 0, "input price multiplier above --long-context-tokens")
+		longContextOutput := flags.Float64("long-context-output-multiplier", 0, "output price multiplier above --long-context-tokens")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if flags.NArg() != 0 {
 			return errors.New("unexpected setting arguments")
 		}
-		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api}
+		setting := overload.ReviewSettings{Name: *name, Provider: "openaicompat", ConnectionKind: *connectionKind, BaseURL: *baseURL, Model: *model, APIKeyEnv: *keyEnv, PromptProfile: *prompt, IsDefault: *asDefault, Concurrency: *concurrency, ReasoningParam: *reasoningParam, ReasoningEffort: *reasoningEffort, MaxOutputTokens: *maxOutputTokens, API: *api, LongContextTokens: *longContextTokens, LongContextInputMultiplier: *longContextInput, LongContextOutputMultiplier: *longContextOutput}
+		for _, price := range []struct {
+			text   string
+			target **float64
+		}{{*priceInput, &setting.PriceInput}, {*priceCachedInput, &setting.PriceCachedInput}, {*priceCacheWrite, &setting.PriceCacheWrite}, {*priceOutput, &setting.PriceOutput}} {
+			value, err := overload.ParsePrice(price.text)
+			if err != nil {
+				return err
+			}
+			*price.target = value
+		}
 		if err := store.SaveReviewSettings(ctx, setting); err != nil {
 			return err
 		}

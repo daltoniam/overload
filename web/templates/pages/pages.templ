@@ -62,6 +62,7 @@ templ RunDetail(run overload.Run, events []postgres.RunEvent, findings []overloa
 			if run.Kind != "scheduled_prompt" {
 				<dt>Head SHA</dt><dd><code>{ run.HeadSHA }</code></dd>
 			}
+			<dt>Cost</dt><dd>{ runCost(run) }</dd>
 		</dl>
 			if run.ErrorMessage != "" {
 				<p class="notice error"><strong>Job failed:</strong> { run.ErrorMessage }</p>
@@ -156,4 +157,19 @@ func agentRunSummary(agent postgres.AgentOutput) string {
 		summary += " · reached the step limit"
 	}
 	return summary
+}
+
+// runCost shows what a run's model calls cost: "unpriced" when its models
+// have no prices, and "not recorded" for runs from before costs were kept.
+func runCost(run overload.Run) string {
+	if run.Cost == nil {
+		return "not recorded"
+	}
+	if run.Cost.USD == 0 && run.Cost.Unpriced > 0 {
+		return "unpriced (" + overload.Plural(int(run.Cost.Unpriced), "call") + " to models without prices)"
+	}
+	if run.Cost.Unpriced > 0 {
+		return overload.FormatUSD(run.Cost.USD) + " plus " + overload.Plural(int(run.Cost.Unpriced), "unpriced call")
+	}
+	return overload.FormatUSD(run.Cost.USD)
 }

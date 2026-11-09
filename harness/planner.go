@@ -116,46 +116,39 @@ func parsePlan(text string) (map[string][]string, error) {
 	return *reply.Assign, nil
 }
 
-type plannerUsage struct {
-	inputTokens, outputTokens int64
-}
-
 // planRouting asks the main agent's model to add files for sub-agents and
 // applies the validated plan. The planner can only add work: a failed call
 // or an invalid plan keeps the glob routing and says so. Only cancellation
-// of ctx is returned as an error.
-func planRouting(ctx context.Context, workflow overload.ResolvedWorkflow, parsed reviewDiff, paths []string, routing overload.Routing) (overload.Routing, plannerUsage, error) {
-	var usage plannerUsage
+// of ctx is returned as an error. Its call is charged to meter.
+func planRouting(ctx context.Context, workflow overload.ResolvedWorkflow, parsed reviewDiff, paths []string, routing overload.Routing, meter *meter) (overload.Routing, error) {
 	globsOnly := func(reason string) overload.Routing {
 		routing.Planner = overload.TruncateUTF8(reason, 300) + "; routed by globs only"
 		return routing
 	}
 	input, err := plannerInput(workflow, parsed, reviewablePaths(paths, routing.Skipped))
 	if err != nil {
-		return globsOnly("planner skipped: " + err.Error()), usage, nil
+		return globsOnly("planner skipped: " + err.Error()), nil
 	}
 	agent, plan, err := newAgent(ctx, workflow.Agents[0].Model, plannerPreamble+workflow.PlannerPrompt.Body)
 	if err != nil {
-		return globsOnly("planner unavailable: " + err.Error()), usage, nil
+		return globsOnly("planner unavailable: " + err.Error()), nil
 	}
-	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: input})
+	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: input}, meter)
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return routing, usage, ctxErr
+		return routing, ctxErr
 	}
 	if err != nil {
-		return globsOnly("planner failed: " + err.Error()), usage, nil
+		return globsOnly("planner failed: " + err.Error()), nil
 	}
-	usage.inputTokens = response.TotalUsage.InputTokens + response.TotalUsage.CacheReadTokens
-	usage.outputTokens = response.TotalUsage.OutputTokens
 	assignments, err := parsePlan(response.Response.Content.Text())
 	if err != nil {
-		return globsOnly("planner reply ignored: " + err.Error()), usage, nil
+		return globsOnly("planner reply ignored: " + err.Error()), nil
 	}
 	planned, err := workflow.ApplyPlan(paths, assignments)
 	if err != nil {
-		return globsOnly("plan ignored: " + err.Error()), usage, nil
+		return globsOnly("plan ignored: " + err.Error()), nil
 	}
-	return planned, usage, nil
+	return planned, nil
 }
 
 // reviewablePaths is paths without the skipped files.

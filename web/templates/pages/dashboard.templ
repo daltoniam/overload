@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
 )
 
@@ -27,6 +28,14 @@ templ DashboardGraphs(stats postgres.DashboardStats) {
 			<section class="panel stat-card"><span class="muted">Completed</span><strong>{ fmt.Sprint(stats.Completed) }</strong></section>
 			<section class="panel stat-card"><span class="muted">Failed</span><strong>{ fmt.Sprint(stats.Failed) }</strong></section>
 			<section class="panel stat-card"><span class="muted">Queued / running</span><strong>{ fmt.Sprint(stats.Active) }</strong></section>
+		</div>
+		<div class="stat-grid">
+			<section class="panel stat-card"><span class="muted">Spend today</span><strong>{ overload.FormatUSD(stats.Spend.Today) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Spend this month</span><strong>{ overload.FormatUSD(stats.Spend.Month) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Average per run this month</span><strong>{ overload.FormatUSD(stats.Spend.AverageRun) }</strong><span class="muted">{ fmt.Sprintf("%d priced runs", stats.Spend.MonthRuns) }</span></section>
+			if stats.Spend.Unpriced > 0 {
+				<section class="panel stat-card"><span class="muted">Runs with unpriced calls</span><strong>{ fmt.Sprint(stats.Spend.Unpriced) }</strong><span class="muted">Add prices on Models</span></section>
+			}
 		</div>
 		if stats.Total == 0 {
 			<p class="empty">No runs were created in this period. Charts will fill as jobs arrive.</p>

@@ -12,8 +12,10 @@ import (
 
 // SnapshotVersion is the format of resolved workflows pinned on runs.
 // Version 0 snapshots predate scopes: every agent reviews every file.
-// Version 2 added scopes and skip paths, version 3 the planner and verifier.
-const SnapshotVersion = 3
+// Version 2 added scopes and skip paths, version 3 the planner and verifier,
+// version 4 the review policy (cost cap, tiers, context, re-reviews), which
+// older agents would silently ignore.
+const SnapshotVersion = 4
 
 // Main agent review modes.
 const (
@@ -162,6 +164,21 @@ type AgentFiles struct {
 	OutputTokens int64    `json:"output_tokens,omitempty"`
 	Failed       string   `json:"failed,omitempty"`
 	Unreviewed   []string `json:"unreviewed,omitempty"`
+	// Calls, cached and cache-write tokens and cost are the agent's model
+	// calls; UnpricedCalls went to models without prices.
+	Calls             int64   `json:"calls,omitempty"`
+	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	UnpricedCalls     int64   `json:"unpriced_calls,omitempty"`
+	// CostCapped counts the agent's file reviews not started because the
+	// run's cost cap was reached.
+	CostCapped int `json:"cost_capped,omitempty"`
+}
+
+// Spend is the agent's priced spend.
+func (agent AgentFiles) Spend() Spend {
+	return Spend{USD: agent.CostUSD, Unpriced: agent.UnpricedCalls}
 }
 
 // Routing records which agent reviews which changed file. Agents are in

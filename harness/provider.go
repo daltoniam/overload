@@ -56,6 +56,7 @@ func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt str
 		return nil, reasoningPlan{}, err
 	}
 	plan := planFor(model)
+	plan.systemChars = len(systemPrompt)
 	return fantasy.NewAgent(languageModel, append(reviewAgentOptions(plan, systemPrompt), extra...)...), plan, nil
 }
 
@@ -66,7 +67,7 @@ func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	if err != nil {
 		return "", err
 	}
-	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt})
+	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt}, nil)
 	if err != nil {
 		return "", err
 	}

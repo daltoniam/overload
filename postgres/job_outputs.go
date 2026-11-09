@@ -22,6 +22,9 @@ type AgentOutput struct {
 	InputTokens  int64 `json:"input_tokens,omitempty"`
 	OutputTokens int64 `json:"output_tokens,omitempty"`
 	HitStepLimit bool  `json:"hit_step_limit,omitempty"`
+	// CostUSD and UnpricedCalls are the agent's priced spend.
+	CostUSD       float64 `json:"cost_usd,omitempty"`
+	UnpricedCalls int64   `json:"unpriced_calls,omitempty"`
 }
 
 func (s *Store) ReadJobOutput(ctx context.Context, runID int64) (JobOutput, error) {

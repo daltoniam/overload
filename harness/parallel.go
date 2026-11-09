@@ -109,47 +109,34 @@ func runGroups(ctx context.Context, groups []connectionGroup, run func(context.C
 }
 
 type fileOutcome struct {
-	findings     []overload.Finding
-	summary      string
-	raw          int
-	validated    int
-	inputTokens  int64
-	cachedTokens int64
-	outputTokens int64
-	fallback     bool
-}
-
-// addUsage counts cached prompt tokens as input too: providers report them
-// separately, and leaving them out undercounts the prompt actually sent.
-func (outcome *fileOutcome) addUsage(usage fantasy.Usage) {
-	outcome.inputTokens += usage.InputTokens + usage.CacheReadTokens
-	outcome.cachedTokens += usage.CacheReadTokens
-	outcome.outputTokens += usage.OutputTokens
+	findings  []overload.Finding
+	summary   string
+	raw       int
+	validated int
+	fallback  bool
 }
 
 // reviewFile reviews one changed file, repairing malformed JSON once, and
 // returns the validated findings that belong to that file. filePatch is the
 // file's own section of the diff, so findings the model reports for other
 // files are discarded before the per-file cap is applied.
-func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, bundle, path, filePatch string) (fileOutcome, error) {
+func reviewFile(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, call fantasy.AgentCall, path, filePatch string, meter *meter) (fileOutcome, error) {
 	var outcome fileOutcome
-	response, fallback, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: bundle})
+	response, fallback, err := generateReview(ctx, agent, plan, call, meter)
 	if err != nil {
 		return outcome, fmt.Errorf("review incomplete at %s: %w", path, err)
 	}
 	outcome.fallback = fallback
-	outcome.addUsage(response.TotalUsage)
 	text := strings.TrimSpace(response.Response.Content.Text())
 	fileResult, err := decodeModelReview(text)
 	if err != nil {
 		if len(text) > 12000 {
 			text = text[:12000]
 		}
-		response, err = plan.generate(ctx, agent, fantasy.AgentCall{Prompt: repairPrompt + text})
+		response, err = plan.generate(ctx, agent, fantasy.AgentCall{Prompt: repairPrompt + text}, meter)
 		if err != nil {
 			return outcome, fmt.Errorf("review incomplete repairing %s: %w", path, err)
 		}
-		outcome.addUsage(response.TotalUsage)
 		if fileResult, err = decodeModelReview(response.Response.Content.Text()); err != nil {
 			return outcome, fmt.Errorf("review incomplete at %s: model_output_invalid: %w", path, err)
 		}
@@ -183,9 +170,6 @@ func merge(result *overload.ReviewResult, summaries *[]string, outcomes []fileOu
 		}
 		result.Metrics["raw_candidates"] = metricCount(result.Metrics, "raw_candidates") + outcome.raw
 		result.Metrics["validated_candidates"] = metricCount(result.Metrics, "validated_candidates") + outcome.validated
-		result.Metrics["input_tokens"] = metricTokens(result.Metrics, "input_tokens") + outcome.inputTokens
-		result.Metrics["output_tokens"] = metricTokens(result.Metrics, "output_tokens") + outcome.outputTokens
-		result.Metrics["cached_input_tokens"] = metricTokens(result.Metrics, "cached_input_tokens") + outcome.cachedTokens
 		if outcome.fallback {
 			result.Metrics["effort_fallbacks"] = metricCount(result.Metrics, "effort_fallbacks") + 1
 		}

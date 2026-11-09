@@ -35,11 +35,15 @@ type reasoningPlan struct {
 	effort    string
 	maxTokens int64
 	timeout   time.Duration
+	// pricing prices the model's calls; systemChars is the length of the
+	// agent's system prompt, for cost estimates.
+	pricing     *overload.Pricing
+	systemChars int
 }
 
 func planFor(model overload.ModelProfile) reasoningPlan {
 	hosted := model.ConnectionKind == "hosted"
-	plan := reasoningPlan{api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout}
+	plan := reasoningPlan{api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout, pricing: model.Pricing}
 	if hosted {
 		plan.timeout = hostedCallTimeout
 	}
@@ -102,31 +106,35 @@ func (plan reasoningPlan) canFallBack() bool {
 
 // generateReview runs one review call. A model that spends its whole output
 // budget thinking returns no answer; that call is retried once at medium
-// effort, reported through the second return value.
-func generateReview(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, call fantasy.AgentCall) (*fantasy.AgentResult, bool, error) {
-	response, err := plan.generate(ctx, agent, call)
+// effort, reported through the second return value. Both calls are charged
+// to meter.
+func generateReview(ctx context.Context, agent fantasy.Agent, plan reasoningPlan, call fantasy.AgentCall, meter *meter) (*fantasy.AgentResult, bool, error) {
+	response, err := plan.generate(ctx, agent, call, meter)
 	if err != nil || !plan.canFallBack() || response.Response.FinishReason != fantasy.FinishReasonLength {
 		return response, false, err
 	}
 	retry := call
 	retry.ProviderOptions = plan.providerOptions(localFallbackEffort)
-	response, err = plan.generate(ctx, agent, retry)
+	response, err = plan.generate(ctx, agent, retry, meter)
 	return response, true, err
 }
 
 // errCallTimeout marks a model call that ran past its limit.
 var errCallTimeout = errors.New("model call timed out")
 
-// generate makes one model call within the plan's time limit.
-func (plan reasoningPlan) generate(ctx context.Context, agent fantasy.Agent, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
-	if plan.timeout <= 0 {
-		return agent.Generate(ctx, call)
-	}
-	callCtx, cancel := context.WithTimeout(ctx, plan.timeout)
-	defer cancel()
-	response, err := agent.Generate(callCtx, call)
-	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
-		return response, fmt.Errorf("%w after %s", errCallTimeout, plan.timeout)
-	}
-	return response, err
+// generate makes one model call within the plan's time limit, charged to
+// meter (nil records nothing).
+func (plan reasoningPlan) generate(ctx context.Context, agent fantasy.Agent, call fantasy.AgentCall, meter *meter) (*fantasy.AgentResult, error) {
+	return meter.call(ctx, plan, call, func(ctx context.Context, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
+		if plan.timeout <= 0 {
+			return agent.Generate(ctx, call)
+		}
+		callCtx, cancel := context.WithTimeout(ctx, plan.timeout)
+		defer cancel()
+		response, err := agent.Generate(callCtx, call)
+		if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+			return response, fmt.Errorf("%w after %s", errCallTimeout, plan.timeout)
+		}
+		return response, err
+	})
 }

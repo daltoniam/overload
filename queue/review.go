@@ -88,6 +88,11 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models}
 	}
 	spec, result, sha, reviewErr := runner.Review(ctx, repoName, run.PRNumber)
+	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
+		if err := w.Store.SetRunCost(context.WithoutCancel(ctx), runID, spend); err != nil {
+			slog.Warn("run cost not recorded", "run_id", runID, "error", err)
+		}
+	}
 	if name, ok := result.Metrics["sandbox"].(string); ok {
 		if _, err := w.Store.Pool.Exec(ctx, `UPDATE runs SET sandbox_name=$2 WHERE id=$1`, runID, name); err != nil {
 			return err

@@ -86,6 +86,38 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 			}
 			setting.Concurrency = parsed
 		}
+		for _, price := range []struct {
+			field  string
+			target **float64
+		}{{"price_input", &setting.PriceInput}, {"price_cached_input", &setting.PriceCachedInput}, {"price_cache_write", &setting.PriceCacheWrite}, {"price_output", &setting.PriceOutput}} {
+			value, err := overload.ParsePrice(r.PostForm.Get(price.field))
+			if err != nil {
+				http.Error(w, "Invalid model settings: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			*price.target = value
+		}
+		if value := strings.TrimSpace(r.PostForm.Get("long_context_tokens")); value != "" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				http.Error(w, "Invalid long-context threshold", http.StatusBadRequest)
+				return
+			}
+			setting.LongContextTokens = parsed
+		}
+		for _, multiplier := range []struct {
+			field  string
+			target *float64
+		}{{"long_context_input_multiplier", &setting.LongContextInputMultiplier}, {"long_context_output_multiplier", &setting.LongContextOutputMultiplier}} {
+			value, err := overload.ParsePrice(r.PostForm.Get(multiplier.field))
+			if err != nil {
+				http.Error(w, "Invalid long-context multiplier", http.StatusBadRequest)
+				return
+			}
+			if value != nil {
+				*multiplier.target = *value
+			}
+		}
 		if previous != nil {
 			setting.PromptProfile = previous.PromptProfile
 		}

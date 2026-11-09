@@ -14,9 +14,9 @@ templ Models(models []overload.ReviewSettings) {
 			if len(models) == 0 {
 				<div class="empty">No models yet. <a href="/settings/new">Add a model connection</a> to begin.</div>
 			} else {
-				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Prices (per M tokens)</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, model := range models {
-						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
+						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ priceSummary(model) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -48,6 +48,16 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			<label class="field"><span>Parallel files</span><input name="concurrency" type="number" min="1" max="32" required value={ strconv.Itoa(max(model.Concurrency, 1)) }/><small>Changed files reviewed at once. Match the server's parallel slots (llama-server <code>-np</code>); 1 reviews files one at a time.</small></label>
 			<label class="check"><input type="checkbox" name="is_default" value="true" checked?={ model.IsDefault }/> Default for legacy local reviews</label>
 			</details>
+			<details class="advanced" open?={ model.PriceInput != nil }><summary>Prices</summary>
+				<p class="muted">US dollars per million tokens, used to show what each review cost and to enforce budgets. Leave input and output empty to keep the model unpriced; its runs then show "unpriced", never $0.</p>
+				<label class="field"><span>Input</span><input name="price_input" inputmode="decimal" value={ priceValue(model.PriceInput) } placeholder="2.00"/></label>
+				<label class="field"><span>Cached input</span><input name="price_cached_input" inputmode="decimal" value={ priceValue(model.PriceCachedInput) } placeholder="same as input"/><small>Prompt tokens read from the provider's cache.</small></label>
+				<label class="field"><span>Cache writes</span><input name="price_cache_write" inputmode="decimal" value={ priceValue(model.PriceCacheWrite) } placeholder="same as input"/><small>Anthropic charges extra for tokens written to its cache.</small></label>
+				<label class="field"><span>Output</span><input name="price_output" inputmode="decimal" value={ priceValue(model.PriceOutput) } placeholder="10.00"/><small>Thinking counts as output.</small></label>
+				<label class="field"><span>Long-context threshold (prompt tokens)</span><input name="long_context_tokens" type="number" min="0" value={ strconv.FormatInt(model.LongContextTokens, 10) }/><small>0 for none. Above it, one call's prices are multiplied below.</small></label>
+				<label class="field"><span>Long-context input multiplier</span><input name="long_context_input_multiplier" inputmode="decimal" value={ multiplierValue(model.LongContextInputMultiplier) } placeholder="2"/></label>
+				<label class="field"><span>Long-context output multiplier</span><input name="long_context_output_multiplier" inputmode="decimal" value={ multiplierValue(model.LongContextOutputMultiplier) } placeholder="1.5"/></label>
+			</details>
 			<div class="actions"><button type="submit">Save model</button><a class="button secondary" href="/settings">Cancel</a></div>
 		</form></section>
 		if model.Name != "" {
@@ -68,4 +78,25 @@ func modelFormTitle(name string) string {
 		return "New model"
 	}
 	return name
+}
+
+func priceValue(price *float64) string {
+	if price == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*price, 'f', -1, 64)
+}
+
+func multiplierValue(value float64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func priceSummary(model overload.ReviewSettings) string {
+	if model.PriceInput == nil || model.PriceOutput == nil {
+		return "unpriced"
+	}
+	return "$" + priceValue(model.PriceInput) + " in / $" + priceValue(model.PriceOutput) + " out"
 }

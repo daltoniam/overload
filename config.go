@@ -118,6 +118,7 @@ type Workflow struct {
 	// file review; larger diffs are skipped as too large. 0 picks a default
 	// for the workflow's models (see FileCharBudget).
 	MaxFileChars int `json:"max_file_chars,omitempty"`
+	ReviewPolicy
 }
 
 func (workflow Workflow) Validate() error {
@@ -149,6 +150,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
+		return err
+	}
+	if err := workflow.checkPolicy(workflow.Kind); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -214,6 +218,7 @@ type ResolvedWorkflow struct {
 	ReviewDecision string          `json:"review_decision,omitempty"`
 	BlockSeverity  string          `json:"block_severity,omitempty"`
 	MaxFileChars   int             `json:"max_file_chars,omitempty"`
+	ReviewPolicy
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -224,7 +229,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 	if workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt" {
 		return fmt.Errorf("unsupported workflow kind %q", workflow.Kind)
 	}
-	if workflow.Version != 0 && workflow.Version != 2 && workflow.Version != SnapshotVersion {
+	if workflow.Version != 0 && workflow.Version != 2 && workflow.Version != 3 && workflow.Version != SnapshotVersion {
 		return fmt.Errorf("workflow snapshot version %d is not supported", workflow.Version)
 	}
 	scopes := map[string]Scope{}
@@ -248,6 +253,12 @@ func (workflow ResolvedWorkflow) Verify() error {
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
+	}
+	if err := workflow.checkPolicy(workflow.Kind); err != nil {
+		return err
+	}
+	if workflow.Version < 4 && workflow.ReviewPolicy != (ReviewPolicy{}) {
+		return errors.New("cost, tier, context and re-review settings need workflow snapshot version 4")
 	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {
 		return errors.New("planner and verifier prompts need workflow snapshot version 3")

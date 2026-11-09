@@ -1,0 +1,130 @@
+package postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"time"
+
+	"github.com/daltoniam/overload"
+)
+
+// SetRunCost records what a run's model calls cost.
+func (s *Store) SetRunCost(ctx context.Context, runID int64, spend overload.Spend) error {
+	if err := checkSpend(spend); err != nil {
+		return err
+	}
+	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=$2, cost_unpriced_calls=$3 WHERE id=$1`, runID, spend.USD, spend.Unpriced)
+	return err
+}
+
+// AddRunCost adds to what a run's model calls cost, for runs whose calls
+// are recorded as they finish.
+func (s *Store) AddRunCost(ctx context.Context, runID int64, spend overload.Spend) error {
+	if err := checkSpend(spend); err != nil {
+		return err
+	}
+	_, err := s.Pool.Exec(ctx, `UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2, cost_unpriced_calls=cost_unpriced_calls+$3 WHERE id=$1`, runID, spend.USD, spend.Unpriced)
+	return err
+}
+
+func checkSpend(spend overload.Spend) error {
+	if math.IsNaN(spend.USD) || math.IsInf(spend.USD, 0) || spend.USD < 0 || spend.Unpriced < 0 {
+		return errors.New("invalid run cost")
+	}
+	return nil
+}
+
+// CostFilter selects runs for a cost report. Repository is owner/name;
+// empty means all.
+type CostFilter struct {
+	Since, Until time.Time
+	Repository   string
+}
+
+// CostReport sums what runs cost. Runs counts runs with a recorded cost;
+// Average and P90 are per such run.
+type CostReport struct {
+	Since         time.Time `json:"since"`
+	Until         time.Time `json:"until"`
+	Repository    string    `json:"repository,omitempty"`
+	Runs          int       `json:"runs"`
+	TotalUSD      float64   `json:"total_usd"`
+	AverageUSD    float64   `json:"average_usd"`
+	P50USD        float64   `json:"p50_usd"`
+	P90USD        float64   `json:"p90_usd"`
+	UnpricedCalls int64     `json:"unpriced_calls"`
+	// UnpricedRuns made calls to models without prices; their cost in
+	// dollars is unknown and not in the totals.
+	UnpricedRuns int `json:"unpriced_runs"`
+}
+
+// RunCosts reports the cost of runs created in the filter's window.
+func (s *Store) RunCosts(ctx context.Context, filter CostFilter) (CostReport, error) {
+	report := CostReport{Since: filter.Since, Until: filter.Until, Repository: filter.Repository}
+	if filter.Until.IsZero() {
+		report.Until = time.Now().UTC()
+	}
+	rows, err := s.Pool.Query(ctx, `SELECT r.cost_usd, r.cost_unpriced_calls FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.cost_usd IS NOT NULL AND r.created_at >= $1 AND r.created_at < $2 AND ($3='' OR repo.full_name=$3)`, report.Since, report.Until, filter.Repository)
+	if err != nil {
+		return report, err
+	}
+	defer rows.Close()
+	var costs []float64
+	for rows.Next() {
+		var usd float64
+		var unpriced int64
+		if err := rows.Scan(&usd, &unpriced); err != nil {
+			return report, err
+		}
+		costs = append(costs, usd)
+		report.TotalUSD += usd
+		report.UnpricedCalls += unpriced
+		if unpriced > 0 {
+			report.UnpricedRuns++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return report, err
+	}
+	report.Runs = len(costs)
+	if report.Runs > 0 {
+		report.AverageUSD = report.TotalUSD / float64(report.Runs)
+		report.P50USD, report.P90USD = overload.Percentile(costs, 50), overload.Percentile(costs, 90)
+	}
+	return report, nil
+}
+
+// SpendSummary is what the dashboard shows about spend: today and this
+// calendar month (UTC), and the average per priced run this month.
+type SpendSummary struct {
+	Today      float64
+	Month      float64
+	MonthRuns  int
+	AverageRun float64
+	Unpriced   int
+}
+
+func monthStart(now time.Time) time.Time {
+	now = now.UTC()
+	return time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
+func dayStart(now time.Time) time.Time {
+	now = now.UTC()
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// Spend summarizes spend for the dashboard.
+func (s *Store) Spend(ctx context.Context, now time.Time) (SpendSummary, error) {
+	var summary SpendSummary
+	err := s.Pool.QueryRow(ctx, `SELECT COALESCE(sum(cost_usd) FILTER (WHERE created_at >= $2),0), COALESCE(sum(cost_usd),0), count(*), count(*) FILTER (WHERE cost_unpriced_calls > 0) FROM runs WHERE cost_usd IS NOT NULL AND created_at >= $1 AND created_at <= $3`, monthStart(now), dayStart(now), now).Scan(&summary.Today, &summary.Month, &summary.MonthRuns, &summary.Unpriced)
+	if err != nil {
+		return summary, fmt.Errorf("spend: %w", err)
+	}
+	if summary.MonthRuns > 0 {
+		summary.AverageRun = summary.Month / float64(summary.MonthRuns)
+	}
+	return summary, nil
+}

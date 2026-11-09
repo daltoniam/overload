@@ -40,6 +40,8 @@ type Run struct {
 	ErrorMessage   string
 	StartedAt      *time.Time
 	FinishedAt     *time.Time
+	// Cost is what the run's model calls cost; nil when not recorded.
+	Cost *Spend
 }
 
 type Finding struct {
@@ -84,6 +86,8 @@ type ModelProfile struct {
 	// API is the request style: "" for Chat Completions, APIResponses for
 	// OpenAI's Responses API.
 	API string `json:",omitempty"`
+	// Pricing is the model's price list; nil means calls are unpriced.
+	Pricing *Pricing `json:",omitempty"`
 }
 
 type ReviewSettings struct {
@@ -100,6 +104,32 @@ type ReviewSettings struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	API             string `json:"api,omitempty"`
+	// Prices in US dollars per million tokens. Input and output are set
+	// together; cached input and cache writes default to the input price.
+	PriceInput       *float64 `json:"price_input,omitempty"`
+	PriceCachedInput *float64 `json:"price_cached_input,omitempty"`
+	PriceCacheWrite  *float64 `json:"price_cache_write,omitempty"`
+	PriceOutput      *float64 `json:"price_output,omitempty"`
+	// Above LongContextTokens prompt tokens in one call, input and output
+	// prices are multiplied by the long-context multipliers.
+	LongContextTokens           int64   `json:"long_context_tokens,omitempty"`
+	LongContextInputMultiplier  float64 `json:"long_context_input_multiplier,omitempty"`
+	LongContextOutputMultiplier float64 `json:"long_context_output_multiplier,omitempty"`
+}
+
+// Pricing returns the settings' price list, or nil when unpriced.
+func (settings ReviewSettings) Pricing() *Pricing {
+	if settings.PriceInput == nil || settings.PriceOutput == nil {
+		return nil
+	}
+	pricing := &Pricing{Input: *settings.PriceInput, CachedInput: *settings.PriceInput, CacheWrite: *settings.PriceInput, Output: *settings.PriceOutput, LongContextTokens: settings.LongContextTokens, LongContextInput: settings.LongContextInputMultiplier, LongContextOutput: settings.LongContextOutputMultiplier}
+	if settings.PriceCachedInput != nil {
+		pricing.CachedInput = *settings.PriceCachedInput
+	}
+	if settings.PriceCacheWrite != nil {
+		pricing.CacheWrite = *settings.PriceCacheWrite
+	}
+	return pricing
 }
 
 // APIResponses selects OpenAI's Responses API instead of Chat Completions.
@@ -224,6 +254,9 @@ func (settings ReviewSettings) Validate() error {
 	default:
 		return errors.New("API must be empty (Chat Completions) or responses")
 	}
+	if err := validatePricing(settings.PriceInput, settings.PriceCachedInput, settings.PriceCacheWrite, settings.PriceOutput, settings.LongContextTokens, settings.LongContextInputMultiplier, settings.LongContextOutputMultiplier); err != nil {
+		return err
+	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {
 		return errors.New("invalid model base URL")
@@ -232,7 +265,7 @@ func (settings ReviewSettings) Validate() error {
 }
 
 func (settings ReviewSettings) Profile() ModelProfile {
-	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API}
+	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API, Pricing: settings.Pricing()}
 }
 
 type ReviewSpec struct {
