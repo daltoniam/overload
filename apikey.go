@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// API key scopes. ScopeModels calls models through the gateway.
-// ScopeReviews is reserved for requesting pull request reviews; no endpoint
-// accepts it yet, so keys cannot be created with it.
+// API key scopes. ScopeModels calls models through the gateway;
+// ScopeReviews requests pull request reviews through /api/reviews.
 const (
 	ScopeModels  = "models"
 	ScopeReviews = "reviews"
@@ -72,8 +71,8 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 		return errors.New("choose at least one scope")
 	}
 	for _, scope := range scopes {
-		if scope != ScopeModels {
-			return errors.New("the only scope is models")
+		if scope != ScopeModels && scope != ScopeReviews {
+			return errors.New("scopes are models and reviews")
 		}
 	}
 	if lifetime < time.Hour || lifetime > MaxAPIKeyLifetime {

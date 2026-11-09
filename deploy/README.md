@@ -654,6 +654,48 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
   Access guards the hostname, add a bypass policy for `/v1/*` at the edge,
   or agents cannot reach the gateway.
 
+## Workload identity
+
+Automation can request reviews and call models with its own short-lived
+OIDC token instead of a stored secret. Under Workloads, an admin adds rules
+naming the token issuer, the audience, claim conditions (all must match;
+`*` matches within one path segment) and scopes (`reviews`, `models`).
+Tokens are verified against the issuer's published keys, and only issuers
+some enabled rule names are ever contacted.
+
+GitHub Actions (issuer `https://token.actions.githubusercontent.com`): a
+rule must match `repository` or `repository_owner`; add `ref`,
+`environment` or `job_workflow_ref` to narrow it further.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - run: |
+      token=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://overload.example.com" | jq -r .value)
+      curl -sf -X POST https://overload.example.com/api/reviews \
+        -H "Authorization: Bearer $token" \
+        -d '{"repository":"${{ github.repository }}","pull_request":${{ github.event.number }}}'
+```
+
+`POST /api/reviews` with `{"repository": "owner/name", "pull_request": N}`
+queues a review of the pull request's current head, as the Review button
+does, and answers 202 with the run ID. It accepts a workload token with
+the `reviews` scope or an API key with that scope. A token that names a
+repository (every GitHub Actions token does) can only request reviews of
+that repository. Requesting a review never approves anything by itself;
+the review's own result decides. Workload tokens with the `models` scope
+can also call the model gateway.
+
+Kubernetes service accounts work the same way with the cluster's
+service-account issuer as the rule's issuer (projected tokens with an
+audience of overload's address); overload must be able to read that
+issuer's discovery document, which on most clusters needs the
+`system:service-account-issuer-discovery` role bound to unauthenticated
+users or a public issuer URL. Match `sub`
+(`system:serviceaccount:<namespace>:<name>`).
+
 ## Linux servers
 
 `overload install` on Linux writes the configuration and database (with

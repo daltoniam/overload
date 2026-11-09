@@ -43,6 +43,7 @@ templ APIKeys(page KeysPage, nonce string) {
 				<label class="field"><span>Name</span><input name="name" required maxlength="100" placeholder="laptop claude code"/></label>
 				<fieldset class="field"><legend>Scopes</legend>
 					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>
+					<label class="check"><input type="checkbox" name="scopes" value="reviews"/> Request pull request reviews</label>
 				</fieldset>
 				<label class="field"><span>Expires after (days)</span><input name="days" type="number" min="1" max="365" required value="90"/></label>
 				<div class="actions"><button type="submit">Create key</button></div>

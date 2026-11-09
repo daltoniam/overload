@@ -22,6 +22,7 @@ import (
 	"github.com/daltoniam/overload/web/assets"
 	"github.com/daltoniam/overload/web/templates/layouts"
 	"github.com/daltoniam/overload/web/templates/pages"
+	"github.com/daltoniam/overload/workload"
 )
 
 type RunReader interface {
@@ -288,22 +289,37 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	if keys, ok := reader.(KeyStore); ok {
 		registerKeys(mux, keys, csrf)
 	}
-	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
-	store, ok := reader.(gateway.Store)
-	if !ok {
-		return ui
+	var verifier *workload.Verifier
+	if rules, ok := reader.(WorkloadRuleStore); ok {
+		registerWorkloads(mux, rules, csrf)
+		verifier = workload.NewVerifier(rules, workloadClient)
 	}
-	api := gateway.New(store)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/v1/") {
-			ui.ServeHTTP(w, r)
-			return
+	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
+	routes := http.NewServeMux()
+	routes.Handle("/", ui)
+	if store, ok := reader.(gateway.Store); ok {
+		var extra []gateway.Authenticator
+		if verifier != nil {
+			extra = append(extra, workloadModels(verifier))
 		}
-		// The gateway skips the UI's host check: it reads no cookies, only
-		// bearer keys, so a rebound or unexpected host gains nothing, and
-		// in-cluster agents call it by the service name.
+		routes.Handle("/v1/", api(gateway.New(store, extra...)))
+	}
+	if queuer, ok := reader.(ReviewQueuer); ok {
+		keys, _ := reader.(apiKeyAuthenticator)
+		routes.Handle("/api/reviews", api(reviewAPI(queuer, keys, verifier)))
+	}
+	return routes
+}
+
+// api serves machine endpoints, which authenticate with API keys or
+// workload tokens instead of a browser sign-in. They skip the UI's host
+// check: they read no cookies, only bearer credentials, so a rebound or
+// unexpected host gains nothing, and in-cluster callers use the service
+// name.
+func api(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		api.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	})
 }
 

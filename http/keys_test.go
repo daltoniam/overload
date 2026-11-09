@@ -98,14 +98,14 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 	if !strings.Contains(page, "No API keys yet") || !strings.Contains(page, `action="/keys"`) {
 		t.Fatal("keys page wrong")
 	}
-	if strings.Contains(page, `value="reviews"`) {
-		t.Fatal("offered the reviews scope, which nothing accepts yet")
+	if !strings.Contains(page, `value="reviews"`) {
+		t.Fatal("the reviews scope is not offered")
 	}
 	csrf := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(page)[1]
 	for _, form := range []url.Values{
 		{"csrf": {csrf}, "name": {"my laptop"}, "scopes": {"models"}, "days": {"400"}},
 		{"csrf": {csrf}, "name": {"my laptop"}, "days": {"30"}},
-		{"csrf": {csrf}, "name": {"my laptop"}, "scopes": {"reviews"}, "days": {"30"}},
+		{"csrf": {csrf}, "name": {"my laptop"}, "scopes": {"admin"}, "days": {"30"}},
 	} {
 		retained := post("/keys", form, http.StatusUnprocessableEntity).Body.String()
 		if !strings.Contains(retained, `value="my laptop"`) || !strings.Contains(retained, `value="`+form.Get("days")+`"`) || !strings.Contains(retained, "Key not created") || !strings.Contains(retained, `id="form-errors"`) {

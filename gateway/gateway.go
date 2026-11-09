@@ -60,14 +60,25 @@ const (
 type Gateway struct {
 	store    Store
 	upstream *modelproxy.Upstream
+	extra    []Authenticator
 
 	mu     sync.Mutex
 	queues map[string]*fairQueue
 }
 
-// New returns a gateway over store.
-func New(store Store) *Gateway {
-	return &Gateway{store: store, upstream: modelproxy.NewUpstream("overload-gateway"), queues: map[string]*fairQueue{}}
+// Authenticator turns a request's credentials into a caller allowed to
+// call models; ok is false when the request carries none it recognizes. An
+// error wrapping ErrNotAllowed means the credentials are valid but may not
+// call models.
+type Authenticator func(r *http.Request) (caller Caller, ok bool, err error)
+
+// ErrNotAllowed marks valid credentials that may not call models.
+var ErrNotAllowed = errors.New("not allowed to call models")
+
+// New returns a gateway over store. extra authenticators (workload tokens)
+// are tried before API keys.
+func New(store Store, extra ...Authenticator) *Gateway {
+	return &Gateway{store: store, upstream: modelproxy.NewUpstream("overload-gateway"), extra: extra, queues: map[string]*fairQueue{}}
 }
 
 func (gateway *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +115,18 @@ type denial struct {
 }
 
 func (gateway *Gateway) authenticate(r *http.Request) (Caller, *denial) {
+	for _, authenticator := range gateway.extra {
+		caller, ok, err := authenticator(r)
+		if errors.Is(err, ErrNotAllowed) {
+			return Caller{}, &denial{http.StatusForbidden, "permission_error", err.Error()}
+		}
+		if err != nil {
+			return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", err.Error()}
+		}
+		if ok {
+			return caller, nil
+		}
+	}
 	secret := bearer(r)
 	if secret == "" {
 		return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", "send an overload API key as a bearer token or x-api-key"}

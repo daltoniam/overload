@@ -23,7 +23,7 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	if err != nil || !strings.HasPrefix(secret, key.Prefix+"_") || key.Name != "laptop" {
 		t.Fatalf("create: %+v %q %v", key, secret, err)
 	}
-	for _, scope := range []string{"admin", overload.ScopeReviews} {
+	for _, scope := range []string{"admin", ""} {
 		if _, _, err := store.CreateAPIKey(ctx, user.ID, "x", []string{scope}, time.Hour); err == nil {
 			t.Fatalf("created a key with the %s scope", scope)
 		}
