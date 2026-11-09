@@ -93,6 +93,9 @@ type Runtime struct {
 
 // Settings are known-good overload model settings for the entry.
 type Settings struct {
+	// Provider is the API to use: empty for OpenAI-compatible, or
+	// anthropic for the Messages API.
+	Provider        string   `json:"provider,omitempty"`
 	ReasoningParam  string   `json:"reasoning_param,omitempty"`
 	ReasoningEffort string   `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens int      `json:"max_output_tokens,omitempty"`
@@ -208,6 +211,8 @@ func (model Model) validate() error {
 		return fmt.Errorf("a revenue cap needs revenue_cap_usd and the other way round")
 	case model.Kind == KindHosted && (model.Runtime != nil || len(model.Weights) > 0):
 		return fmt.Errorf("hosted models have no weights or runtime")
+	case model.Settings.Provider != "" && model.Settings.Provider != "anthropic":
+		return fmt.Errorf("unknown provider %q", model.Settings.Provider)
 	case model.TrainedFromScratch && model.BaseModel != "":
 		return fmt.Errorf("a model trained from scratch has no base model")
 	case model.BaseModel != "" && len(model.BaseOrigins) == 0:

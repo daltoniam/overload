@@ -71,7 +71,7 @@ func reviewWorkflow(ctx context.Context, store *postgres.Store, options reviewOp
 		}
 		return store.ResolveRunnableWorkflow(ctx, options.workflow)
 	}
-	profile := overload.ModelProfile{Provider: "openaicompat", BaseURL: os.Getenv("OVERLOAD_DEFAULT_MODEL_BASE_URL"), Model: os.Getenv("OVERLOAD_DEFAULT_MODEL"), APIKeyEnv: "OVERLOAD_DEFAULT_MODEL_API_KEY"}
+	profile := overload.ModelProfile{Provider: overload.ProviderOpenAICompat, BaseURL: os.Getenv("OVERLOAD_DEFAULT_MODEL_BASE_URL"), Model: os.Getenv("OVERLOAD_DEFAULT_MODEL"), APIKeyEnv: "OVERLOAD_DEFAULT_MODEL_API_KEY"}
 	prompt := "context"
 	if store != nil {
 		settings, err := store.GetReviewSettings(ctx, options.profile)

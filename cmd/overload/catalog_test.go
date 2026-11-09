@@ -58,9 +58,13 @@ func TestApplyCatalogDefaults(t *testing.T) {
 	if setting.Model != "my-flint" || setting.ReasoningParam != "chat_template" || setting.ReasoningEffort != "low" {
 		t.Fatalf("given flags were overridden: %+v", setting)
 	}
-	setting = overload.ReviewSettings{Catalog: "claude-opus-5.5", ConnectionKind: "local"}
-	if err := applyCatalogDefaults(&setting, map[string]bool{}); err != nil || setting.ConnectionKind != "hosted" {
+	setting = overload.ReviewSettings{Catalog: "claude-opus-5.5", ConnectionKind: "local", Provider: overload.ProviderOpenAICompat}
+	if err := applyCatalogDefaults(&setting, map[string]bool{}); err != nil || setting.ConnectionKind != "hosted" || setting.Provider != overload.ProviderAnthropic || setting.ReasoningEffort != "high" {
 		t.Fatalf("hosted default = %+v, %v", setting, err)
+	}
+	setting = overload.ReviewSettings{Catalog: "claude-opus-5.5", Provider: overload.ProviderOpenAICompat}
+	if err := applyCatalogDefaults(&setting, map[string]bool{"provider": true}); err != nil || setting.Provider != overload.ProviderOpenAICompat || setting.ReasoningParam != "" || setting.ReasoningEffort != "" {
+		t.Fatalf("Anthropic reasoning settings applied to an OpenAI-compatible connection: %+v, %v", setting, err)
 	}
 	if err := applyCatalogDefaults(&overload.ReviewSettings{Catalog: "nope"}, nil); err == nil {
 		t.Fatal("accepted an unknown entry")

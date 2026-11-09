@@ -109,6 +109,16 @@ type ReviewSettings struct {
 	Catalog string `json:"catalog,omitempty"`
 }
 
+// Model providers: an OpenAI-compatible API (Chat Completions or Responses)
+// or Anthropic's Messages API, which Claude models need to think.
+const (
+	ProviderOpenAICompat = "openaicompat"
+	ProviderAnthropic    = "anthropic"
+)
+
+// anthropicEfforts are the output effort levels the Messages API accepts.
+var anthropicEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
+
 // APIResponses selects OpenAI's Responses API instead of Chat Completions.
 // Newer OpenAI reasoning models only accept tools together with a
 // reasoning effort there.
@@ -158,8 +168,8 @@ func ValidateReasoning(param, effort string, maxOutputTokens int) error {
 }
 
 // validateAPIKeyEnv rejects variables that hold overload's own secrets. The
-// named variable's value is sent as a bearer token to the model URL, which
-// anyone who can edit models controls.
+// named variable's value is sent to the model URL (as a bearer token, or in
+// X-Api-Key for Anthropic), which anyone who can edit models controls.
 func validateAPIKeyEnv(name string) error {
 	if name == "" {
 		return nil
@@ -201,7 +211,7 @@ var settingName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (settings ReviewSettings) Validate() error {
-	if !settingName.MatchString(settings.Name) || settings.Provider != "openaicompat" || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
+	if !settingName.MatchString(settings.Name) || (settings.Provider != ProviderOpenAICompat && settings.Provider != ProviderAnthropic) || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
 		return errors.New("invalid model name or provider")
 	}
 	if settings.PromptProfile != "context" && settings.PromptProfile != "switchboard-go" {
@@ -222,6 +232,11 @@ func (settings ReviewSettings) Validate() error {
 	if err := ValidateReasoning(settings.ReasoningParam, settings.ReasoningEffort, settings.MaxOutputTokens); err != nil {
 		return err
 	}
+	if settings.Provider == ProviderAnthropic {
+		if err := validateAnthropic(settings); err != nil {
+			return err
+		}
+	}
 	switch settings.API {
 	case "":
 	case APIResponses:
@@ -239,6 +254,30 @@ func (settings ReviewSettings) Validate() error {
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {
 		return errors.New("invalid model base URL")
+	}
+	return nil
+}
+
+// validateAnthropic checks settings that only make sense for the Messages
+// API: thinking is requested with an output effort, which also turns on
+// adaptive thinking.
+func validateAnthropic(settings ReviewSettings) error {
+	if settings.API != "" {
+		return errors.New("the API setting applies to OpenAI-compatible connections only")
+	}
+	if parsed, err := url.Parse(settings.BaseURL); err == nil {
+		if path := strings.TrimRight(parsed.Path, "/"); strings.HasSuffix(path, "/v1") || strings.HasSuffix(path, "/v1/messages") {
+			return errors.New("an Anthropic endpoint URL does not end in /v1 or /v1/messages (the Messages API adds them): use https://api.anthropic.com or the gateway's Anthropic base URL")
+		}
+	}
+	switch settings.ReasoningParam {
+	case ReasoningAuto, ReasoningNone:
+	case ReasoningEffortField:
+		if !anthropicEfforts[settings.ReasoningEffort] {
+			return errors.New("the Anthropic effort must be low, medium, high, xhigh or max")
+		}
+	default:
+		return errors.New("an Anthropic model takes an effort (reasoning_effort), not the chat template switch")
 	}
 	return nil
 }

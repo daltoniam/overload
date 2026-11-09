@@ -36,7 +36,7 @@ func RunAgent(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	}
 	final := systemPrompt + finalStepNotice
 	hitLimit := false
-	result, err := agent.Generate(ctx, fantasy.AgentCall{
+	result, err := run(ctx, agent, model.Provider, fantasy.AgentCall{
 		Prompt:   prompt,
 		StopWhen: []fantasy.StopCondition{fantasy.StepCountIs(maxSteps)},
 		PrepareStep: func(ctx context.Context, step fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {

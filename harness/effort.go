@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/daltoniam/overload"
@@ -30,6 +31,7 @@ var (
 
 // reasoningPlan is how review requests to one model control thinking.
 type reasoningPlan struct {
+	provider  string
 	api       string
 	param     string
 	effort    string
@@ -39,11 +41,11 @@ type reasoningPlan struct {
 
 func planFor(model overload.ModelProfile) reasoningPlan {
 	hosted := model.ConnectionKind == "hosted"
-	plan := reasoningPlan{api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout}
+	plan := reasoningPlan{provider: model.Provider, api: model.API, param: model.ReasoningParam, effort: model.ReasoningEffort, timeout: localCallTimeout}
 	if hosted {
 		plan.timeout = hostedCallTimeout
 	}
-	if plan.param == overload.ReasoningAuto && !hosted {
+	if plan.param == overload.ReasoningAuto && !hosted && model.Provider != overload.ProviderAnthropic {
 		plan.param, plan.effort = overload.ReasoningChatTemplate, localReviewEffort
 	}
 	switch {
@@ -71,6 +73,10 @@ func (plan reasoningPlan) providerOptions(effort string) fantasy.ProviderOptions
 			ExtraBody: map[string]any{"chat_template_kwargs": map[string]any{"reasoning_effort": effort}},
 		})
 	case overload.ReasoningEffortField:
+		if plan.provider == overload.ProviderAnthropic {
+			level := anthropic.Effort(effort)
+			return anthropic.NewProviderOptions(&anthropic.ProviderOptions{Effort: &level})
+		}
 		level := openai.ReasoningEffort(effort)
 		if plan.api == overload.APIResponses {
 			return nil
@@ -120,11 +126,11 @@ var errCallTimeout = errors.New("model call timed out")
 // generate makes one model call within the plan's time limit.
 func (plan reasoningPlan) generate(ctx context.Context, agent fantasy.Agent, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
 	if plan.timeout <= 0 {
-		return agent.Generate(ctx, call)
+		return run(ctx, agent, plan.provider, call)
 	}
 	callCtx, cancel := context.WithTimeout(ctx, plan.timeout)
 	defer cancel()
-	response, err := agent.Generate(callCtx, call)
+	response, err := run(callCtx, agent, plan.provider, call)
 	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		return response, fmt.Errorf("%w after %s", errCallTimeout, plan.timeout)
 	}

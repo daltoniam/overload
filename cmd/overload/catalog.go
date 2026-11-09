@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -188,7 +189,12 @@ func applyCatalogDefaults(setting *overload.ReviewSettings, given map[string]boo
 	if !given["model"] && model.Runtime != nil && model.Runtime.ServedName != "" {
 		setting.Model = model.Runtime.ServedName
 	}
-	if !given["reasoning-param"] && !given["reasoning-effort"] {
+	if !given["provider"] && model.Settings.Provider != "" {
+		setting.Provider = model.Settings.Provider
+	}
+	// The catalog's reasoning settings were measured through its provider's
+	// API; another API takes them differently or ignores them.
+	if !given["reasoning-param"] && !given["reasoning-effort"] && cmp.Or(setting.Provider, overload.ProviderOpenAICompat) == cmp.Or(model.Settings.Provider, overload.ProviderOpenAICompat) {
 		setting.ReasoningParam, setting.ReasoningEffort = model.Settings.ReasoningParam, model.Settings.ReasoningEffort
 	}
 	if !given["max-output-tokens"] && model.Settings.MaxOutputTokens != 0 {

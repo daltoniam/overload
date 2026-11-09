@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -94,5 +95,72 @@ func TestProxyGrantsExpire(t *testing.T) {
 	proxy.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("GET allowed: %d", recorder.Code)
+	}
+}
+
+func TestProxyForwardsAnthropicMessages(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_CLAUDE", "claude-key")
+	var gotKey, gotAuth, gotPath, gotVersion, gotBeta string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotKey, gotAuth, gotPath, gotVersion, gotBeta = r.Header.Get("X-Api-Key"), r.Header.Get("Authorization"), r.URL.Path, r.Header.Get("Anthropic-Version"), r.Header.Get("Anthropic-Beta")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	base, revoke := proxy.Grant(overload.ModelProfile{Provider: overload.ProviderAnthropic, BaseURL: upstream.URL, Model: "claude-opus-5-5", APIKeyEnv: "OVERLOAD_MODEL_CLAUDE"}, time.Minute)
+	defer revoke()
+	path := strings.TrimPrefix(base, "http://overload:8083")
+	send := func(suffix string) int {
+		t.Helper()
+		request, _ := http.NewRequest(http.MethodPost, server.URL+path+suffix, strings.NewReader(`{"model":"claude-opus-5-5"}`))
+		request.Header.Set("Anthropic-Version", "2023-06-01")
+		request.Header.Set("X-Api-Key", "sandbox-supplied")
+		request.Header.Set("Anthropic-Beta", "mcp-client-2025-04-04")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	if status := send("/v1/messages"); status != http.StatusOK || gotKey != "claude-key" || gotAuth != "" || gotPath != "/v1/messages" || gotVersion != "2023-06-01" || gotBeta != "" {
+		t.Fatalf("status=%d key=%q auth=%q path=%q version=%q beta=%q", status, gotKey, gotAuth, gotPath, gotVersion, gotBeta)
+	}
+	if status := send("/chat/completions"); status != http.StatusNotFound {
+		t.Fatalf("OpenAI path on an Anthropic grant: %d", status)
+	}
+}
+
+func TestProxyDoesNotFollowRedirects(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_CLAUDE", "claude-key")
+	var elsewhere atomic.Int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		elsewhere.Add(1)
+	}))
+	defer other.Close()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/v1/messages", http.StatusTemporaryRedirect)
+	}))
+	defer upstream.Close()
+	for _, provider := range []string{overload.ProviderAnthropic, overload.ProviderOpenAICompat} {
+		proxy := New("http://overload:8083")
+		server := httptest.NewServer(proxy)
+		base, revoke := proxy.Grant(overload.ModelProfile{Provider: provider, BaseURL: upstream.URL, Model: "m", APIKeyEnv: "OVERLOAD_MODEL_CLAUDE"}, time.Minute)
+		path := map[string]string{overload.ProviderAnthropic: "/v1/messages", overload.ProviderOpenAICompat: "/chat/completions"}[provider]
+		response, err := http.Post(server.URL+strings.TrimPrefix(base, "http://overload:8083")+path, "application/json", strings.NewReader(`{"model":"m"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		revoke()
+		server.Close()
+		if response.StatusCode != http.StatusTemporaryRedirect || response.Header.Get("Location") != "" {
+			t.Fatalf("%s: status=%d location=%q", provider, response.StatusCode, response.Header.Get("Location"))
+		}
+	}
+	if count := elsewhere.Load(); count != 0 {
+		t.Fatalf("the proxy followed a redirect %d times", count)
 	}
 }

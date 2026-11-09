@@ -54,11 +54,12 @@ blocks DNS-rebinding pages from reaching a local UI.
 
 ## Models
 
-Any OpenAI-compatible `/v1/chat/completions` server works. Each model
-connection has:
+Any OpenAI-compatible `/v1/chat/completions` server works, as does
+Anthropic's Messages API (below). Each model connection has:
 
 | Setting | CLI flag | Meaning |
 |---|---|---|
+| Provider API | `--provider openaicompat\|anthropic` | OpenAI-compatible (default) or the Anthropic Messages API |
 | Connection | `--connection-kind local\|hosted` | Hosted models need `--api-key-env` |
 | Reasoning control | `--reasoning-param` | How thinking is requested (below) |
 | Reasoning effort | `--reasoning-effort` | none, minimal, low, medium, high, xhigh, max |
@@ -70,7 +71,7 @@ connection has:
 | Automatic (default) | local: `chat_template_kwargs.reasoning_effort=xhigh`; hosted: nothing | llama.cpp models |
 | `none` | nothing | Servers that reject reasoning fields |
 | `chat_template` | `chat_template_kwargs.reasoning_effort=<effort>` | llama.cpp chat templates (Bonsai) |
-| `reasoning_effort` | top-level `reasoning_effort=<effort>` | DwarfStar `ds4-server`, OpenAI-style APIs |
+| `reasoning_effort` | top-level `reasoning_effort=<effort>`; for Anthropic, `output_config.effort=<effort>` with adaptive thinking | DwarfStar `ds4-server`, OpenAI-style APIs, Claude |
 
 If a call runs out of tokens while thinking, that file is retried once at
 `medium` and the run records `effort_fallbacks`. Settings are pinned into
@@ -78,6 +79,41 @@ each run, so editing a model does not change queued reviews. Only the name
 of an API key's environment variable is stored, never the key, and names of
 overload's own secrets (`DATABASE_URL`, `OVERLOAD_*`, `GITHUB_*`, `PG*`) are
 refused.
+
+### Anthropic models
+
+Claude models think only through Anthropic's Messages API; through an
+OpenAI-compatible endpoint (including Cloudflare AI Gateway's) they run
+without thinking, and Sonnet 5.5 found 9 of 20 planted bugs that way
+against 14 with effort high and adaptive thinking. Add them with the
+Anthropic provider:
+
+```sh
+overload settings set --name opus --provider anthropic --connection-kind hosted \
+  --url https://api.anthropic.com --model claude-opus-5-5 \
+  --api-key-env OVERLOAD_MODEL_ANTHROPIC \
+  --reasoning-param reasoning_effort --reasoning-effort high
+```
+
+The URL has no `/v1` (a URL ending in `/v1` or `/v1/messages` is
+refused); a gateway's Anthropic endpoint works too. The effort (low,
+medium, high, xhigh or max) is sent as `output_config.effort` with adaptive
+thinking; `--reasoning-param none` leaves both to the model's defaults.
+`--catalog claude-opus-5.5` fills the provider and effort; with `--provider
+openaicompat` it leaves the effort unset, since OpenAI-compatible endpoints
+ignore it for Claude. Requests stream, so long thinking is bounded only by
+the call timeout (local 90 minutes, hosted 15) and output limits above
+about 21,000 tokens work.
+
+The key is sent as `x-api-key`, and redirects are never followed, so the
+key cannot be forwarded to another host. Requests carry only the headers
+the Messages API needs plus the connection's own, so Anthropic
+credentials, profile settings (such as a workspace ID) and
+`ANTHROPIC_CUSTOM_HEADERS` from overload's own environment are never sent;
+a connection without `--api-key-env` sends no key. In sandbox mode the
+model proxy adds the key, as for OpenAI-compatible models, and forwards
+only the `anthropic-version` header from the sandbox, so a sandbox cannot
+turn on beta features with the control plane's key.
 
 ### Catalog and model policy
 
@@ -423,9 +459,9 @@ only the SQL injection); Sonnet 5.5 14. Sonnet was bimodal: the two runs
 where it used about 2k tokens (adaptive thinking engaged) found all five,
 and the two at about 1k tokens repeated its line-number misses. With five
 bugs the eval is near its ceiling for frontier models, so one-bug
-differences between them are noise. Overload itself reaches Claude only
-through OpenAI-compatible endpoints today, so Claude reviews in overload
-run without thinking until native Anthropic support is added.
+differences between them are noise. Overload now calls Claude through the
+native Messages API (`--provider anthropic`, see Anthropic models above),
+so Claude reviews can think.
 
 This is one
 synthetic file; treat it as
