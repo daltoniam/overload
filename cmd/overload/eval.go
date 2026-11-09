@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -77,7 +78,25 @@ func parseEvalOptions(args []string) (evalOptions, error) {
 	if options.csv == "" {
 		options.csv = strings.TrimSuffix(options.out, ".json") + ".csv"
 	}
+	if samePath(options.out, options.csv) {
+		return options, fmt.Errorf("the JSON results (--out) and CSV summary (--csv) need different files: both are %s", options.csv)
+	}
 	return options, nil
+}
+
+// samePath reports whether two output paths name the same file.
+func samePath(first, second string) bool {
+	firstAbs, err1 := filepath.Abs(first)
+	secondAbs, err2 := filepath.Abs(second)
+	if err1 != nil || err2 != nil {
+		return filepath.Clean(first) == filepath.Clean(second)
+	}
+	if firstAbs == secondAbs {
+		return true
+	}
+	firstInfo, err1 := os.Stat(firstAbs)
+	secondInfo, err2 := os.Stat(secondAbs)
+	return err1 == nil && err2 == nil && os.SameFile(firstInfo, secondInfo)
 }
 
 // parsePRList reads "101,102,110-115" in order without repeats.
@@ -106,8 +125,11 @@ func parsePRList(text string) ([]int, error) {
 				return nil, fmt.Errorf("invalid pull request range %q", part)
 			}
 		}
-		for number := first; number <= last; number++ {
+		for number := first; ; number++ {
 			add(number)
+			if number == last {
+				break
+			}
 		}
 	}
 	if len(numbers) == 0 || len(numbers) > 5000 {
@@ -164,11 +186,15 @@ func evaluate(args []string) error {
 	if err != nil {
 		return err
 	}
-	var installation int64 = -1
+	var installation, repositoryID int64 = -1, 0
 	for _, repo := range repos {
-		if repo.FullName == options.repo {
-			installation = repo.InstallationID
+		if repo.FullName != options.repo {
+			continue
 		}
+		if repositoryID != 0 {
+			return fmt.Errorf("%s matches more than one repository overload knows", options.repo)
+		}
+		installation, repositoryID = repo.InstallationID, repo.ID
 	}
 	if installation < 0 {
 		return fmt.Errorf("%s is not a repository overload knows; add it first", options.repo)
@@ -199,7 +225,7 @@ func evaluate(args []string) error {
 	}
 	batch := fmt.Sprintf("eval-%s", time.Now().UTC().Format("20060102T150405Z"))
 	fmt.Fprintf(os.Stderr, "Evaluating %s on %s; the overload server runs the reviews as dry runs (batch %s)\n", strings.Join(options.workflows, ", "), overload.Plural(len(options.prs), "pull request"), batch)
-	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: options.repo, InstallationID: installation, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
+	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: options.repo, RepositoryID: repositoryID, InstallationID: installation, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
 	if err != nil {
 		return err
 	}

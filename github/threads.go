@@ -23,8 +23,9 @@ func commentTitle(title string) string {
 
 // PriorReplies returns, for each earlier finding, the replies people left
 // on overload's review comment for it, oldest first. Overload's own
-// comments are matched by author, path and title; replies by overload are
-// left out.
+// comments are matched by author, path, the line they were posted on and
+// title, so same-title findings on different lines keep their own
+// replies; replies by overload are left out.
 func (client *Client) PriorReplies(ctx context.Context, installationID int64, repository string, number int, prior []overload.PriorFinding) (map[int64][]string, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
@@ -57,8 +58,9 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 			continue
 		}
 		for _, finding := range prior {
-			if comment.GetPath() == finding.Path && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
+			if comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
 				findingOf[comment.GetID()] = finding.ID
+				break
 			}
 		}
 	}

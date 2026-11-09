@@ -13,11 +13,14 @@ import (
 
 // setRunCostSQL sets a run's total cost ($2 dollars, $3 unpriced calls)
 // and records the difference from what was recorded before at $4.
-const setRunCostSQL = `WITH old AS (SELECT cost_usd, cost_unpriced_calls FROM runs WHERE id=$1 FOR UPDATE),
-updated AS (UPDATE runs SET cost_usd=$2::float8, cost_unpriced_calls=$3::bigint WHERE id=$1 RETURNING id)
+// The update reads the locked row's old values through FROM old, so they
+// are captured before the write.
+const setRunCostSQL = `WITH old AS (SELECT id, cost_usd, cost_unpriced_calls FROM runs WHERE id=$1 FOR UPDATE),
+updated AS (UPDATE runs r SET cost_usd=$2::float8, cost_unpriced_calls=$3::bigint FROM old WHERE r.id = old.id
+  RETURNING r.id, old.cost_usd AS old_usd, old.cost_unpriced_calls AS old_unpriced)
 INSERT INTO run_costs (run_id, usd, unpriced_calls, at)
-SELECT updated.id, $2::float8 - COALESCE(old.cost_usd, 0), $3::bigint - old.cost_unpriced_calls, $4::timestamptz FROM old, updated
-WHERE old.cost_usd IS NULL OR $2::float8 <> old.cost_usd OR $3::bigint <> old.cost_unpriced_calls`
+SELECT id, $2::float8 - COALESCE(old_usd, 0), $3::bigint - old_unpriced, $4::timestamptz FROM updated
+WHERE old_usd IS NULL OR $2::float8 <> old_usd OR $3::bigint <> old_unpriced`
 
 // addRunCostSQL adds to a run's cost and records the addition at $4.
 const addRunCostSQL = `WITH updated AS (UPDATE runs SET cost_usd=COALESCE(cost_usd,0)+$2::float8, cost_unpriced_calls=cost_unpriced_calls+$3::bigint WHERE id=$1 RETURNING id)

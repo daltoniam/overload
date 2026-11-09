@@ -125,3 +125,18 @@ func TestUsageMeterSurvivesHugeAnswers(t *testing.T) {
 		t.Fatalf("estimate = %+v %v", usage, exact)
 	}
 }
+
+func TestInterruptedAnthropicStreamEstimatesItsOutput(t *testing.T) {
+	meter := newUsageMeter(overload.ProviderAnthropic, "text/event-stream")
+	meter.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":100,\"output_tokens\":1}}}\n\n"))
+	meter.write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", 3000) + "\"}}\n\n"))
+	// The stream ends here, before message_delta reports the output.
+	usage, exact := meter.usage()
+	if exact || usage.Input != 120 || usage.CachedInput != 100 || usage.Output < 1000 {
+		t.Fatalf("usage = %+v exact = %v", usage, exact)
+	}
+	meter.write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":900}}\n\n"))
+	if usage, exact := meter.usage(); !exact || usage.Output != 900 || usage.Input != 120 {
+		t.Fatalf("complete stream = %+v exact = %v", usage, exact)
+	}
+}

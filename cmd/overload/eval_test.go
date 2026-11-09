@@ -1,9 +1,11 @@
 package main
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"testing"
 )
 
@@ -17,6 +19,13 @@ func TestParsePRList(t *testing.T) {
 			t.Errorf("accepted %q", bad)
 		}
 	}
+	largest := strconv.Itoa(math.MaxInt)
+	if numbers, err := parsePRList(largest); err != nil || !slices.Equal(numbers, []int{math.MaxInt}) {
+		t.Fatalf("largest number = %v %v", numbers, err)
+	}
+	if numbers, err := parsePRList(strconv.Itoa(math.MaxInt-1) + "-" + largest); err != nil || len(numbers) != 2 {
+		t.Fatalf("range ending at the largest number = %v %v", numbers, err)
+	}
 }
 
 func TestParseEvalOptions(t *testing.T) {
@@ -26,6 +35,16 @@ func TestParseEvalOptions(t *testing.T) {
 	}
 	if _, err := parseEvalOptions([]string{"prs", "--repo", "acme/app", "--prs", "1"}); err == nil {
 		t.Fatal("accepted options without workflows and output")
+	}
+	for _, flags := range [][]string{
+		{"--out", "results.csv", "--csv", "results.csv"},
+		{"--out", "results.json", "--csv", "results.json"},
+		{"--out", "out/results.json", "--csv", "out/../out/results.json"},
+	} {
+		args := append([]string{"prs", "--repo", "acme/app", "--prs", "1", "--workflows", "sol"}, flags...)
+		if _, err := parseEvalOptions(args); err == nil {
+			t.Errorf("accepted the same file for JSON and CSV: %v", flags)
+		}
 	}
 }
 

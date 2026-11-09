@@ -151,3 +151,34 @@ func TestMultiStepCallsReserveEachStepAgainstItsContext(t *testing.T) {
 		t.Fatalf("usage = %+v spend = %+v refused = %d reserved = %v", usage, spend, refused, budget.reserved)
 	}
 }
+
+func TestStepReservationsIncludeTheSystemPrompt(t *testing.T) {
+	// A $1 cap and a 3,000-token system prompt ($3): the first step cannot
+	// fit even though its messages are tiny.
+	budget := newRunBudget(1)
+	plan := reasoningPlan{pricing: &overload.Pricing{Input: 1000}, steps: 5, systemChars: 9000}
+	// Fantasy puts the system prompt first in the step's messages; it is
+	// counted once.
+	messages := []fantasy.Message{fantasy.NewSystemMessage(strings.Repeat("s", 9000)), {Role: fantasy.MessageRoleUser, Content: []fantasy.MessagePart{fantasy.TextPart{Text: "Review."}}}}
+	if chars := messageChars(messages); chars > 200 {
+		t.Fatalf("system message counted with the messages: %d characters", chars)
+	}
+	_, err := newMeter(budget).call(context.Background(), plan, fantasy.AgentCall{Prompt: "Review."}, func(ctx context.Context, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
+		_, _, err := call.PrepareStep(ctx, fantasy.PrepareStepFunctionOptions{Messages: messages})
+		return nil, err
+	})
+	if !errors.Is(err, errCostCap) {
+		t.Fatalf("step with a large system prompt = %v, want the cost cap", err)
+	}
+	// A smaller override replaces the default system prompt in the estimate.
+	short := "Answer now."
+	_, err = newMeter(newRunBudget(1)).call(context.Background(), plan, fantasy.AgentCall{Prompt: "Review.", PrepareStep: func(ctx context.Context, _ fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
+		return ctx, fantasy.PrepareStepResult{System: &short}, nil
+	}}, func(ctx context.Context, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
+		_, _, err := call.PrepareStep(ctx, fantasy.PrepareStepFunctionOptions{Messages: messages})
+		return nil, err
+	})
+	if err != nil {
+		t.Fatalf("step with a short system override = %v", err)
+	}
+}

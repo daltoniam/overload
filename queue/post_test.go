@@ -22,6 +22,12 @@ type fakePoster struct {
 	summary   string
 	standing  []int64
 	dismissed []int64
+	resolved  [][]overload.Finding
+}
+
+func (poster *fakePoster) ResolveThreads(_ context.Context, _ int64, _ string, _ int, fixed []overload.Finding) (int, error) {
+	poster.resolved = append(poster.resolved, fixed)
+	return len(fixed), nil
 }
 
 type fakeStatus struct {
@@ -87,6 +93,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	repo := fmt.Sprintf("test-post-%d/api", id)
 	t.Cleanup(func() {
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM run_events WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
+		_, _ = store.Pool.Exec(ctx, `UPDATE findings SET resolved_by_run_id=NULL WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM findings WHERE run_id IN (SELECT id FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1))`, repo)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=(SELECT id FROM repositories WHERE full_name=$1)`, repo)
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE full_name=$1`, repo)
@@ -143,12 +150,23 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	}
 
 	crashed := newRun("completed", "queued", []overload.Finding{{Path: "c.go", Line: 1, Side: "RIGHT", Severity: "low", Category: "bug", Title: "Third", Body: "b", Confidence: 0.7, Evidence: "z()"}}, "pending")
+	// The crashed run found an earlier finding fixed and resolves threads:
+	// recovering the posted review still resolves them.
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET config_snapshot='{"rereview":{"resolve_threads":true}}' WHERE id=$1`, crashed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE findings SET resolved_by_run_id=$1 WHERE run_id=$2 AND title='Old bug'`, crashed, runID); err != nil {
+		t.Fatal(err)
+	}
 	poster.existing = 555
 	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: crashed}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(poster.posts) != 1 {
 		t.Fatal("re-posted a review that GitHub already had")
+	}
+	if len(poster.resolved) != 1 || len(poster.resolved[0]) != 1 || poster.resolved[0][0].Title != "Old bug" {
+		t.Fatalf("threads resolved on recovery = %+v", poster.resolved)
 	}
 	if err := store.Pool.QueryRow(ctx, `SELECT github_review_id FROM runs WHERE id=$1`, crashed).Scan(&reviewID); err != nil || reviewID != 555 {
 		t.Fatalf("existing review not recorded: %d %v", reviewID, err)

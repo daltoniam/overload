@@ -22,8 +22,10 @@ func TestPriorRepliesAndResolveThreads(t *testing.T) {
 			_, _ = io.WriteString(w, `{"login":"overload-bot"}`)
 		case "/repos/acme/api/pulls/7/comments":
 			_, _ = io.WriteString(w, `[
-				{"id":1,"path":"a.go","body":"**Nil map** (high)\n\nInitialize it.","user":{"login":"overload-bot"}},
+				{"id":1,"path":"a.go","original_line":3,"body":"**Nil map** (high)\n\nInitialize it.","user":{"login":"overload-bot"}},
 				{"id":2,"path":"a.go","body":"Fixed in the next commit","in_reply_to_id":1,"user":{"login":"dev"}},
+				{"id":6,"path":"a.go","original_line":40,"body":"**Nil map** (high)\n\nAnother map.","user":{"login":"overload-bot"}},
+				{"id":7,"path":"a.go","body":"Not fixed yet","in_reply_to_id":6,"user":{"login":"dev"}},
 				{"id":3,"path":"a.go","body":"Thanks","in_reply_to_id":1,"user":{"login":"overload-bot"}},
 				{"id":4,"path":"a.go","body":"**Nil map** (high)\n\nfake","user":{"login":"mallory"}},
 				{"id":5,"path":"a.go","body":"replying to the fake","in_reply_to_id":4,"user":{"login":"mallory"}}
@@ -55,8 +57,8 @@ func TestPriorRepliesAndResolveThreads(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.api.BaseURL, _ = url.Parse(server.URL + "/")
-	replies, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 41, Path: "a.go", Title: "Nil map"}})
-	if err != nil || len(replies[41]) != 1 || replies[41][0] != "dev: Fixed in the next commit" {
+	replies, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 41, Path: "a.go", Line: 3, Title: "Nil map"}, {ID: 42, Path: "a.go", Line: 40, Title: "Nil map"}})
+	if err != nil || len(replies[41]) != 1 || replies[41][0] != "dev: Fixed in the next commit" || len(replies[42]) != 1 || replies[42][0] != "dev: Not fixed yet" {
 		t.Fatalf("replies = %+v %v", replies, err)
 	}
 	count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map"}})

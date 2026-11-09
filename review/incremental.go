@@ -55,6 +55,11 @@ func FilePatchHashes(patch string) map[string]string {
 			}
 		case !inHunk && (strings.HasPrefix(line, "Binary files ") || line == "GIT binary patch"):
 			body.WriteString("binary " + newBlob + "\n")
+		case !inHunk && (strings.HasPrefix(line, "rename to ") || strings.HasPrefix(line, "copy to ")):
+			_, to, _ := strings.Cut(line, " to ")
+			if path, ok := overload.DiffPath(strings.TrimSuffix(to, "\r"), ""); ok {
+				name = path
+			}
 		case !inHunk && strings.HasPrefix(line, "+++ "):
 			if path, ok := overload.DiffPath(strings.TrimSuffix(strings.TrimPrefix(line, "+++ "), "\r"), "b/"); ok {
 				name = path

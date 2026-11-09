@@ -345,3 +345,13 @@ func TestIdentifiersInFindsAdjacentNames(t *testing.T) {
 		t.Fatalf("identifiers = %s", got)
 	}
 }
+
+func TestLineCountsSeeChangedLinesThatLookLikeHeaders(t *testing.T) {
+	patch := "diff --git a/c.go b/c.go\n--- a/c.go\n+++ b/c.go\n@@ -1,3 +1,3 @@\n x\n---counter\n+++counter\n+--flag\n"
+	if added, removed := lineCounts(patch); added != 2 || removed != 1 {
+		t.Fatalf("added %d removed %d, want 2 and 1", added, removed)
+	}
+	if header, _ := planSummary(reviewSection{path: "c.go", patch: patch}); header != "### c.go (+2 -1)\n" {
+		t.Fatalf("planner summary = %q", header)
+	}
+}

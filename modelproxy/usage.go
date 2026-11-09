@@ -91,6 +91,10 @@ type usageMeter struct {
 	skipping bool
 	total    wireUsage
 	found    bool
+	// final is set by usage that comes with or after the answer (OpenAI's
+	// last chunk, Anthropic's message_delta), not Anthropic's
+	// message_start, which reports input but only a token or so of output.
+	final bool
 }
 
 func newUsageMeter(provider, contentType string) *usageMeter {
@@ -140,6 +144,9 @@ func (meter *usageMeter) event(line string) {
 	}
 	meter.total.merge(*envelope.usage())
 	meter.found = true
+	if envelope.Message == nil || envelope.Message.Usage == nil || envelope.Usage != nil {
+		meter.final = true
+	}
 }
 
 // estimatedCharsPerToken turns an answer's size into output tokens when
@@ -153,8 +160,15 @@ func (meter *usageMeter) usage() (overload.Usage, bool) {
 		if len(meter.line) > 0 && !meter.skipping {
 			meter.event(string(meter.line))
 		}
-		if meter.found {
+		if meter.found && meter.final {
 			return meter.total.toUsage(meter.provider), true
+		}
+		if meter.found {
+			// The stream stopped before its final usage: keep the input
+			// it reported and estimate the output from the answer's size.
+			usage := meter.total.toUsage(meter.provider)
+			usage.Output = max(usage.Output, meter.bytes/estimatedCharsPerToken+1)
+			return usage, false
 		}
 	} else if meter.bytes <= maxMeteredBytes {
 		if usage, ok := parseUsage(meter.provider, "application/json", meter.body.Bytes()); ok {

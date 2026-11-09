@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sync"
 
 	"charm.land/fantasy"
@@ -126,10 +127,12 @@ func (plan reasoningPlan) estimateChars(chars int) (float64, bool) {
 	return plan.pricing.Cost(overload.Usage{Input: int64(chars/charsPerToken + 1), Output: plan.maxTokens})
 }
 
-// messageChars measures a step's prompt, tool calls and results included.
-// The JSON form is a little longer than the text, which keeps the
-// estimate on the high side.
+// messageChars measures a step's prompt, tool calls and results included,
+// leaving out system messages, which the caller counts once. The JSON form
+// is a little longer than the text, which keeps the estimate on the high
+// side.
 func messageChars(messages []fantasy.Message) int {
+	messages = slices.DeleteFunc(slices.Clone(messages), func(message fantasy.Message) bool { return message.Role == fantasy.MessageRoleSystem })
 	data, err := json.Marshal(messages)
 	if err != nil {
 		chars := 0
@@ -213,9 +216,10 @@ func (m *meter) callSteps(ctx context.Context, plan reasoningPlan, call fantasy.
 		if prepared.Messages != nil {
 			messages = prepared.Messages
 		}
-		chars := messageChars(messages)
+		// The agent's system prompt, or the step's replacement for it.
+		chars := messageChars(messages) + plan.systemChars
 		if prepared.System != nil {
-			chars += len(*prepared.System)
+			chars += len(*prepared.System) - plan.systemChars
 		}
 		estimate, _ := plan.estimateChars(chars)
 		if err := m.run.reserve(estimate, priced); err != nil {

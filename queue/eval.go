@@ -24,6 +24,7 @@ type HeadReader interface {
 // or running at once (the server's own worker limit still applies).
 type EvalPlan struct {
 	Repository     string
+	RepositoryID   int64
 	InstallationID int64
 	PRs            []int
 	Workflows      []string
@@ -77,7 +78,7 @@ func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pg
 	for {
 		for next < len(jobs) && len(active) < limit {
 			job := jobs[next]
-			id, err := store.QueueEvalRun(ctx, client, postgres.EvalRequest{Repository: plan.Repository, PR: job.pr, HeadSHA: job.head, BaseSHA: job.base, Workflow: job.workflow, Batch: plan.Batch})
+			id, err := store.QueueEvalRun(ctx, client, postgres.EvalRequest{Repository: plan.Repository, RepositoryID: plan.RepositoryID, PR: job.pr, HeadSHA: job.head, BaseSHA: job.base, Workflow: job.workflow, Batch: plan.Batch})
 			if err != nil {
 				return nil, fmt.Errorf("queue %s on #%d: %w", job.workflow, job.pr, err)
 			}

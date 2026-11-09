@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +125,51 @@ func TestSpendCountsEachAdditionWhenItHappened(t *testing.T) {
 	run, err := store.GetRun(ctx, runID)
 	if err != nil || run.Cost == nil || math.Abs(run.Cost.USD-11.5) > 1e-9 || run.Cost.Unpriced != 1 {
 		t.Fatalf("run cost = %+v %v", run.Cost, err)
+	}
+}
+
+func TestRunCostLedgerMatchesTotalsUnderConcurrentWrites(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := fmt.Sprintf("test-cost-ledger-%d/api", time.Now().UnixNano())
+	var repoID, runID int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, repo).Scan(&repoID); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, repoID)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, repoID)
+	})
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status) VALUES ($1, 1, '', '', 'webhook', 'running') RETURNING id`, repoID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make(chan error, 40)
+	for index := range 40 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if index%4 == 0 {
+				errs <- store.SetRunCost(ctx, runID, overload.Spend{USD: float64(index), Unpriced: int64(index)})
+			} else {
+				errs <- store.AddRunCost(ctx, runID, overload.Spend{USD: 0.5, Unpriced: 1})
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var total, recorded float64
+	var unpriced, recordedUnpriced int64
+	if err := store.Pool.QueryRow(ctx, `SELECT r.cost_usd, r.cost_unpriced_calls, COALESCE(sum(c.usd), 0), COALESCE(sum(c.unpriced_calls), 0) FROM runs r LEFT JOIN run_costs c ON c.run_id = r.id WHERE r.id=$1 GROUP BY r.id`, runID).Scan(&total, &unpriced, &recorded, &recordedUnpriced); err != nil {
+		t.Fatal(err)
+	}
+	if math.Abs(total-recorded) > 1e-9 || unpriced != recordedUnpriced {
+		t.Fatalf("run total $%v (%d unpriced) but ledger $%v (%d unpriced)", total, unpriced, recorded, recordedUnpriced)
 	}
 }
 

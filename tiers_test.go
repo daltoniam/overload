@@ -133,3 +133,25 @@ func TestDiffChangesDecodesQuotedPaths(t *testing.T) {
 		t.Fatalf("unreadable path: %+v", decision)
 	}
 }
+
+func TestDiffChangesReadsCopiesAndDistrustsAmbiguousHeaders(t *testing.T) {
+	copied := "diff --git a/src b/old.go b/sensitive/new.go\nsimilarity index 100%\ncopy from src b/old.go\ncopy to sensitive/new.go\n"
+	changes := DiffChanges(copied)
+	if len(changes) != 1 || changes[0] != (FileChange{Path: "sensitive/new.go", OldPath: "src b/old.go"}) {
+		t.Fatalf("copy = %+v", changes)
+	}
+	workflow := tieredWorkflow()
+	workflow.Tiers.SensitivePaths = append(workflow.Tiers.SensitivePaths, "sensitive/**")
+	if decision := workflow.ChooseTier(changes); decision.Tier != TierFull {
+		t.Fatalf("copy into a sensitive path: %+v", decision)
+	}
+	// A header that splits more than one way, with no line naming the
+	// file, is reviewed in full rather than guessed.
+	unnamed := DiffChanges("diff --git a/src b/old.go b/sensitive/new.go\nold mode 100644\nnew mode 100755\n")
+	if len(unnamed) != 1 || unnamed[0].Path != "" {
+		t.Fatalf("ambiguous header = %+v", unnamed)
+	}
+	if decision := workflow.ChooseTier(unnamed); decision.Tier != TierFull {
+		t.Fatalf("ambiguous header: %+v", decision)
+	}
+}

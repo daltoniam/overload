@@ -76,7 +76,13 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		return fmt.Errorf("check existing review: %w", err)
 	}
 	if existing > 0 {
-		return w.Store.FinishPost(ctx, target, "posted", existing)
+		// The review was posted but the job stopped before recording it,
+		// so the threads of fixed findings were never resolved either.
+		if err := w.Store.FinishPost(ctx, target, "posted", existing); err != nil {
+			return err
+		}
+		w.resolveThreads(ctx, poster, target)
+		return nil
 	}
 	severities := append([]string(nil), target.DuplicateSeverities...)
 	for _, finding := range target.Findings {

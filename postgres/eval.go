@@ -19,11 +19,43 @@ const EvalTrigger = "eval"
 // named workflow, as part of an evaluation batch.
 type EvalRequest struct {
 	Repository string
-	PR         int
-	HeadSHA    string
-	BaseSHA    string
-	Workflow   string
-	Batch      string
+	// RepositoryID, when set, names the repository exactly; otherwise the
+	// name must match exactly one repository overload knows.
+	RepositoryID int64
+	PR           int
+	HeadSHA      string
+	BaseSHA      string
+	Workflow     string
+	Batch        string
+}
+
+// evalRepository finds the evaluated repository and its App installation.
+// A name that matches more than one repository (the same owner/name on
+// different hosts) is refused rather than guessed.
+func evalRepository(ctx context.Context, tx pgx.Tx, request EvalRequest) (int64, *int64, error) {
+	rows, err := tx.Query(ctx, `SELECT id, installation_id FROM repositories WHERE full_name=$1 AND ($2::bigint = 0 OR id = $2) ORDER BY id LIMIT 2`, request.Repository, request.RepositoryID)
+	if err != nil {
+		return 0, nil, err
+	}
+	type match struct {
+		id           int64
+		installation *int64
+	}
+	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (match, error) {
+		var found match
+		err := row.Scan(&found.id, &found.installation)
+		return found, err
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	switch len(matches) {
+	case 0:
+		return 0, nil, fmt.Errorf("%s is not a repository overload knows; add it first", request.Repository)
+	case 1:
+		return matches[0].id, matches[0].installation, nil
+	}
+	return 0, nil, fmt.Errorf("%s matches more than one repository overload knows; name it by repository ID", request.Repository)
 }
 
 // QueueEvalRun pins the workflow and queues a dry-run review the same way
@@ -38,12 +70,7 @@ func (s *Store) QueueEvalRun(ctx context.Context, client *river.Client[pgx.Tx], 
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	var repoID int64
-	var installation *int64
-	err = tx.QueryRow(ctx, `SELECT id, installation_id FROM repositories WHERE full_name=$1`, request.Repository).Scan(&repoID, &installation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, fmt.Errorf("%s is not a repository overload knows; add it first", request.Repository)
-	}
+	repoID, installation, err := evalRepository(ctx, tx, request)
 	if err != nil {
 		return 0, err
 	}

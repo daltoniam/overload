@@ -28,11 +28,15 @@ const (
 func planSummary(section reviewSection) (string, string) {
 	added, removed := 0, 0
 	var hunks, changed []string
+	inHunk := false
 	for _, line := range strings.Split(section.patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "+++ ") || strings.HasPrefix(line, "--- "):
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
 		case strings.HasPrefix(line, "@@"):
+			inHunk = true
 			hunks = append(hunks, truncateLine(line))
+		case !inHunk:
 		case strings.HasPrefix(line, "+"):
 			added++
 			if len(changed) < plannerChangedLines {

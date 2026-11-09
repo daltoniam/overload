@@ -66,12 +66,19 @@ func oneLine(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-// lineCounts counts a patch's added and removed lines.
+// lineCounts counts a patch's added and removed lines. Only lines inside
+// hunks count, so "--- a/x" and "+++ b/x" headers are left out while a
+// changed line such as "+++counter" is counted.
 func lineCounts(patch string) (int, int) {
 	added, removed := 0, 0
+	inHunk := false
 	for _, line := range strings.Split(patch, "\n") {
 		switch {
-		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+		case strings.HasPrefix(line, "diff --git "):
+			inHunk = false
+		case strings.HasPrefix(line, "@@"):
+			inHunk = true
+		case !inHunk:
 		case strings.HasPrefix(line, "+"):
 			added++
 		case strings.HasPrefix(line, "-"):
