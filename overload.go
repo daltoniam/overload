@@ -265,8 +265,10 @@ func validateAnthropic(settings ReviewSettings) error {
 	if settings.API != "" {
 		return errors.New("the API setting applies to OpenAI-compatible connections only")
 	}
-	if parsed, err := url.Parse(settings.BaseURL); err == nil && strings.HasSuffix(strings.TrimRight(parsed.Path, "/"), "/v1") {
-		return errors.New("an Anthropic endpoint URL does not end in /v1 (the Messages API adds it): use https://api.anthropic.com or the gateway's Anthropic base URL")
+	if parsed, err := url.Parse(settings.BaseURL); err == nil {
+		if path := strings.TrimRight(parsed.Path, "/"); strings.HasSuffix(path, "/v1") || strings.HasSuffix(path, "/v1/messages") {
+			return errors.New("an Anthropic endpoint URL does not end in /v1 or /v1/messages (the Messages API adds them): use https://api.anthropic.com or the gateway's Anthropic base URL")
+		}
 	}
 	switch settings.ReasoningParam {
 	case ReasoningAuto, ReasoningNone:

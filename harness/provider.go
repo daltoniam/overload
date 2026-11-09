@@ -19,7 +19,7 @@ import (
 // can take longer than the OpenAI SDK's 10-minute default for local models
 // and for hosted reasoning models on large files. Each call is still bounded
 // by its plan's timeout (local 90 minutes, hosted 15). Anthropic calls stream
-// (see reasoningPlan.generate), so the same limits apply to them.
+// (see run in stream.go), so the same limits apply to them.
 var modelHTTPClient = func() *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 0
@@ -35,7 +35,7 @@ const anthropicPlaceholderKey = "overload-placeholder"
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
 	if model.Provider == overload.ProviderAnthropic {
 		client := &http.Client{
-			Transport: anthropicAuth{base: modelHTTPClient.Transport, key: os.Getenv(model.APIKeyEnv), ambient: ambientAnthropicHeaders(model.Headers)},
+			Transport: newAnthropicAuth(modelHTTPClient.Transport, os.Getenv(model.APIKeyEnv), model.Headers),
 			// The key travels in X-Api-Key, which Go keeps on redirects to
 			// other hosts, so never follow one.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -91,43 +91,55 @@ func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	return response.Response.Content.Text(), nil
 }
 
-// anthropicAuth sets the Messages API key on every request and removes any
-// other credentials, so the placeholder key and anything the SDK adds from
-// overload's own environment (credentials, or ANTHROPIC_CUSTOM_HEADERS) never
-// reach the URL a model connection names.
+// anthropicAuth rebuilds each request's headers from an allowlist and adds
+// the connection's own key. The Anthropic SDK reads overload's environment
+// and profile files whatever key it is given, and would otherwise send
+// their credentials, workspace ID or custom headers to the URL a model
+// connection names.
 type anthropicAuth struct {
 	base    http.RoundTripper
 	key     string
+	own     map[string]bool
 	ambient []string
+}
+
+// anthropicHeaders are the request headers the Messages API needs.
+var anthropicHeaders = map[string]bool{"Accept": true, "Anthropic-Version": true, "Content-Type": true, "Idempotency-Key": true, "User-Agent": true}
+
+// anthropicDefaults are the SDK's own values for allowed headers that
+// ANTHROPIC_CUSTOM_HEADERS can override.
+var anthropicDefaults = map[string]string{"Accept": "application/json", "Anthropic-Version": "2023-06-01", "Content-Type": "application/json"}
+
+func newAnthropicAuth(base http.RoundTripper, key string, own map[string]string) anthropicAuth {
+	auth := anthropicAuth{base: base, key: key, own: map[string]bool{}}
+	for name := range own {
+		auth.own[http.CanonicalHeaderKey(name)] = true
+	}
+	for line := range strings.SplitSeq(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), "\n") {
+		name, _, found := strings.Cut(line, ":")
+		if name = http.CanonicalHeaderKey(strings.TrimSpace(name)); found && name != "" && !auth.own[name] {
+			auth.ambient = append(auth.ambient, name)
+		}
+	}
+	return auth
 }
 
 func (auth anthropicAuth) RoundTrip(request *http.Request) (*http.Response, error) {
 	request = request.Clone(request.Context())
-	request.Header.Del("Authorization")
-	request.Header.Del("X-Api-Key")
+	for name := range request.Header {
+		if !anthropicHeaders[name] && !auth.own[name] && !strings.HasPrefix(name, "X-Stainless-") {
+			delete(request.Header, name)
+		}
+	}
 	for _, name := range auth.ambient {
-		request.Header.Del(name)
+		if value, ok := anthropicDefaults[name]; ok {
+			request.Header.Set(name, value)
+		} else {
+			request.Header.Del(name)
+		}
 	}
 	if auth.key != "" {
 		request.Header.Set("X-Api-Key", auth.key)
 	}
 	return auth.base.RoundTrip(request)
-}
-
-// ambientAnthropicHeaders lists the headers the Anthropic SDK adds from
-// ANTHROPIC_CUSTOM_HEADERS that the connection did not set itself.
-func ambientAnthropicHeaders(own map[string]string) []string {
-	set := map[string]bool{}
-	for name := range own {
-		set[http.CanonicalHeaderKey(name)] = true
-	}
-	var names []string
-	for line := range strings.SplitSeq(os.Getenv("ANTHROPIC_CUSTOM_HEADERS"), "\n") {
-		name, _, found := strings.Cut(line, ":")
-		name = strings.TrimSpace(name)
-		if found && name != "" && !set[http.CanonicalHeaderKey(name)] {
-			names = append(names, name)
-		}
-	}
-	return names
 }

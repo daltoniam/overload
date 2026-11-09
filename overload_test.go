@@ -146,6 +146,7 @@ func TestReviewSettingsAnthropic(t *testing.T) {
 		"gateway path":     {func(s *ReviewSettings) { s.BaseURL = "https://gateway.example/anthropic" }, true},
 		"OpenAI /v1 URL":   {func(s *ReviewSettings) { s.BaseURL = "https://api.anthropic.com/v1" }, false},
 		"OpenAI /v1/ URL":  {func(s *ReviewSettings) { s.BaseURL = "https://gateway.example/v1/" }, false},
+		"messages URL":     {func(s *ReviewSettings) { s.BaseURL = "https://api.anthropic.com/v1/messages" }, false},
 	} {
 		settings := base
 		test.change(&settings)

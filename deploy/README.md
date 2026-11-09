@@ -95,7 +95,7 @@ overload settings set --name opus --provider anthropic --connection-kind hosted 
   --reasoning-param reasoning_effort --reasoning-effort high
 ```
 
-The URL has no `/v1` (a URL ending in `/v1` is refused); a gateway's
+The URL has no `/v1` (a URL ending in `/v1` or `/v1/messages` is refused); a gateway's
 Anthropic endpoint works too. The effort (low, medium, high, xhigh or max)
 is sent as `output_config.effort` with adaptive thinking; `--reasoning-param
 none` leaves both to the model's defaults. `--catalog claude-opus-5.5` fills
@@ -105,9 +105,11 @@ Requests stream, so long thinking is bounded only by the call timeout
 (hosted 15 minutes) and output limits above about 21,000 tokens work.
 
 The key is sent as `x-api-key`, and redirects are never followed, so the
-key cannot be forwarded to another host. Overload never sends Anthropic
-credentials, profiles or `ANTHROPIC_CUSTOM_HEADERS` from its own
-environment; a connection without `--api-key-env` sends no key. In sandbox
+key cannot be forwarded to another host. Requests carry only the headers
+the Messages API needs plus the connection's own, so Anthropic
+credentials, profile settings (such as a workspace ID) and
+`ANTHROPIC_CUSTOM_HEADERS` from overload's own environment are never sent;
+a connection without `--api-key-env` sends no key. In sandbox
 mode the model proxy adds the key, as for OpenAI-compatible models, and
 forwards only the `anthropic-version` header, so a sandbox cannot turn on
 beta features with the control plane's key.

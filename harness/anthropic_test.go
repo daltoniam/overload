@@ -3,10 +3,12 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -42,8 +44,8 @@ data: {"type":"message_stop"}
 
 // anthropicRequest is what a fake Messages API saw.
 type anthropicRequest struct {
-	path, key, authorization, version, beta, ambient, metadata string
-	body                                                       map[string]any
+	path, key, authorization, version, beta, ambient, metadata, workspace string
+	body                                                                  map[string]any
 }
 
 // fakeAnthropic answers every request with anthropicStream and records the
@@ -54,7 +56,7 @@ func fakeAnthropic(t *testing.T) (*httptest.Server, func() anthropicRequest) {
 	var last anthropicRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
-		seen := anthropicRequest{path: r.URL.Path, key: r.Header.Get("X-Api-Key"), authorization: r.Header.Get("Authorization"), version: r.Header.Get("Anthropic-Version"), beta: r.Header.Get("Anthropic-Beta"), ambient: r.Header.Get("X-Ambient"), metadata: r.Header.Get("Cf-Aig-Metadata")}
+		seen := anthropicRequest{path: r.URL.Path, key: r.Header.Get("X-Api-Key"), authorization: r.Header.Get("Authorization"), version: r.Header.Get("Anthropic-Version"), beta: r.Header.Get("Anthropic-Beta"), ambient: r.Header.Get("X-Ambient"), metadata: r.Header.Get("Cf-Aig-Metadata"), workspace: r.Header.Get("Anthropic-Workspace-Id")}
 		_ = json.Unmarshal(raw, &seen.body)
 		mu.Lock()
 		last = seen
@@ -139,13 +141,115 @@ func TestAnthropicProviderIgnoresAmbientCredentials(t *testing.T) {
 	}
 
 	clearAnthropicEnvironment(t)
-	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Ambient: secret\ncf-aig-metadata: ambient")
+	t.Setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Ambient: secret\ncf-aig-metadata: ambient\nAnthropic-Version: broken")
 	model.Headers = map[string]string{"cf-aig-metadata": "connection"}
 	if _, err := Complete(context.Background(), model, "You review code.", "Review this."); err != nil {
 		t.Fatal(err)
 	}
-	if seen := last(); seen.ambient != "" || seen.metadata != "connection" {
+	if seen := last(); seen.ambient != "" || seen.metadata != "connection" || seen.version == "broken" {
 		t.Fatalf("ANTHROPIC_CUSTOM_HEADERS were sent: %+v", seen)
+	}
+
+	// A profile's non-credential settings apply whatever key is given.
+	clearAnthropicEnvironment(t)
+	config := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(config, "configs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "configs", "default.json"), []byte(`{"workspace_id":"wrkspc_secret","base_url":"https://elsewhere.invalid"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ANTHROPIC_CONFIG_DIR", config)
+	model.Headers = nil
+	if _, err := Complete(context.Background(), model, "You review code.", "Review this."); err != nil {
+		t.Fatal(err)
+	}
+	if seen := last(); seen.workspace != "" || seen.key != "" || seen.authorization != "" {
+		t.Fatalf("the host's Anthropic profile was sent: %+v", seen)
+	}
+}
+
+// TestAnthropicAgentUsesToolsWhileStreaming runs a tool-using agent over two
+// streamed turns: thinking and a tool call, then the answer.
+func TestAnthropicAgentUsesToolsWhileStreaming(t *testing.T) {
+	clearAnthropicEnvironment(t)
+	t.Setenv("OVERLOAD_TOOL_TEST", "sb_test")
+	fixture := newMCPFixture(t, "unused")
+	var mu sync.Mutex
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(raw, &body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		turn := len(bodies)
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turn > 1 {
+			_, _ = io.WriteString(w, anthropicStream)
+			return
+		}
+		_, _ = io.WriteString(w, `event: message_start
+data: {"type":"message_start","message":{"id":"msg_0","type":"message","role":"assistant","model":"claude-opus-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":10,"output_tokens":1}}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Search first."}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-1"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"sb_search","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"issues\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":20}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`)
+	}))
+	defer server.Close()
+	toolset, err := ConnectTools(context.Background(), []overload.ToolServer{fixture.toolServer()}, "", 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = toolset.Close() }()
+	model := overload.ModelProfile{Name: "claude", Provider: overload.ProviderAnthropic, ConnectionKind: "hosted", BaseURL: server.URL, Model: "claude-opus-5-5", ReasoningParam: overload.ReasoningEffortField, ReasoningEffort: "high"}
+	result, err := RunAgent(context.Background(), model, "Research.", "go", toolset, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Steps != 2 || result.ToolCalls != 1 || result.HitStepLimit || result.Text != "looks fine" {
+		t.Fatalf("result = %+v", result)
+	}
+	fixture.mu.Lock()
+	calls := fmt.Sprint(fixture.calls)
+	fixture.mu.Unlock()
+	if calls != "[search:issues]" {
+		t.Fatalf("tool calls = %s", calls)
+	}
+	second := fmt.Sprint(bodies[1]["messages"])
+	for _, want := range []string{"sig-1", "Search first.", "tool_result", "toolu_1"} {
+		if !strings.Contains(second, want) {
+			t.Fatalf("second turn lacks %q: %s", want, second)
+		}
+	}
+	if bodies[1]["stream"] != true {
+		t.Fatalf("second turn did not stream: %v", bodies[1])
 	}
 }
 
