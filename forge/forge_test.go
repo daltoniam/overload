@@ -623,3 +623,42 @@ func TestForgejoReturnsTheLatestState(t *testing.T) {
 		t.Fatalf("state = %q %v", pr.State, err)
 	}
 }
+
+func TestGitLabDiffQuotesUnusualFilenames(t *testing.T) {
+	names := []string{"plain.go", "with space.go", "tab\there.go", "new\nline.go", `quote".go`, `back\slash.go`, "café.md"}
+	var patch strings.Builder
+	for _, name := range names {
+		patch.WriteString(unifiedDiff(gitlabDiff{OldPath: name, NewPath: name, Diff: "@@ -1 +1 @@\n-a\n+" + name + "\n"}))
+	}
+	patch.WriteString(unifiedDiff(gitlabDiff{OldPath: "old\nname.go", NewPath: "new\tname.go", RenamedFile: true, Diff: "@@ -1 +1 @@\n-a\n+renamed\n"}))
+	text := patch.String()
+	for _, want := range []string{
+		"diff --git \"a/tab\\there.go\" \"b/tab\\there.go\"\n",
+		"+++ \"b/new\\nline.go\"\n",
+		"+++ \"b/quote\\\".go\"\n",
+		"+++ \"b/back\\\\slash.go\"\n",
+		"+++ \"b/caf\\303\\251.md\"\n",
+		"+++ b/with space.go\t\n",
+		"rename from \"old\\nname.go\"\nrename to \"new\\tname.go\"\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diff lacks %q:\n%s", want, text)
+		}
+	}
+	if headers := strings.Count(text, "\ndiff --git ") + 1; headers != len(names)+1 {
+		t.Fatalf("%d diff headers for %d files:\n%s", headers, len(names)+1, text)
+	}
+	files, err := diff.Parse(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := append(append([]string{}, names...), "new\tname.go")
+	if len(files) != len(want) {
+		t.Fatalf("parsed %d files, want %d", len(files), len(want))
+	}
+	for index, file := range files {
+		if file.Path != want[index] {
+			t.Fatalf("file %d = %q, want %q", index, file.Path, want[index])
+		}
+	}
+}

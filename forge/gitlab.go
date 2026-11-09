@@ -165,8 +165,8 @@ func (gitlab *GitLab) diff(ctx context.Context, path string) (string, error) {
 
 func unifiedDiff(file gitlabDiff) string {
 	var out strings.Builder
-	fmt.Fprintf(&out, "diff --git a/%s b/%s\n", file.OldPath, file.NewPath)
-	from, to := "a/"+file.OldPath, "b/"+file.NewPath
+	fmt.Fprintf(&out, "diff --git %s %s\n", quoteGitPath("a/"+file.OldPath), quoteGitPath("b/"+file.NewPath))
+	from, to := fileHeaderPath("a/"+file.OldPath), fileHeaderPath("b/"+file.NewPath)
 	switch {
 	case file.NewFile:
 		fmt.Fprintf(&out, "new file mode %s\n", file.BMode)
@@ -175,7 +175,7 @@ func unifiedDiff(file gitlabDiff) string {
 		fmt.Fprintf(&out, "deleted file mode %s\n", file.AMode)
 		to = "/dev/null"
 	case file.RenamedFile:
-		fmt.Fprintf(&out, "rename from %s\nrename to %s\n", file.OldPath, file.NewPath)
+		fmt.Fprintf(&out, "rename from %s\nrename to %s\n", quoteGitPath(file.OldPath), quoteGitPath(file.NewPath))
 	}
 	if file.Diff == "" {
 		return out.String()
@@ -185,6 +185,65 @@ func unifiedDiff(file gitlabDiff) string {
 		out.WriteString("\n")
 	}
 	return out.String()
+}
+
+// quoteGitPath quotes a path the way git does in diff headers: paths with
+// quotes, backslashes, control characters or non-ASCII bytes are written
+// as a C-style string, so no filename can break a header line.
+func quoteGitPath(name string) string {
+	needs := false
+	for index := 0; index < len(name); index++ {
+		if char := name[index]; char < 0x20 || char >= 0x7f || char == '"' || char == '\\' {
+			needs = true
+			break
+		}
+	}
+	if !needs {
+		return name
+	}
+	var out strings.Builder
+	out.WriteByte('"')
+	for index := 0; index < len(name); index++ {
+		char := name[index]
+		switch char {
+		case '\a':
+			out.WriteString(`\a`)
+		case '\b':
+			out.WriteString(`\b`)
+		case '\t':
+			out.WriteString(`\t`)
+		case '\n':
+			out.WriteString(`\n`)
+		case '\v':
+			out.WriteString(`\v`)
+		case '\f':
+			out.WriteString(`\f`)
+		case '\r':
+			out.WriteString(`\r`)
+		case '"':
+			out.WriteString(`\"`)
+		case '\\':
+			out.WriteString(`\\`)
+		default:
+			if char < 0x20 || char >= 0x7f {
+				fmt.Fprintf(&out, `\%03o`, char)
+			} else {
+				out.WriteByte(char)
+			}
+		}
+	}
+	out.WriteByte('"')
+	return out.String()
+}
+
+// fileHeaderPath is a path for a "---" or "+++" line. Like git, it ends an
+// unquoted path containing a space with a tab.
+func fileHeaderPath(name string) string {
+	quoted := quoteGitPath(name)
+	if quoted == name && strings.Contains(name, " ") {
+		return name + "\t"
+	}
+	return quoted
 }
 
 func (gitlab *GitLab) DownloadHead(ctx context.Context, repository, sha string, writer io.Writer) error {
