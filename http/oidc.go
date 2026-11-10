@@ -99,6 +99,9 @@ func oidcFromEnv() (*oidcSettings, error) {
 	if err != nil || (parsed.Scheme != "https" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "localhost") || parsed.Host == "" {
 		return nil, errors.New("OIDC sign-in needs OVERLOAD_BASE_URL set to the https address people use (http only for localhost)")
 	}
+	// The redirect URIs built from it must match what the provider has
+	// registered, which is normally lower case.
+	settings.baseURL = strings.TrimRight((&url.URL{Scheme: parsed.Scheme, Host: strings.ToLower(parsed.Host), Path: parsed.Path}).String(), "/")
 	if claim := strings.TrimSpace(os.Getenv("OVERLOAD_OIDC_GROUPS_CLAIM")); claim != "" {
 		settings.groupsClaim = claim
 	}

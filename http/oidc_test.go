@@ -723,7 +723,7 @@ func TestOIDCSettings(t *testing.T) {
 		t.Fatal("accepted a plain-http public base URL")
 	}
 	t.Setenv("OVERLOAD_BASE_URL", "HTTPS://overload.example.com")
-	if upper, err := oidcFromEnv(); err != nil || !(&oidcAuth{settings: upper}).secureCookies() {
+	if upper, err := oidcFromEnv(); err != nil || !(&oidcAuth{settings: upper}).secureCookies() || upper.baseURL != "https://overload.example.com" {
 		t.Fatalf("an upper-case https base URL did not get secure cookies: %v", err)
 	}
 	t.Setenv("OVERLOAD_BASE_URL", "https://overload.example.com")
