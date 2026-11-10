@@ -89,7 +89,7 @@ func gitRepo(t *testing.T) (string, func(...string) string, func(string, string)
 		{"diff.renames", "copies"},
 		{"diff.context", "9"},
 		{"diff.interHunkContext", "20"},
-		{"diff.algorithm", "patience"},
+		{"diff.algorithm", "histogram"},
 		{"diff.indentHeuristic", "false"},
 		{"diff.external", "echo external"},
 		{"diff.shout.textconv", "tr a-z A-Z"},
@@ -230,6 +230,90 @@ func TestCaseFromCommitWithPathspecMagicInAName(t *testing.T) {
 		t.Fatalf("case = %+v, %v", item, err)
 	}
 }
+
+// TestCaseFromCommitIgnoresTheDiffAlgorithmSetting builds a case from a
+// fix whose hunks differ between git's default algorithm and histogram,
+// which the test repository is set to use.
+func TestCaseFromCommitIgnoresTheDiffAlgorithmSetting(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir, git, write := gitRepo(t)
+	write("p.c", frobnitzFirst)
+	git("add", "p.c")
+	git("commit", "-q", "-m", "first")
+	write("p.c", fibFirst)
+	git("commit", "-q", "-am", "fix")
+	item, err := CaseFromCommit(context.Background(), dir, git("rev-parse", "HEAD"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lines [][2]int
+	for _, expected := range item.Expected {
+		lines = append(lines, [2]int{expected.StartLine, expected.EndLine})
+	}
+	// The ranges git's default (myers) algorithm gives; histogram gives
+	// 2-3, 9, 14-22 and 25.
+	want := [][2]int{{3, 4}, {6, 7}, {9, 10}, {11, 12}, {14, 14}, {16, 16}, {18, 18}, {20, 20}, {25, 25}}
+	if !slices.Equal(lines, want) {
+		t.Fatalf("expected lines = %v, want %v", lines, want)
+	}
+}
+
+const frobnitzFirst = `#include <stdio.h>
+
+// Frobs foo heartily
+int frobnitz(int foo)
+{
+    int i;
+    for(i = 0; i < 10; i++)
+    {
+        printf("Your answer is: ");
+        printf("%d\n", foo);
+    }
+}
+
+int fact(int n)
+{
+    if(n > 1)
+    {
+        return fact(n-1) * n;
+    }
+    return 1;
+}
+
+int main(int argc, char **argv)
+{
+    frobnitz(fact(10));
+}
+`
+
+const fibFirst = `#include <stdio.h>
+
+int fib(int n)
+{
+    if(n > 2)
+    {
+        return fib(n-1) + fib(n-2);
+    }
+    return 1;
+}
+
+// Frobs foo heartily
+int frobnitz(int foo)
+{
+    int i;
+    for(i = 0; i < 10; i++)
+    {
+        printf("%d\n", foo);
+    }
+}
+
+int main(int argc, char **argv)
+{
+    frobnitz(fib(10));
+}
+`
 
 func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
