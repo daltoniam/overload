@@ -58,6 +58,7 @@ func parseUI(r *http.Request) pages.UIState {
 var (
 	disableUserPath = regexp.MustCompile(`^/users/[0-9]+/disable$`)
 	forgetNodePath  = regexp.MustCompile(`^/nodes/([^/]+)/delete$`)
+	releaseNodePath = regexp.MustCompile(`^/nodes/([^/]+)/release$`)
 )
 
 var deleteWorkloadRulePath = regexp.MustCompile(`^/configure/workloads/([^/]+)/delete$`)
@@ -70,6 +71,9 @@ func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
 	}
 	if match := forgetNodePath.FindStringSubmatch(path); match != nil {
 		return pages.ForgetNodePrompt(match[1]), true
+	}
+	if match := releaseNodePath.FindStringSubmatch(path); match != nil {
+		return pages.ReleaseNodePrompt(match[1]), true
 	}
 	switch {
 	case strings.HasSuffix(path, "/delete"):

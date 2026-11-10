@@ -69,6 +69,65 @@ func TestNodesAndPlacements(t *testing.T) {
 	}
 }
 
+func TestNodeKeyRotation(t *testing.T) {
+	store := pgtest.Isolated(t)
+	ctx := context.Background()
+	createKey := func(name string) overload.APIKey {
+		key, _, err := store.CreateAPIKey(ctx, 0, name, []string{overload.ScopeNodes}, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	old, replacement, third := createKey("old"), createKey("new"), createKey("third")
+	for _, name := range []string{"studio-1", "studio-2"} {
+		if err := store.ReportNode(ctx, old.ID, overload.NodeReport{Name: name, OS: "darwin"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	placement := overload.Placement{Name: "beam", Model: "mlx-community/Beam-4bit", Nodes: []string{"studio-1", "studio-2"}, Rank0IP: "10.0.0.1", RDMA: [][]string{{"", "rdma_en5"}, {"rdma_en5", ""}}}
+	if err := store.SavePlacement(ctx, placement); err != nil {
+		t.Fatal(err)
+	}
+	if nodes, err := store.ListNodes(ctx); err != nil || nodes[0].KeyPrefix != old.Prefix {
+		t.Fatalf("nodes = %+v, %v", nodes, err)
+	}
+	if err := store.ReportNode(ctx, replacement.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); !errors.Is(err, overload.ErrNodeClaimed) {
+		t.Fatalf("a new key took a node from a valid key: %v", err)
+	}
+	if err := store.RevokeAPIKey(ctx, old.ID, 0, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, replacement.ID, overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "26.3"}); err != nil {
+		t.Fatalf("the new key cannot take over from a revoked key: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE api_keys SET expires_at = now() - interval '1 minute' WHERE id = $1`, replacement.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, third.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); err != nil {
+		t.Fatalf("a key cannot take over from an expired key: %v", err)
+	}
+	fourth := createKey("fourth")
+	if err := store.ReportNode(ctx, fourth.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); !errors.Is(err, overload.ErrNodeClaimed) {
+		t.Fatalf("took a node from a valid key: %v", err)
+	}
+	if err := store.ReleaseNode(ctx, "studio-1"); err != nil {
+		t.Fatal(err)
+	}
+	if nodes, err := store.ListNodes(ctx); err != nil || nodes[0].KeyPrefix != "" {
+		t.Fatalf("released node still held: %+v, %v", nodes, err)
+	}
+	if err := store.ReportNode(ctx, fourth.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); err != nil {
+		t.Fatalf("a released node was not taken over: %v", err)
+	}
+	if placements, err := store.ListPlacements(ctx); err != nil || len(placements) != 1 {
+		t.Fatalf("rotation lost the placement: %+v, %v", placements, err)
+	}
+	if err := store.ReleaseNode(ctx, "missing"); err == nil {
+		t.Fatal("released a missing node")
+	}
+}
+
 func TestNodeLimits(t *testing.T) {
 	store := pgtest.Isolated(t)
 	ctx := context.Background()

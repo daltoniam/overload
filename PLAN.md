@@ -1511,7 +1511,8 @@ plan and deploy/README.md.
     hardware, runtime versions, models and health; version drift is flagged;
     model placements across nodes are recorded and an MLX launch
     configuration is generated. Each node name belongs to the API key that
-    first reports it (administrator or CLI keys only), and placements are
+    first reports it (administrator or CLI keys only) until that key is
+    revoked or expires or an administrator releases it, and placements are
     full JACCL meshes of two to four nodes; larger rings are not modelled.
     Running models across a real Thunderbolt 5 cluster still waits for the
     hardware spike in 16.3.

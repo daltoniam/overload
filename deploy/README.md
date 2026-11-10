@@ -557,9 +557,15 @@ overload node install --server https://overload.example.com   # reports every mi
 
 - Only keys created with `overload keys create` or by an administrator can
   report nodes; members cannot create them. The first key to report a name
-  claims it, and reports for that name from any other key are refused;
-  Forget on the Nodes page releases the name. One key may claim at most 100
-  names and the inventory holds at most 500.
+  claims it, and reports for that name from any other valid key are
+  refused. One key may claim at most 100 names and the inventory holds at
+  most 500.
+- To rotate the key, create a new one, put it in each Mac's configuration
+  file and restart the reporter (`overload node install` again), then
+  revoke the old key: names held by a revoked or expired key go to the next
+  key that reports them. To move a node before the old key is revoked, an
+  administrator uses Release on the Nodes page, which frees the name but
+  keeps the node and its placements.
 - `--server` must use https unless overload runs on the same machine, since
   every report carries the key.
 - `overload node report --server URL` reports once; add `--every 1m` (at
@@ -601,8 +607,10 @@ overload cluster config beam   # hostfile.json, the mlx.launch command and the e
 - `--host` and `--port` are where the first node serves the
   OpenAI-compatible API (by default `--rank0-ip` and 8080, since
   `mlx_lm.server` otherwise listens only on 127.0.0.1); save that address
-  as a model in overload. The server has no authentication, so keep the
-  port reachable only from overload.
+  as a model in overload. `--rank0-ip` is often a Thunderbolt bridge
+  address only the cluster can reach, so pass the first node's LAN address
+  as `--host`. The server has no authentication, so keep the port reachable
+  only from overload.
 - `--mode tensor` decodes faster; `--mode pipeline` fits bigger models.
 - MLX can find the RDMA devices and write a hostfile itself with
   `mlx.distributed_config --hosts studio-1,studio-2 --over thunderbolt

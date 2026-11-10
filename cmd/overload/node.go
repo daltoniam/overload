@@ -25,7 +25,7 @@ import (
 	"github.com/daltoniam/overload/localmodels"
 )
 
-const nodeUsage = "usage: overload node report --server URL [--every 1m] [--name NAME] [--python PATH] | install --server URL [--name NAME] [--python PATH] | uninstall"
+const nodeUsage = "usage: overload node report --server URL [--every 1m] [--name NAME] [--python PATH] | install --server URL [--every 1m] [--name NAME] [--python PATH] | uninstall"
 
 // minReportInterval keeps a misconfigured node from hammering overload.
 const minReportInterval = 10 * time.Second
@@ -36,7 +36,7 @@ func manageNode(args []string) error {
 	}
 	flags := flag.NewFlagSet("node "+args[0], flag.ContinueOnError)
 	server := flags.String("server", "", "overload address, such as https://overload.example.com")
-	every := flags.Duration("every", 0, "keep reporting at this interval, at least 10s (default: report once)")
+	every := flags.Duration("every", 0, "keep reporting at this interval, at least 10s (default: report once; install defaults to 1m)")
 	name := flags.String("name", "", "node name (default: the host name)")
 	python := flags.String("python", os.Getenv("OVERLOAD_PYTHON"), "Python with MLX installed, such as a virtual environment's bin/python (default: OVERLOAD_PYTHON, else python3 on PATH)")
 	if err := flags.Parse(args[1:]); err != nil {
@@ -52,6 +52,8 @@ func manageNode(args []string) error {
 		if err := (overload.NodeReport{Name: *name}).Validate(); err != nil {
 			return errors.New("--name must be letters, digits, dots, dashes or underscores, at most 64")
 		}
+	} else if fallback := defaultNodeName(); args[0] != "uninstall" && (overload.NodeReport{Name: fallback}).Validate() != nil {
+		return fmt.Errorf("this machine's host name %q is not a valid node name (letters, digits, dots, dashes or underscores, at most 64); pass --name", fallback)
 	}
 	if *python != "" && !filepath.IsAbs(*python) {
 		return errors.New("--python must be an absolute path")
@@ -99,7 +101,11 @@ func manageNode(args []string) error {
 		if err := os.MkdirAll(logs, 0o700); err != nil {
 			return err
 		}
-		agent := nodeAgent(label, executable, *server, *name, *python, logs)
+		interval := *every
+		if interval == 0 {
+			interval = time.Minute
+		}
+		agent := nodeAgent(label, executable, *server, *name, *python, logs, interval)
 		launchd.Stop(agent.Label)
 		if err := launchd.Write(agent); err != nil {
 			return err
@@ -107,7 +113,7 @@ func manageNode(args []string) error {
 		if err := launchd.Start(agent.Label); err != nil {
 			return err
 		}
-		fmt.Printf("Reporting to %s every minute (launchd agent %s)\n", *server, agent.Label)
+		fmt.Printf("Reporting to %s every %s (launchd agent %s)\n", *server, interval, agent.Label)
 		return nil
 	case "uninstall":
 		return launchd.Remove(label + ".node")
@@ -116,11 +122,11 @@ func manageNode(args []string) error {
 	}
 }
 
-// nodeAgent is the launchd agent that reports every minute. launchd starts
+// nodeAgent is the launchd agent that reports at every. launchd starts
 // agents with a minimal PATH, so it gets the same PATH as overload's own
 // service to find Homebrew's llama-server and python3.
-func nodeAgent(label, executable, server, name, python, logs string) launchd.Agent {
-	args := []string{executable, "node", "report", "--server", server, "--every", "1m"}
+func nodeAgent(label, executable, server, name, python, logs string, every time.Duration) launchd.Agent {
+	args := []string{executable, "node", "report", "--server", server, "--every", every.String()}
 	if name != "" {
 		args = append(args, "--name", name)
 	}
@@ -224,12 +230,21 @@ func (probe nodeProbe) mlxPython(ctx context.Context, configured string) string 
 	return found
 }
 
+// hostname is os.Hostname, replaced in tests.
+var hostname = os.Hostname
+
+// defaultNodeName is the host name without .local, which is also the name
+// SSH usually reaches the machine by.
+func defaultNodeName() string {
+	name, _ := hostname()
+	return strings.TrimSuffix(name, ".local")
+}
+
 // collectReport gathers what this machine can say about itself; anything
 // unavailable is left empty, and the result fits the server's limits.
 func collectReport(ctx context.Context, probe nodeProbe, name, python string) overload.NodeReport {
 	if name == "" {
-		name, _ = os.Hostname()
-		name = strings.TrimSuffix(name, ".local")
+		name = defaultNodeName()
 	}
 	report := overload.NodeReport{Name: name, OS: probe.goos, OverloadVersion: version}
 	if probe.goos == "darwin" {

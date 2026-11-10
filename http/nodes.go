@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ type NodeStore interface {
 	ReportNode(ctx context.Context, keyID int64, report overload.NodeReport) error
 	ListNodes(context.Context) ([]overload.Node, error)
 	DeleteNode(context.Context, string) error
+	ReleaseNode(context.Context, string) error
 	ListPlacements(context.Context) ([]overload.Placement, error)
 }
 
@@ -53,7 +55,7 @@ func nodesAPI(store NodeStore, keys apiKeyAuthenticator) http.Handler {
 		// Unknown fields are ignored so newer nodes can report to an older
 		// control plane during an upgrade.
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNodeReport))
-		if err := decoder.Decode(&report); err != nil || decoder.More() {
+		if err := decoder.Decode(&report); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "send one JSON report of at most 256 KiB"})
 			return
 		}
@@ -101,6 +103,20 @@ func registerNodes(mux *http.ServeMux, store NodeStore, csrf string) {
 			http.Error(w, "Node not forgotten: "+strings.TrimPrefix(err.Error(), overload.ErrNodeInPlacement.Error()+": ")+".", http.StatusConflict)
 		default:
 			http.Error(w, "Unable to forget the node", http.StatusInternalServerError)
+		}
+	})
+	mux.HandleFunc("POST /nodes/{name}/release", func(w http.ResponseWriter, r *http.Request) {
+		if !validForm(w, r, csrf) {
+			return
+		}
+		err := store.ReleaseNode(r.Context(), r.PathValue("name"))
+		switch {
+		case err == nil:
+			http.Redirect(w, r, "/nodes", http.StatusSeeOther)
+		case errors.Is(err, pgx.ErrNoRows):
+			http.NotFound(w, r)
+		default:
+			http.Error(w, "Unable to release the node", http.StatusInternalServerError)
 		}
 	})
 }

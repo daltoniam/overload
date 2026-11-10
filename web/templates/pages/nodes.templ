@@ -55,7 +55,13 @@ templ Nodes(nodes []overload.Node, drift []overload.VersionDrift, placements []o
 								}
 								<span class="secondary-line mono">{ node.LastSeen.UTC().Format("2006-01-02 15:04") }</span>
 							</td>
-							<td><form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") } data-confirm-title={ "Forget node " + node.Report.Name } data-confirm={ ForgetNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit" aria-label={ "Forget " + node.Report.Name }>Forget</button></form></td>
+							<td>
+								if node.KeyPrefix != "" {
+									<span class="secondary-line mono">Key { node.KeyPrefix }</span>
+									<form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/release") } data-confirm-title={ "Release node " + node.Report.Name } data-confirm={ ReleaseNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit" aria-label={ "Release " + node.Report.Name }>Release</button></form>
+								}
+								<form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") } data-confirm-title={ "Forget node " + node.Report.Name } data-confirm={ ForgetNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit" aria-label={ "Forget " + node.Report.Name }>Forget</button></form>
+							</td>
 						</tr>
 					}
 				</tbody></table></div>
@@ -78,6 +84,14 @@ templ Nodes(nodes []overload.Node, drift []overload.VersionDrift, placements []o
 
 // ForgetNodeImpact is what forgetting a node does.
 const ForgetNodeImpact = "It leaves the inventory and its name is released, so any key with the nodes scope can report under it. It reappears if it reports again; run overload node uninstall on it to stop that."
+
+// ReleaseNodeImpact is what releasing a node does.
+const ReleaseNodeImpact = "Its current key can no longer keep the name: the next key with the nodes scope to report under it takes it over. The node and its placements stay. Use this when moving a node to a new key."
+
+// ReleaseNodePrompt confirms releasing node name.
+func ReleaseNodePrompt(name string) ConfirmPrompt {
+	return ConfirmPrompt{Eyebrow: "Nodes / Release", Title: "Release node " + name + "?", Impact: ReleaseNodeImpact, Button: "Release node", Cancel: "/nodes"}
+}
 
 // ForgetNodePrompt confirms forgetting node name.
 func ForgetNodePrompt(name string) ConfirmPrompt {

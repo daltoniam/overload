@@ -76,6 +76,16 @@ func (store *fakeNodeStore) DeleteNode(_ context.Context, name string) error {
 	}
 	return pgx.ErrNoRows
 }
+func (store *fakeNodeStore) ReleaseNode(_ context.Context, name string) error {
+	for index, node := range store.nodes {
+		if node.Report.Name == name {
+			store.nodes[index].KeyPrefix = ""
+			delete(store.owners, name)
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
+}
 func (store *fakeNodeStore) ListPlacements(context.Context) ([]overload.Placement, error) {
 	return store.placements, nil
 }
@@ -101,6 +111,8 @@ func TestNodesAPI(t *testing.T) {
 		{"member's key", "ovl_member", `{"name":"a"}`, http.StatusForbidden},
 		{"newer node's extra field", "ovl_node", `{"name":"a","os":"darwin","os_version":"26.2","llama_build":12058,"gpu_cores":80}`, http.StatusNoContent},
 		{"trailing data", "ovl_node", `{"name":"a"}{"name":"b"}`, http.StatusBadRequest},
+		{"stray closing bracket", "ovl_node", `{"name":"a"}}`, http.StatusBadRequest},
+		{"trailing whitespace", "ovl_node", "{\"name\":\"a\"}\n", http.StatusNoContent},
 		{"too large", "ovl_node", `{"name":"a","chip":"` + strings.Repeat("x", maxNodeReport) + `"}`, http.StatusBadRequest},
 		{"invalid", "ovl_node", `{"name":"a b"}`, http.StatusUnprocessableEntity},
 		{"same key again", "ovl_node", `{"name":"a","os":"darwin","os_version":"26.2"}`, http.StatusNoContent},
@@ -132,7 +144,7 @@ func TestNodesPage(t *testing.T) {
 	now := time.Now()
 	store := &fakeNodeStore{
 		nodes: []overload.Node{
-			{Report: overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "26.2", LlamaBuild: 12058, MemoryBytes: 64 << 30, Downloads: []string{"qwen3 Q4_K_M"}}, LastSeen: now},
+			{Report: overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "26.2", LlamaBuild: 12058, MemoryBytes: 64 << 30, Downloads: []string{"qwen3 Q4_K_M"}}, LastSeen: now, KeyPrefix: "ovl_ab12"},
 			{Report: overload.NodeReport{Name: "studio-2", OS: "darwin", OSVersion: "26.2", LlamaBuild: 12058}, LastSeen: now},
 			{Report: overload.NodeReport{Name: "c", OS: "darwin", OSVersion: "26.1", LlamaBuild: 12058}, LastSeen: now},
 		},
@@ -142,7 +154,7 @@ func TestNodesPage(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/nodes", nil))
 	body := response.Body.String()
-	for _, want := range []string{"operating system version (darwin) differs on c", "mlx.launch --backend jaccl", "llama.cpp b12058", "64 GB memory", "1 downloaded model", "qwen3 Q4_K_M", "http://10.0.0.1:8080/v1", `aria-label="Forget studio-1"`, `data-confirm-title="Forget node studio-1"`} {
+	for _, want := range []string{"operating system version (darwin) differs on c", "mlx.launch --backend jaccl", "llama.cpp b12058", "64 GB memory", "1 downloaded model", "qwen3 Q4_K_M", "http://10.0.0.1:8080/v1", `aria-label="Forget studio-1"`, `data-confirm-title="Forget node studio-1"`, "Key ovl_ab12", `action="/nodes/studio-1/release"`, `data-confirm-title="Release node studio-1"`} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("nodes page lacks %q: %d %s", want, response.Code, body)
 		}
@@ -164,6 +176,23 @@ func TestNodesPage(t *testing.T) {
 	}
 	if response := forget("c", url.Values{"confirmed": {"true"}}); response.Code != http.StatusNotFound {
 		t.Fatalf("forget a missing node: %d", response.Code)
+	}
+	release := func(name string, form url.Values) *httptest.ResponseRecorder {
+		form.Set("csrf", csrf)
+		request := httptest.NewRequest(http.MethodPost, "/nodes/"+name+"/release", strings.NewReader(form.Encode()))
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	if response := release("studio-1", url.Values{}); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "Release node studio-1?") || store.nodes[0].KeyPrefix == "" {
+		t.Fatalf("release without confirmation: %d %s", response.Code, response.Body.String())
+	}
+	if response := release("studio-1", url.Values{"confirmed": {"true"}}); response.Code != http.StatusSeeOther || store.nodes[0].KeyPrefix != "" {
+		t.Fatalf("release: %d %s", response.Code, response.Body.String())
+	}
+	if response := release("missing", url.Values{"confirmed": {"true"}}); response.Code != http.StatusNotFound {
+		t.Fatalf("release a missing node: %d", response.Code)
 	}
 	if response := forget("studio-1", url.Values{"confirmed": {"true"}}); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "placement beam uses studio-1") || len(store.nodes) != 2 {
 		t.Fatalf("forget a placed node: %d %s", response.Code, response.Body.String())

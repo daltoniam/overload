@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/jackc/pgx/v5"
@@ -175,6 +176,18 @@ func TestNodeEndpoint(t *testing.T) {
 	}
 }
 
+func TestNodeCommandNeedsAValidName(t *testing.T) {
+	original := hostname
+	t.Cleanup(func() { hostname = original })
+	hostname = func() (string, error) { return strings.Repeat("mac", 30) + ".local", nil }
+	if err := manageNode([]string{"report", "--server", "https://x"}); err == nil || !strings.Contains(err.Error(), "pass --name") {
+		t.Fatalf("an invalid host name was accepted: %v", err)
+	}
+	if err := manageNode([]string{"report", "--server", "ftp://x", "--name", "studio-1"}); err == nil || strings.Contains(err.Error(), "pass --name") {
+		t.Fatalf("--name did not replace the host name: %v", err)
+	}
+}
+
 func TestNodeCommandFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"report", "--server", "https://x", "--every", "1ms"},
@@ -185,8 +198,8 @@ func TestNodeCommandFlags(t *testing.T) {
 			t.Errorf("%v accepted", args)
 		}
 	}
-	agent := nodeAgent("dev.overload", "/usr/local/bin/overload", "https://x", "studio-1", "/opt/mlx/bin/python", t.TempDir())
-	if agent.Label != "dev.overload.node" || agent.Env["PATH"] != servicePath || !strings.Contains(strings.Join(agent.Args, " "), "--every 1m --name studio-1 --python /opt/mlx/bin/python") {
+	agent := nodeAgent("dev.overload", "/usr/local/bin/overload", "https://x", "studio-1", "/opt/mlx/bin/python", t.TempDir(), 5*time.Minute)
+	if agent.Label != "dev.overload.node" || agent.Env["PATH"] != servicePath || !strings.Contains(strings.Join(agent.Args, " "), "--every 5m0s --name studio-1 --python /opt/mlx/bin/python") {
 		t.Fatalf("agent = %+v", agent)
 	}
 	if !slices.Contains((&installation{label: "dev.overload"}).serviceLabels(), "dev.overload.node") {

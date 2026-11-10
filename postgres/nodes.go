@@ -18,13 +18,17 @@ const MaxNodes = 500
 // cannot fill the inventory.
 const MaxNodesPerKey = 100
 
-// nodeLock serializes reports of new names so the caps hold under
-// concurrent reports.
+// nodeLock serializes claims of new or released names so the caps hold
+// under concurrent reports.
 const nodeLock = 729140
+
+// validKey is true when the joined api_keys row k can still claim nodes.
+const validKey = `(k.id IS NOT NULL AND k.revoked_at IS NULL AND k.expires_at > now())`
 
 // ReportNode stores a node's latest report from the API key keyID. The
 // first key to report a name claims it; reports for that name from any
-// other key are refused until the node is forgotten.
+// other key are refused while the owning key is valid. A revoked or
+// expired key's names, and released names, go to the next key to report.
 func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.NodeReport) error {
 	if err := report.Validate(); err != nil {
 		return err
@@ -32,6 +36,15 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 	data, err := json.Marshal(report)
 	if err != nil {
 		return err
+	}
+	// The usual report comes from the key that owns the name and needs no
+	// lock.
+	command, err := s.Pool.Exec(ctx, `UPDATE nodes SET report = $2, last_seen = now() WHERE name = $1 AND api_key_id = $3`, report.Name, data, keyID)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 1 {
+		return nil
 	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -42,7 +55,8 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 		return err
 	}
 	var owner *int64
-	err = tx.QueryRow(ctx, `SELECT api_key_id FROM nodes WHERE name = $1`, report.Name).Scan(&owner)
+	var ownerValid bool
+	err = tx.QueryRow(ctx, `SELECT n.api_key_id, `+validKey+` FROM nodes n LEFT JOIN api_keys k ON k.id = n.api_key_id WHERE n.name = $1 FOR UPDATE OF n`, report.Name).Scan(&owner, &ownerValid)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		var total, owned int
@@ -60,7 +74,7 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 		}
 	case err != nil:
 		return err
-	case owner != nil && *owner != keyID:
+	case owner != nil && *owner != keyID && ownerValid:
 		return overload.ErrNodeClaimed
 	default:
 		if _, err := tx.Exec(ctx, `UPDATE nodes SET report = $2, api_key_id = $3, last_seen = now() WHERE name = $1`, report.Name, data, keyID); err != nil {
@@ -70,9 +84,10 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 	return tx.Commit(ctx)
 }
 
-// ListNodes returns the inventory by name.
+// ListNodes returns the inventory by name, with the prefix of the key that
+// holds each name while that key is valid.
 func (s *Store) ListNodes(ctx context.Context) ([]overload.Node, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT report, last_seen FROM nodes ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `SELECT n.report, n.last_seen, CASE WHEN `+validKey+` THEN k.prefix ELSE '' END FROM nodes n LEFT JOIN api_keys k ON k.id = n.api_key_id ORDER BY n.name`)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +96,7 @@ func (s *Store) ListNodes(ctx context.Context) ([]overload.Node, error) {
 	for rows.Next() {
 		var node overload.Node
 		var data []byte
-		if err := rows.Scan(&data, &node.LastSeen); err != nil {
+		if err := rows.Scan(&data, &node.LastSeen, &node.KeyPrefix); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(data, &node.Report); err != nil {
@@ -90,6 +105,20 @@ func (s *Store) ListNodes(ctx context.Context) ([]overload.Node, error) {
 		nodes = append(nodes, node)
 	}
 	return nodes, rows.Err()
+}
+
+// ReleaseNode frees a node's name for the next key that reports it,
+// keeping the node and any placement that uses it, so a node can move to a
+// new key without being forgotten.
+func (s *Store) ReleaseNode(ctx context.Context, name string) error {
+	command, err := s.Pool.Exec(ctx, `UPDATE nodes SET api_key_id = NULL WHERE name = $1`, name)
+	if err != nil {
+		return err
+	}
+	if command.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 // DeleteNode forgets a node and releases its name for any key; it

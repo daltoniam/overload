@@ -36,6 +36,9 @@ type NodeService struct {
 type Node struct {
 	Report   NodeReport
 	LastSeen time.Time
+	// KeyPrefix identifies the API key that holds the name; empty when no
+	// valid key does, so the next key to report takes it.
+	KeyPrefix string
 }
 
 // NodeOfflineAfter is how long a node may go without reporting before it

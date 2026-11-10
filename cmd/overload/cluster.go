@@ -54,7 +54,7 @@ func runCluster(ctx context.Context, store clusterStore, args []string, out io.W
 		rank0 := flags.String("rank0-ip", "", "an IP address of the first node every node can reach")
 		rdma := flags.String("rdma", "", "JSON file: rdma[i][j] is node i's RDMA device reaching node j, empty for itself")
 		python := flags.String("python", "", "Python interpreter path, the same on every node")
-		host := flags.String("host", "", "IP address the first node serves the API on, reachable from overload (default: --rank0-ip)")
+		host := flags.String("host", "", "IP address the first node serves the API on, reachable from overload (default: --rank0-ip, which is often a Thunderbolt bridge address only the cluster can reach; then pass the first node's LAN address)")
 		port := flags.Int("port", overload.DefaultPlacementPort, "port the first node serves the API on")
 		mode := flags.String("mode", overload.PlacementTensor, "tensor (faster decode) or pipeline (bigger models)")
 		if err := flags.Parse(args[2:]); err != nil {
