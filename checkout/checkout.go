@@ -154,8 +154,11 @@ func openRepository(ctx context.Context, dir string) (repository, error) {
 // diffOptions keep the diff in the form the reviewer parses whatever the
 // user's git configuration says: a/ and b/ prefixes, paths from the
 // repository root, no external or text conversion programs, and submodule
-// updates shown even when diff.ignoreSubmodules would hide them.
-var diffOptions = []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--submodule=short", "--ignore-submodules=none"}
+// commit updates shown even when diff.ignoreSubmodules would hide them.
+// Changes inside a submodule's working tree are left out: finding them
+// runs git status in the submodule, which reads the submodule's own
+// configuration and so its filters, which Git cannot switch off.
+var diffOptions = []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--submodule=short", "--ignore-submodules=dirty"}
 
 // mergeBase is the commit where HEAD left base.
 func (repo repository) mergeBase(ctx context.Context, base string) (string, error) {

@@ -679,3 +679,59 @@ func TestFilterDrivers(t *testing.T) {
 		t.Fatalf("filterDrivers = %s", got)
 	}
 }
+
+func TestDirtySubmoduleFiltersNeverRun(t *testing.T) {
+	dir := gitRepo(t)
+	library := t.TempDir()
+	run := func(dir string, args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always"}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+	run(library, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(library, "f"), []byte("one\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(library, "add", "f")
+	run(library, "commit", "-q", "-m", "library")
+	run(dir, "submodule", "add", "-q", library, "lib")
+	run(dir, "commit", "-q", "-m", "add library")
+	marker := filepath.Join(t.TempDir(), "filter-ran")
+	gitConfig(t, filepath.Join(dir, "lib"), "filter.subf.clean", "touch "+marker+"; cat")
+	if err := os.WriteFile(filepath.Join(dir, "lib", ".gitattributes"), []byte("* filter=subf\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lib", "f"), []byte("two\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Plain git status in the parent would run the submodule's filter.
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("the marker exists before the test")
+	}
+	var fixes atomic.Int64
+	server := fakeModels(t, &fixes)
+	defer server.Close()
+	diff, err := Diff(context.Background(), dir, "main")
+	if err != nil || !strings.Contains(diff, "+Subproject commit ") {
+		t.Fatalf("diff = %q, %v", diff, err)
+	}
+	if _, err := Review(context.Background(), dir, "main", workflowFor(server.URL)); err != nil {
+		t.Fatal(err)
+	}
+	fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+	var out bytes.Buffer
+	if _, err := Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, Rounds: 1, Until: "high", Out: &out}); err != nil {
+		t.Fatalf("fix: %v\n%s", err, out.String())
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a submodule's own filter ran a program")
+	}
+	// The test is only meaningful if git would run the filter unprotected.
+	if out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput(); err != nil {
+		t.Fatalf("git status: %v %s", err, out)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("plain git status did not run the submodule's filter; the test proves nothing")
+	}
+}

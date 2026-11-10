@@ -87,7 +87,8 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 	if _, err := original.diff(ctx, options.Base, true); err != nil {
 		return FixResult{}, fmt.Errorf("the fix branch starts from the last commit; commit the changes to fix first: %w", err)
 	}
-	if dirty, err := original.git(ctx, "status", "--porcelain", "--untracked-files=no"); err == nil && strings.TrimSpace(dirty) != "" {
+	// Submodules are checked for commit updates only; see diffOptions.
+	if dirty, err := original.git(ctx, "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"); err == nil && strings.TrimSpace(dirty) != "" {
 		_, _ = fmt.Fprintln(options.Out, "Note: uncommitted changes are not part of the fix branch; it starts from the last commit.")
 	}
 	common, err := original.git(ctx, "rev-parse", "--path-format=absolute", "--git-common-dir")

@@ -578,12 +578,14 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
   the working tree, and prints a report; nothing is stored or posted. DIR
   may be any directory inside the checkout. Your git settings for diff
   output (prefixes, relative paths, text conversion, external diff tools,
-  ignored submodules) are ignored, git's clean, smudge and process filters
-  are switched off so no configured filter program runs (a Git LFS file
-  shows as its pointer), and symbolic links that point outside the checkout
-  are not followed, so files elsewhere on the machine are never sent to a
-  model. `--check` exits with status 1 when the overload check would fail,
-  for a pre-push hook.
+  ignored submodules) are ignored, so submodule commit updates always show.
+  Changes inside a submodule's working tree are not shown: finding them
+  would make git read the submodule's own configuration and run its filters.
+  git's clean, smudge and process filters are switched off, so no configured
+  filter program runs (a Git LFS file shows as its pointer), and symbolic
+  links that point outside the checkout are not followed, so files elsewhere
+  on the machine are never sent to a model. `--check` exits with status 1
+  when the overload check would fail, for a pre-push hook.
 - `fix` (opt-in) needs committed changes: the fix branch starts from the
   last commit, so uncommitted changes are not part of it. It creates a
   branch `overload/fix-<time>-<random>` in a separate worktree under
