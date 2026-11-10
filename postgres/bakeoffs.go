@@ -13,6 +13,7 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/eval"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 )
 
@@ -71,6 +72,14 @@ type BakeoffPlan struct {
 	Models []BakeoffModel
 	Suites []eval.Suite
 	Runs   int
+	// Done holds the reviews already recorded, by BakeoffResultKey, so an
+	// attempt that takes over a bake-off does not repeat them.
+	Done map[string]bool
+}
+
+// BakeoffResultKey identifies one review in a bake-off.
+func BakeoffResultKey(model, suite, caseName string, run int) string {
+	return fmt.Sprintf("%s\x00%s\x00%s\x00%d", model, suite, caseName, run)
 }
 
 // BakeoffResult is one model's review of one case.
@@ -271,8 +280,10 @@ func (s *Store) StartBakeoff(ctx context.Context, id, job int64) (plan BakeoffPl
 	release = func() {
 		// The lock belongs to this session, so unlock it before the
 		// connection goes back to the pool; a closed connection drops it.
-		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtextextended('overload-bakeoff:' || current_schema() || ':' || $1::bigint::text, 0))`, id); err != nil {
-			_ = conn.Conn().Close(context.WithoutCancel(ctx))
+		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		if _, err := conn.Exec(unlockCtx, `SELECT pg_advisory_unlock(hashtextextended('overload-bakeoff:' || current_schema() || ':' || $1::bigint::text, 0))`, id); err != nil {
+			_ = conn.Conn().Close(unlockCtx)
 		}
 		conn.Release()
 	}
@@ -290,6 +301,9 @@ func (s *Store) StartBakeoff(ctx context.Context, id, job int64) (plan BakeoffPl
 	if decodeErr == nil {
 		decodeErr = json.Unmarshal(suites, &plan.Suites)
 	}
+	if decodeErr == nil {
+		plan.Done, decodeErr = s.bakeoffResultKeys(ctx, conn, id)
+	}
 	if decodeErr != nil {
 		release()
 		// A retry could not read them either, so end the bake-off here.
@@ -299,6 +313,24 @@ func (s *Store) StartBakeoff(ctx context.Context, id, job int64) (plan BakeoffPl
 		return plan, func() {}, false, fmt.Errorf("read bake-off %d: %w", id, decodeErr)
 	}
 	return plan, release, true, nil
+}
+
+func (s *Store) bakeoffResultKeys(ctx context.Context, conn *pgxpool.Conn, id int64) (map[string]bool, error) {
+	rows, err := conn.Query(ctx, `SELECT model, suite, case_name, run FROM bakeoff_results WHERE bakeoff_id = $1`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	done := map[string]bool{}
+	for rows.Next() {
+		var model, suite, caseName string
+		var run int
+		if err := rows.Scan(&model, &suite, &caseName, &run); err != nil {
+			return nil, err
+		}
+		done[BakeoffResultKey(model, suite, caseName, run)] = true
+	}
+	return done, rows.Err()
 }
 
 // AddBakeoffResult stores one result.
@@ -321,7 +353,12 @@ func (s *Store) FinishBakeoff(ctx context.Context, id int64, failure string) err
 // FailInterruptedBakeoffs ends bake-offs a restart interrupted; their job
 // does not run them again.
 func (s *Store) FailInterruptedBakeoffs(ctx context.Context) (int64, error) {
-	command, err := s.Pool.Exec(ctx, `UPDATE bakeoffs SET status = 'failed', error = $1, finished_at = now() WHERE status = 'running'`, BakeoffInterrupted)
+	// A bake-off whose lock another server holds is still running there.
+	command, err := s.Pool.Exec(ctx, `UPDATE bakeoffs SET status = 'failed', error = $1, finished_at = now()
+		WHERE status = 'running' AND NOT EXISTS (
+			SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted AND objsubid = 1
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND ((classid::bigint << 32) | objid::bigint) = hashtextextended('overload-bakeoff:' || current_schema() || ':' || bakeoffs.id::text, 0))`, BakeoffInterrupted)
 	return command.RowsAffected(), err
 }
 

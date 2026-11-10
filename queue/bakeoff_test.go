@@ -65,11 +65,50 @@ func TestStartBakeoffClaims(t *testing.T) {
 	if _, _, ok, err := store.StartBakeoff(ctx, id, 8); err != nil || ok {
 		t.Fatalf("another job claimed a running bake-off: %v %v", ok, err)
 	}
-	if err := store.FinishBakeoff(ctx, id, ""); err != nil {
-		t.Fatal(err)
+	// Restart recovery leaves a bake-off another server is running.
+	_, release, ok, err = store.StartBakeoff(ctx, id, 7)
+	if err != nil || !ok {
+		t.Fatalf("claim: %v %v", ok, err)
+	}
+	if failed, err := store.FailInterruptedBakeoffs(ctx); err != nil || failed != 0 {
+		t.Fatalf("failed a bake-off that is still running: %d %v", failed, err)
+	}
+	release()
+	if failed, err := store.FailInterruptedBakeoffs(ctx); err != nil || failed != 1 {
+		t.Fatalf("interrupted bake-offs failed: %d %v", failed, err)
 	}
 	if _, _, ok, err := store.StartBakeoff(ctx, id, 7); err != nil || ok {
 		t.Fatalf("claimed a finished bake-off: %v %v", ok, err)
+	}
+}
+
+func TestBakeoffTakeoverKeepsRecordedReviews(t *testing.T) {
+	store, client := bakeoffStore(t)
+	ctx := context.Background()
+	id, err := store.CreateBakeoff(ctx, client, []string{"flint"}, []string{eval.BuiltinSuite}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	worker := &BakeoffWorker{Store: store, Review: func(context.Context, overload.ReviewSpec, fs.FS) (overload.ReviewResult, error) {
+		calls++
+		return overload.ReviewResult{Findings: plantedFindings()}, nil
+	}}
+	job := &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 9}, Args: postgres.BakeoffArgs{ID: id}}
+	if err := worker.Work(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	first := calls
+	// As if finishing had failed and River retried the job.
+	if _, err := store.Pool.Exec(ctx, `UPDATE bakeoffs SET status = 'running', finished_at = NULL WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Work(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	bakeoff, err := store.GetBakeoff(ctx, id)
+	if err != nil || first == 0 || calls != first || bakeoff.Status != "completed" || len(bakeoff.Results) != first {
+		t.Fatalf("reviews %d then %d, bake-off %+v, %v", first, calls, bakeoff, err)
 	}
 }
 

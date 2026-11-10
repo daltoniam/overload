@@ -528,7 +528,11 @@ overload bakeoff show 4
   policy refuses is recorded as failed rather than called. A bake-off runs
   at most 300 reviews (models times cases times runs) and 10 models. A
   restart ends a running bake-off as failed, without recording the review
-  it cut short; start it again. Pull request reviews still run at the same
+  it cut short; start it again. A running bake-off holds one database
+  connection for its whole run (to mark it as running on this server), so
+  on small machines raise `pool_max_conns` in `DATABASE_URL` above the
+  default (four, or the number of CPUs if larger) if pull request reviews
+  start waiting for connections. Pull request reviews still run at the same
   time, so on a shared model server the time per review includes waiting
   for them, and they slow down too.
 - Bake-offs run reviews in the server process even when pull request

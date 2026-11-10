@@ -67,6 +67,11 @@ func (worker *BakeoffWorker) Work(ctx context.Context, job *river.Job[postgres.B
 					if ctx.Err() != nil {
 						return worker.finish(ctx, plan.ID, errBakeoffInterrupted)
 					}
+					// An attempt that took over the bake-off keeps the
+					// reviews already recorded.
+					if plan.Done[postgres.BakeoffResultKey(model.Name, suite.Name, item.Name, run)] {
+						continue
+					}
 					result := postgres.BakeoffResult{Model: model.Name, Suite: suite.Name, Case: item.Name, Run: run, Score: eval.Score{Expected: eval.ScoreFindings(item.Expected, nil, 0).Expected}}
 					// The policy can change during a bake-off that lasts
 					// hours, so it is checked before every review.
