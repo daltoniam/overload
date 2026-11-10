@@ -62,7 +62,7 @@ const (
 var (
 	ErrInvalidNodeReport = errors.New("invalid node report")
 	// ErrNodeClaimed means another API key already reports under the name.
-	ErrNodeClaimed = errors.New("another API key reports this node; forget the node in overload to move it to a new key")
+	ErrNodeClaimed = errors.New("another API key reports this node; an administrator can Release it on the Nodes page, or revoke the old key, to move it to a new key")
 	// ErrNodeReleased means an administrator released the node from the
 	// reporting key, which must not take it back.
 	ErrNodeReleased = errors.New("an administrator released this node from this API key; report it with a new key")
