@@ -84,6 +84,8 @@ func run(args []string) error {
 		return manageModels(args[1:])
 	case "users":
 		return manageUsers(args[1:])
+	case "keys":
+		return manageKeys(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:

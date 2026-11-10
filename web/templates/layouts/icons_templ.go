@@ -30,6 +30,8 @@ func iconPath(name string) string {
 		return "M8 3H4v18h16V3h-4 M8 3v4h8V3 M8 3h8 M8 12h8 M8 16h5"
 	case "Webhooks":
 		return "M5 12a7 7 0 0 1 12-5 M19 12a7 7 0 0 1-12 5 M3 8l2 4 4-2 M21 16l-2-4-4 2"
+	case "API keys":
+		return "M15 7a4 4 0 1 1-3.9 4.9L3 20v-3l2-2h2v-2h2l1.1-1.1A4 4 0 0 1 15 7z M16 9h.01"
 	case "Users":
 		return "M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z M2 21v-1a6 6 0 0 1 6-6h2a6 6 0 0 1 6 6v1 M17 3.5a4 4 0 0 1 0 7 M22 21v-1a6 6 0 0 0-4-5.6"
 	case "Tools":
@@ -67,7 +69,7 @@ func Icon(name string) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(iconPath(name))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 22, Col: 200}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 23, Col: 200}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
@@ -109,7 +111,7 @@ func NavigationLink(path string, label string, current string) templ.Component {
 		var templ_7745c5c3_Var4 templ.SafeURL
 		templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL(path))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 26, Col: 26}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 27, Col: 26}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 		if templ_7745c5c3_Err != nil {
@@ -122,7 +124,7 @@ func NavigationLink(path string, label string, current string) templ.Component {
 		var templ_7745c5c3_Var5 string
 		templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(navigationCurrent(path, current))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 26, Col: 75}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 27, Col: 75}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 		if templ_7745c5c3_Err != nil {
@@ -143,7 +145,7 @@ func NavigationLink(path string, label string, current string) templ.Component {
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 26, Col: 103}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/icons.templ`, Line: 27, Col: 103}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {

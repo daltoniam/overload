@@ -591,6 +591,69 @@ How it works:
 Tests use an in-process OIDC provider. SCIM provisioning and a test
 against Dex in kind are later additions.
 
+## Model gateway and API keys
+
+Overload serves its saved models to agents and CLIs (Claude Code, OpenCode,
+Cline, Crush) through OpenAI and Anthropic compatible endpoints on the same
+address as the UI:
+
+| Endpoint | For |
+|---|---|
+| `GET /v1/models` | The saved models the model policy allows |
+| `POST /v1/chat/completions` | OpenAI-compatible model connections |
+| `POST /v1/messages` | Anthropic model connections |
+
+Clients authenticate with an overload API key (`Authorization: Bearer
+ovl_...` or `x-api-key: ovl_...`) and name a model by its name on the Models
+page. Overload swaps in the connection's model ID and API key, so provider
+keys never leave the server. OpenAI clients use `<base>/v1` as their base
+URL, Anthropic clients `<base>`.
+
+```sh
+export OPENAI_BASE_URL=https://overload.example.com/v1 OPENAI_API_KEY=ovl_...
+export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
+```
+
+- Keys are created on the API keys page (members and admins; each person
+  sees their own, admins see all, up to the 500 newest) or with
+  `overload keys create --name ci` for shared keys. Their one scope today
+  is `models`; they expire after 1 to 365 days, are shown once and stored
+  only as a hash. Revoking asks for confirmation first.
+- Only members and admins can use models: a viewer's key is refused, and a
+  person whose role drops below member at sign-in has their keys revoked.
+  Disabling someone under Users revokes their keys at once. Removing
+  someone in the provider does not: their keys keep working until they
+  next sign in or are disabled in overload (there is no SCIM provisioning
+  yet), so disable people in overload when they leave.
+- Requests for one model share its Parallel files setting as slots. When
+  they are busy, waiting requests are served in turn per person, so one
+  agent sending many requests cannot starve the others; at most 64 wait per
+  model and 16 per person, then the gateway answers 429. Calls are limited
+  to 90 minutes for local models and 15 for hosted ones.
+- Every forwarded call is recorded in tokens and minutes (streamed
+  responses included: overload always asks OpenAI-compatible servers for
+  stream usage and drops that chunk again for clients that did not ask for
+  it). Anthropic's cached input (cache reads and writes) counts as input,
+  as OpenAI's cached prompt tokens already do. Requests refused before
+  reaching a model (bad key, unknown model, full queue) are not recorded.
+  The Usage page shows the last 30 days per person and model.
+- Callers' own credentials and `anthropic-beta` headers are never passed
+  on, and redirects from the model server are not followed. When the model
+  server refuses overload's credentials the gateway answers 502, so a bad
+  model API key is not mistaken for a bad overload key.
+- The gateway does not translate between the two APIs; call each model
+  with its own. OpenAI-compatible models are served through Chat
+  Completions only, including models saved with the Responses API, so
+  those must also accept `/chat/completions`. Reviews and scheduled jobs do
+  not go through the gateway's queue, so a model shared by both may see
+  more requests than its slots.
+- `/v1/*` is authenticated by API keys alone: it skips the UI's sign-in,
+  Cloudflare Access and host check, so in-cluster agents can call
+  `http://overload.overload.svc:8082/v1` (the cloudflare overlay's network
+  policy admits only cloudflared, so allow them there too). When Cloudflare
+  Access guards the hostname, add a bypass policy for `/v1/*` at the edge,
+  or agents cannot reach the gateway.
+
 ## Linux servers
 
 `overload install` on Linux writes the configuration and database (with

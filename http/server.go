@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/gateway"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/assets"
@@ -284,7 +285,26 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			authErr = errors.New("OIDC sign-in needs the database store")
 		}
 	}
-	return secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
+	if keys, ok := reader.(KeyStore); ok {
+		registerKeys(mux, keys, csrf)
+	}
+	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
+	store, ok := reader.(gateway.Store)
+	if !ok {
+		return ui
+	}
+	api := gateway.New(store)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/v1/") {
+			ui.ServeHTTP(w, r)
+			return
+		}
+		// The gateway skips the UI's host check: it reads no cookies, only
+		// bearer keys, so a rebound or unexpected host gains nothing, and
+		// in-cluster agents call it by the service name.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		api.ServeHTTP(w, r)
+	})
 }
 
 // publicPaths answer without signing in: health checks, signed webhooks

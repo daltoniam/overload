@@ -105,6 +105,7 @@ templ Base(data PageData) {
 				@NavigationLink("/configure/tools", "Tools", data.CurrentPath)
 				@NavigationLink("/setup/github", "GitHub", data.CurrentPath)
 				@NavigationLink("/webhooks", "Webhooks", data.CurrentPath)
+				@NavigationLink("/keys", "API keys", data.CurrentPath)
 				if viewer, ok := ViewerFrom(ctx); ok && viewer.IsAdmin() {
 					@NavigationLink("/users", "Users", data.CurrentPath)
 				}
