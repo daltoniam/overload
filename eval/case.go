@@ -71,11 +71,17 @@ func (item Case) Validate() error {
 	if len(item.Files) == 0 || strings.TrimSpace(item.Diff) == "" || len(item.Expected) == 0 {
 		return errors.New("a case needs files, a diff and expected findings")
 	}
+	if strings.ContainsRune(item.Diff, 0) {
+		return errors.New("the diff contains a NUL byte; cases hold text files only")
+	}
 	size := len(item.Diff)
 	paths := map[string]bool{}
 	for _, file := range item.Files {
 		if !fs.ValidPath(file.Path) || paths[file.Path] {
 			return fmt.Errorf("invalid or repeated file %q", file.Path)
+		}
+		if strings.ContainsRune(file.Content, 0) {
+			return fmt.Errorf("file %q contains a NUL byte; cases hold text files only", file.Path)
 		}
 		paths[file.Path] = true
 		size += len(file.Content)

@@ -44,6 +44,8 @@ func TestSuiteValidate(t *testing.T) {
 		"escaping path": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "../x.go"}}, Diff: good.Diff, Expected: good.Expected}}},
 		"too large":     {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: strings.Repeat("x", MaxCaseBytes)}}, Diff: good.Diff, Expected: good.Expected}}},
 		"missing diff":  {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Expected: good.Expected}}},
+		"NUL in a file": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: "a\x00b"}}, Diff: good.Diff, Expected: good.Expected}}},
+		"NUL in diff":   {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff + "\x00", Expected: good.Expected}}},
 	} {
 		if err := suite.Validate(); err == nil {
 			t.Errorf("%s: valid", name)
@@ -175,6 +177,12 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 	git("commit", "-q", "-m", "main")
 	git("merge", "-q", "--no-ff", "--no-edit", "side")
 	merge := git("rev-parse", "HEAD")
+	// A submodule pointer change looks like a modified text file.
+	git("update-index", "--add", "--cacheinfo", "160000,"+root+",vendor/lib")
+	git("commit", "-q", "-m", "add submodule")
+	git("update-index", "--cacheinfo", "160000,"+binary+",vendor/lib")
+	git("commit", "-q", "-m", "bump submodule")
+	submodule := git("rev-parse", "HEAD")
 	for _, test := range []struct{ commit, want string }{
 		{"", "as a hash"},
 		{"HEAD", "as a hash"},
@@ -183,6 +191,7 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 		{root, "no parent"},
 		{binary, "no existing text files"},
 		{merge, "is a merge"},
+		{submodule, "no existing text files"},
 	} {
 		if _, err := CaseFromCommit(context.Background(), dir, test.commit, ""); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%q: error %v, want %q", test.commit, err, test.want)

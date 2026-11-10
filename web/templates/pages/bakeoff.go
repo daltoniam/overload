@@ -34,7 +34,14 @@ func (summary ModelSummary) Found() string {
 	if summary.completed() <= 0 {
 		return "n/a"
 	}
-	return fmt.Sprintf("%d of %d", summary.Matched, summary.Expected)
+	return fmt.Sprintf("%d of %d (%s)", summary.Matched, summary.Expected, reviewCount(summary.completed()))
+}
+
+func reviewCount(count int) string {
+	if count == 1 {
+		return "1 review"
+	}
+	return fmt.Sprintf("%d reviews", count)
 }
 
 // MisplacedCount is n/a when no completed review had a bug with expected
@@ -63,8 +70,8 @@ func (summary ModelSummary) AverageTime() string {
 }
 
 // Summarize totals a bake-off's results per model, sorted by the share of
-// expected bugs found, best first; ties keep the order the models were
-// chosen in.
+// expected bugs found, best first; equal shares go to the model with more
+// completed reviews, then keep the order the models were chosen in.
 func Summarize(bakeoff postgres.Bakeoff) []ModelSummary {
 	var summaries []ModelSummary
 	for _, model := range bakeoff.Models {
@@ -90,7 +97,10 @@ func Summarize(bakeoff postgres.Bakeoff) []ModelSummary {
 		summaries = append(summaries, summary)
 	}
 	slices.SortStableFunc(summaries, func(a, b ModelSummary) int {
-		return b.Matched*max(a.Expected, 1) - a.Matched*max(b.Expected, 1)
+		if share := b.Matched*max(a.Expected, 1) - a.Matched*max(b.Expected, 1); share != 0 {
+			return share
+		}
+		return b.completed() - a.completed()
 	})
 	return summaries
 }

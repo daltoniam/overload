@@ -501,9 +501,9 @@ overload bakeoff show 4
   lines) and is expected to point at the lines the fix changed. Save cases
   as a suite with `overload bakeoff suite save NAME case1.json case2.json`.
   Only modified text files are included, at most 20 per commit and 512 KiB
-  in all; added, deleted, renamed and binary files are skipped, and merge
-  commits are refused. Your git configuration (colours, external diff
-  tools, path prefixes) does not change the case.
+  in all; added, deleted, renamed and binary files and submodule pointers
+  are skipped, and merge commits are refused. Your git configuration
+  (colours, external diff tools, path prefixes) does not change the case.
 - All the lines a fix changed form one bug: a finding near any of them
   finds it, and it counts once. To score a fix as several bugs, give its
   expected findings different `bug` names in the case file.
@@ -514,8 +514,10 @@ overload bakeoff show 4
   lines, which overload drops before posting (the problem that sank
   Gemma 4 26B-A4B and Devstral above). It relies on the expected words, so
   it shows n/a for cases built from commits. **Other findings** matched no
-  expected bug and leave out the misplaced ones; some may be real bugs
-  nobody planted or fixed, others false alarms.
+  expected bug and leave out the misplaced ones and further findings on a
+  bug already found; some may be real bugs nobody planted or fixed, others
+  false alarms. Bugs found also shows how many reviews completed, and
+  models with the same share are ranked by that count.
 - Bugs found, time and tokens cover completed reviews. A review that
   failed, timed out (each review has the server's review timeout), was
   refused by the model policy or left files unreviewed counts only as
@@ -526,7 +528,9 @@ overload bakeoff show 4
   policy refuses is recorded as failed rather than called. A bake-off runs
   at most 300 reviews (models times cases times runs) and 10 models. A
   restart ends a running bake-off as failed, without recording the review
-  it cut short; start it again.
+  it cut short; start it again. Pull request reviews still run at the same
+  time, so on a shared model server the time per review includes waiting
+  for them, and they slow down too.
 - Bake-offs run reviews in the server process even when pull request
   reviews run in sandboxes: a case is a few files held in memory that the
   reviewer only reads, and no repository code or tool runs.

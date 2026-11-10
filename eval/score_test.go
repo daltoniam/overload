@@ -19,7 +19,7 @@ func TestScoreFindings(t *testing.T) {
 			name:     "lines without keywords",
 			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 12}, {Path: "b.go", StartLine: 20, EndLine: 20}},
 			findings: []overload.Finding{{Path: "a.go", Line: 13}, {Path: "a.go", Line: 11}, {Path: "c.go", Line: 20}},
-			want:     Score{Expected: 2, Matched: 1, Reported: 3, Unmatched: 2, Recall: 0.5},
+			want:     Score{Expected: 2, Matched: 1, Reported: 3, Unmatched: 1, Repeats: 1, Recall: 0.5},
 		},
 		{
 			name:     "a misplaced finding is not also another finding",
@@ -36,8 +36,14 @@ func TestScoreFindings(t *testing.T) {
 		{
 			name:     "hunks of one fix are one bug",
 			expected: oneFix,
-			findings: []overload.Finding{{Path: "a.go", Line: 41}, {Path: "a.go", Line: 10}},
-			want:     Score{Expected: 1, Matched: 1, Reported: 2, Unmatched: 1, Recall: 1},
+			findings: []overload.Finding{{Path: "a.go", Line: 41}, {Path: "a.go", Line: 10}, {Path: "a.go", Line: 25}},
+			want:     Score{Expected: 1, Matched: 1, Reported: 3, Unmatched: 1, Repeats: 1, Recall: 1},
+		},
+		{
+			name:     "another bug on a found bug's lines is not a repeat",
+			expected: described,
+			findings: []overload.Finding{{Path: "a.go", Line: 11, Title: "Mutex held"}, {Path: "a.go", Line: 12, Title: "Ignored parse error"}, {Path: "a.go", Line: 10, Body: "the lock again"}},
+			want:     Score{Expected: 1, Matched: 1, Reported: 3, Unmatched: 1, Repeats: 1, Recall: 1, PlacementChecked: 1},
 		},
 		{
 			name:     "a missed fix is not checked for placement",

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -82,6 +83,16 @@ func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error)
 			paths = append(paths, fields[2])
 		}
 	}
+	// Checking each file below costs a git call, so very large commits are
+	// refused before that; submodule pointers rarely make up the difference.
+	if len(paths) > 5*MaxCommitFiles {
+		return Case{}, fmt.Errorf("the commit modifies %d files; pick one that changes at most %d", len(paths), MaxCommitFiles)
+	}
+	// Submodule pointers are listed like text files but are not files.
+	paths = slices.DeleteFunc(paths, func(path string) bool {
+		kind, err := git("cat-file", "-t", parent+":"+path)
+		return err == nil && strings.TrimSpace(kind) != "blob"
+	})
 	if len(paths) == 0 {
 		return Case{}, errors.New("the commit modifies no existing text files")
 	}

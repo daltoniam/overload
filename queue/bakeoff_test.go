@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/catalog"
@@ -140,6 +141,31 @@ func TestBakeoffWorkerChecksPolicyBeforeEachReview(t *testing.T) {
 	bakeoff, err := store.GetBakeoff(ctx, id)
 	if err != nil || calls != 1 || len(bakeoff.Results) != 2 || !strings.HasPrefix(bakeoff.Results[1].Error, "refused by the model policy") {
 		t.Fatalf("calls %d, bake-off %+v, %v", calls, bakeoff, err)
+	}
+}
+
+func TestBakeoffWorkerReviewTimeout(t *testing.T) {
+	store, client := bakeoffStore(t)
+	ctx := context.Background()
+	id, err := store.CreateBakeoff(ctx, client, []string{"flint"}, []string{eval.BuiltinSuite}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := &BakeoffWorker{Store: store, ReviewTimeout: time.Millisecond, Review: func(reviewCtx context.Context, _ overload.ReviewSpec, _ fs.FS) (overload.ReviewResult, error) {
+		<-reviewCtx.Done()
+		return overload.ReviewResult{}, reviewCtx.Err()
+	}}
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil {
+		t.Fatal(err)
+	}
+	bakeoff, err := store.GetBakeoff(ctx, id)
+	if err != nil || bakeoff.Status != "completed" || len(bakeoff.Results) == 0 {
+		t.Fatalf("bake-off = %+v, %v", bakeoff, err)
+	}
+	for _, result := range bakeoff.Results {
+		if result.Error != "the review took longer than 1ms" || result.Score.Expected == 0 {
+			t.Fatalf("result = %+v", result)
+		}
 	}
 }
 

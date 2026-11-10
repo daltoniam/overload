@@ -41,6 +41,10 @@ type Score struct {
 	// PlacementChecked counts expected bugs with keywords; only those can
 	// be recognised when misplaced.
 	PlacementChecked int `json:"placement_checked"`
+	// Repeats counts further findings that describe a bug already found,
+	// on its lines. It is only known when scoring; results store the
+	// unmatched count that leaves repeats out.
+	Repeats int `json:"repeats,omitempty"`
 }
 
 func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolerance int) Score {
@@ -70,7 +74,22 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 			result.Misplaced++
 		}
 	}
-	result.Unmatched = result.Reported - result.Matched - result.Misplaced
+	// A second finding on a bug already found (another hunk of the same
+	// fix, or the bug reported twice) is a repeat, not another finding.
+	for index, bug := range bugs {
+		if !matched[index] {
+			continue
+		}
+		for findingIndex, finding := range actual {
+			if !used[findingIndex] && slices.ContainsFunc(bug, func(item ExpectedFinding) bool {
+				return finding.Path == item.Path && withinLines(item, finding) && keywordsMatch(item.Keywords, finding.Title+" "+finding.Body)
+			}) {
+				used[findingIndex] = true
+				result.Repeats++
+			}
+		}
+	}
+	result.Unmatched = result.Reported - result.Matched - result.Misplaced - result.Repeats
 	if result.Expected > 0 {
 		result.Recall = float64(result.Matched) / float64(result.Expected)
 	}
