@@ -1,16 +1,19 @@
-# Cloudflare Tunnel for GitHub webhooks
+# Cloudflare Tunnel for webhooks
 
-GitHub delivers pull request events to a public `https://` URL. A Mac or a
+GitHub, GitLab and Forgejo deliver pull request events to a public `https://` URL. A Mac or a
 home server usually has no public address, so overload uses a
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/):
 `cloudflared` connects out to Cloudflare, and Cloudflare forwards requests
 for one hostname back through that connection. No port is opened on your
 router.
 
-Only `/webhooks/github` is forwarded. Every other path, including the UI,
-gets a 404 from Cloudflare and never reaches your machine. Webhooks are
-signed, so the webhook path is safe to expose; the UI is not meant to be
-public.
+Only the webhook paths are forwarded: `/webhooks/github` and each GitLab or
+Forgejo connection's `/webhooks/gitlab/N` or `/webhooks/forgejo/N`. Every
+other path, including the UI, gets a 404 from Cloudflare and never reaches
+your machine. Webhooks are signed (or carry a secret), so the webhook paths
+are safe to expose; the UI is not meant to be public. A tunnel set up with
+an earlier overload forwards only the GitHub path; run the setup again to
+add the others.
 
 You need a Cloudflare account with a domain whose DNS is on Cloudflare (the
 free plan is enough). On Kubernetes, where the dashboard is also reached
@@ -59,7 +62,7 @@ tunnel: <tunnel-id>
 credentials-file: /home/you/.cloudflared/<tunnel-id>.json
 ingress:
   - hostname: overload.example.com
-    path: ^/webhooks/github$
+    path: ^/webhooks/(github|gitlab/[0-9]+|forgejo/[0-9]+)$
     service: http://127.0.0.1:8082
   - service: http_status:404
 ```

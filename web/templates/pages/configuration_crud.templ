@@ -50,10 +50,10 @@ func bindingAction(enabled bool) string {
 	return "Enable"
 }
 
-func repositoryBindings(bindings []overload.TriggerBinding, name string) []overload.TriggerBinding {
+func repositoryBindings(bindings []overload.TriggerBinding, repo overload.Repository) []overload.TriggerBinding {
 	var result []overload.TriggerBinding
 	for _, binding := range bindings {
-		if binding.Repository == name {
+		if binding.Repository == repo.FullName && binding.Source == repo.Host() {
 			result = append(result, binding)
 		}
 	}
@@ -139,7 +139,7 @@ templ Repositories(repos []overload.Repository) {
 			} else {
 				<div class="table-wrap"><table><thead><tr><th>Repository</th><th>Access</th><th>Status</th><th>Mode</th><th></th></tr></thead><tbody>
 					for _, repo := range repos {
-						<tr><td><strong>{ repo.FullName }</strong></td><td>{ repositoryAccess(repo.InstallationID) }</td><td><span class="badge neutral">{ agentStatus(repo.Enabled) }</span></td><td>{ repositoryMode(repo.DryRun) }</td><td><a href={ templ.URL(fmt.Sprintf("/configure/repositories/%d", repo.ID)) }>View / edit</a></td></tr>
+						<tr><td><strong>{ repo.FullName }</strong></td><td>{ repositoryAccess(repo) }</td><td><span class="badge neutral">{ agentStatus(repo.Enabled) }</span></td><td>{ repositoryMode(repo.DryRun) }</td><td><a href={ templ.URL(fmt.Sprintf("/configure/repositories/%d", repo.ID)) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
@@ -147,30 +147,43 @@ templ Repositories(repos []overload.Repository) {
 	}
 }
 
-templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBinding, workflows []overload.Workflow, nonce string) {
+templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBinding, workflows []overload.Workflow, forges []overload.ForgeConnection, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Repository", CurrentPath: "/configure/repositories"}) {
-		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/repositories">Repositories</a></p><h1>{ repositoryFormTitle(repo) }</h1><p class="muted">Reviews stay dry-run unless posting is enabled here and the server runs with OVERLOAD_ENABLE_POSTING=1. Posting needs the GitHub App.</p></div><a href="/configure/repositories">All repositories</a></div>
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure">Configure</a> / <a href="/configure/repositories">Repositories</a></p><h1>{ repositoryFormTitle(repo) }</h1><p class="muted">Reviews stay dry-run unless posting is enabled here and the server runs with OVERLOAD_ENABLE_POSTING=1. Posting needs the GitHub App or a <a href="/setup/forges">git host</a> connection.</p></div><a href="/configure/repositories">All repositories</a></div>
 		<section class="panel"><h2>Repository settings</h2><form method="post" action="/configure/repositories"><input type="hidden" name="csrf" value={ nonce }/>
 			if repo.ID != 0 {
 				<input type="hidden" name="id" value={ fmt.Sprint(repo.ID) }/>
 			}
-			<label class="field"><span>GitHub owner/repo</span><input name="name" required placeholder="owner/repo" value={ repo.FullName } readonly?={ repo.ID != 0 }/></label>
+			if repo.ID == 0 && len(forges) > 0 {
+				<label class="field"><span>Host</span><select name="forge">
+					<option value="">GitHub</option>
+					for _, connection := range forges {
+						<option value={ connection.Name }>{ connection.Name } ({ forgeKindLabel(connection.Kind) })</option>
+					}
+				</select></label>
+			} else if repo.ID != 0 {
+				<p><span class="muted">Host:</span> { repositoryHost(repo) }</p>
+			}
+			<label class="field"><span>Repository path</span><input name="name" required placeholder="owner/repo or group/subgroup/project" value={ repo.FullName } readonly?={ repo.ID != 0 }/></label>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ repo.Enabled }/> Enable processing for this repository</label>
-			<label class="check"><input type="checkbox" name="post" value="true" checked?={ repo.ID != 0 && !repo.DryRun }/> Post reviews as GitHub comments</label>
+			<label class="check"><input type="checkbox" name="post" value="true" checked?={ repo.ID != 0 && !repo.DryRun }/> Post reviews as comments on the pull request</label>
+			if repo.ID == 0 && len(forges) > 0 {
+				<label class="check"><input type="checkbox" name="webhook" value="true" checked/> On GitLab or Forgejo, create the webhook with the host's token</label>
+			}
 			<div class="actions"><button type="submit">Save repository</button><a class="button secondary" href="/configure/repositories">Cancel</a></div>
 		</form></section>
 		if repo.ID != 0 {
 			<section class="panel"><div class="panel-head"><div><h2>PR event bindings</h2><p class="muted">Choose which PR actions run a workflow for this repository.</p></div></div>
-				if len(repositoryBindings(bindings, repo.FullName)) == 0 {
+				if len(repositoryBindings(bindings, repo)) == 0 {
 					<div class="empty">No PR actions configured. Incoming events will be skipped.</div>
 				}
-				for _, binding := range repositoryBindings(bindings, repo.FullName) {
+				for _, binding := range repositoryBindings(bindings, repo) {
 					<article class="profile"><div class="profile-top"><h3>{ binding.Action } → { binding.Workflow }</h3><span class="badge neutral">{ agentStatus(binding.Enabled) }</span></div>
-						<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="action" value={ binding.Action }/><input type="hidden" name="workflow" value={ binding.Workflow }/><input type="hidden" name="enabled" value={ fmt.Sprint(!binding.Enabled) }/><button class="secondary" type="submit">{ bindingAction(binding.Enabled) }</button></form>
+						<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="repository_id" value={ fmt.Sprint(repo.ID) }/><input type="hidden" name="action" value={ binding.Action }/><input type="hidden" name="workflow" value={ binding.Workflow }/><input type="hidden" name="enabled" value={ fmt.Sprint(!binding.Enabled) }/><button class="secondary" type="submit">{ bindingAction(binding.Enabled) }</button></form>
 						<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/bindings/%d/delete", repo.ID, binding.ID)) }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete binding</button></form>
 					</article>
 				}
-				<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="enabled" value="true"/><label class="field"><span>PR action</span><select name="action"><option value="opened">Opened</option><option value="synchronize">Updated</option><option value="reopened">Reopened</option><option value="ready_for_review">Ready for review</option></select></label><label class="field"><span>Workflow</span><select name="workflow" required><option value="">Select a PR workflow</option>
+				<form method="post" action="/configure/bindings"><input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="repository" value={ repo.FullName }/><input type="hidden" name="repository_id" value={ fmt.Sprint(repo.ID) }/><input type="hidden" name="enabled" value="true"/><label class="field"><span>PR action</span><select name="action"><option value="opened">Opened</option><option value="synchronize">Updated</option><option value="reopened">Reopened</option><option value="ready_for_review">Ready for review</option></select></label><label class="field"><span>Workflow</span><select name="workflow" required><option value="">Select a PR workflow</option>
 					for _, workflow := range workflows {
 						if workflow.Kind == "pr_review" && workflow.Enabled {
 							<option value={ workflow.Name }>{ workflow.Name }</option>
@@ -178,6 +191,11 @@ templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBindin
 					}
 				</select></label><button type="submit">Add or update binding</button></form>
 			</section>
+			if repo.Forge != "" {
+				<section class="panel"><h2>Webhook</h2><p class="muted">{ repo.Forge } sends merge and pull request events to overload through a repository webhook. Create it (or update its address and secret) with the host's token, or see <a href="/setup/forges">Git hosts</a> to add it by hand.</p>
+					<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/webhook", repo.ID)) }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit">Create or update webhook</button></form>
+				</section>
+			}
 			<section class="panel"><h2>Review a pull request</h2><p class="muted">Queues a review of the pull request's current head as if it had just been opened: it uses this repository's "opened" binding and posting settings. Use it for pull requests opened before overload was watching.</p>
 				<form method="post" action={ templ.URL(fmt.Sprintf("/configure/repositories/%d/review", repo.ID)) }><input type="hidden" name="csrf" value={ nonce }/>
 					<label class="field"><span>Pull request number</span><input name="pr" required inputmode="numeric" pattern="#?[0-9]+" placeholder="296"/></label>
@@ -190,11 +208,21 @@ templ RepositoryForm(repo overload.Repository, bindings []overload.TriggerBindin
 	}
 }
 
-func repositoryAccess(installationID int64) string {
-	if installationID > 0 {
+func repositoryAccess(repo overload.Repository) string {
+	switch {
+	case repo.Forge != "":
+		return repo.Forge + " (" + forgeKindLabel(repo.ForgeKind) + ")"
+	case repo.InstallationID > 0:
 		return "GitHub App"
 	}
-	return "Token (manual)"
+	return "GitHub token (manual)"
+}
+
+func repositoryHost(repo overload.Repository) string {
+	if repo.Forge != "" {
+		return repositoryAccess(repo)
+	}
+	return "GitHub"
 }
 
 func repositoryMode(dryRun bool) string {

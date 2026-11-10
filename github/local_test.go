@@ -41,7 +41,7 @@ func TestTokenPRFetch(t *testing.T) {
 	}
 	client.api.BaseURL = baseURL
 	pr, diff, err := client.PullRequestWithDiff(context.Background(), "owner/repo", 42)
-	if err != nil || pr.GetHead().GetSHA() != sha || !strings.Contains(diff, "diff --git") {
+	if err != nil || pr.HeadSHA != sha || !strings.Contains(diff, "diff --git") {
 		t.Fatalf("pull request: %+v %q %v", pr, diff, err)
 	}
 	var archive bytes.Buffer

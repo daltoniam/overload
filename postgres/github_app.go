@@ -77,7 +77,7 @@ func syncRepository(ctx context.Context, tx pgx.Tx, installationID int64, repo g
 	}
 	if existing == 0 {
 		var claimed int64
-		err := tx.QueryRow(ctx, `UPDATE repositories SET github_id = $1, installation_id = $2, updated_at = now() WHERE full_name = $3 AND github_id IS NULL RETURNING id`, repo.ID, installationID, repo.FullName).Scan(&claimed)
+		err := tx.QueryRow(ctx, `UPDATE repositories SET github_id = $1, installation_id = $2, updated_at = now() WHERE full_name = $3 AND github_id IS NULL AND forge_id IS NULL RETURNING id`, repo.ID, installationID, repo.FullName).Scan(&claimed)
 		if err == nil {
 			return nil
 		}
@@ -85,7 +85,7 @@ func syncRepository(ctx context.Context, tx pgx.Tx, installationID int64, repo g
 			return err
 		}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE repositories SET full_name = full_name || ' (replaced ' || id || ')', enabled = false, installation_id = NULL, updated_at = now() WHERE full_name = $1 AND id <> $2`, repo.FullName, existing); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE repositories SET full_name = full_name || ' (replaced ' || id || ')', enabled = false, installation_id = NULL, updated_at = now() WHERE full_name = $1 AND id <> $2 AND forge_id IS NULL`, repo.FullName, existing); err != nil {
 		return err
 	}
 	if existing != 0 {

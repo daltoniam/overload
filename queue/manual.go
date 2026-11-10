@@ -5,20 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/daltoniam/overload"
 	"strings"
 	"time"
 
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
-
-// PullRequestReader reads a pull request's current state through a GitHub
-// App installation.
-type PullRequestReader interface {
-	PullRequest(ctx context.Context, installationID int64, repository string, number int) (*gh.PullRequest, string, error)
-}
 
 // ErrReviewNotQueued explains why a manual review did not start; its text
 // is safe to show to the person who asked.
@@ -35,6 +29,12 @@ var ErrReviewNotQueued = errors.New("review not queued")
 // after changing the workflow); a review still queued or running is never
 // duplicated.
 func QueueManualReview(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader PullRequestReader, repository string, number int, again bool) (int64, error) {
+	return QueueManualReviewOn(ctx, store, client, reader, "", repository, number, again)
+}
+
+// QueueManualReviewOn is QueueManualReview for a repository on the named
+// GitLab or Forgejo connection ("" is GitHub).
+func QueueManualReviewOn(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader PullRequestReader, forge, repository string, number int, again bool) (int64, error) {
 	if number < 1 {
 		return 0, fmt.Errorf("%w: pull request number must be positive", ErrReviewNotQueued)
 	}
@@ -42,11 +42,11 @@ func QueueManualReview(ctx context.Context, store *postgres.Store, client *river
 	if err != nil {
 		return 0, err
 	}
-	var installationID, githubID int64
+	var selected overload.Repository
 	found := false
 	for _, repo := range repos {
-		if strings.EqualFold(repo.FullName, repository) {
-			repository, installationID, found = repo.FullName, repo.InstallationID, true
+		if strings.EqualFold(repo.FullName, repository) && repo.Forge == forge {
+			selected, repository, found = repo, repo.FullName, true
 			if !repo.Enabled {
 				return 0, fmt.Errorf("%w: %s is not enabled", ErrReviewNotQueued, repository)
 			}
@@ -56,23 +56,20 @@ func QueueManualReview(ctx context.Context, store *postgres.Store, client *river
 	if !found {
 		return 0, fmt.Errorf("%w: %s is not a known repository", ErrReviewNotQueued, repository)
 	}
-	if installationID == 0 {
+	if selected.ForgeID == 0 && selected.InstallationID == 0 {
 		return 0, fmt.Errorf("%w: %s is not linked to the GitHub App", ErrReviewNotQueued, repository)
 	}
-	pr, _, err := reader.PullRequest(ctx, installationID, repository, number)
+	pr, err := reader.PullRequest(ctx, selected, number)
 	if err != nil {
 		return 0, fmt.Errorf("read pull request: %w", err)
 	}
 	switch {
-	case pr.GetState() != "open":
-		return 0, fmt.Errorf("%w: #%d is %s", ErrReviewNotQueued, number, pr.GetState())
-	case pr.GetDraft():
+	case pr.State != "open":
+		return 0, fmt.Errorf("%w: #%d is %s", ErrReviewNotQueued, number, pr.State)
+	case pr.Draft:
 		return 0, fmt.Errorf("%w: #%d is a draft", ErrReviewNotQueued, number)
 	}
-	if repo := pr.GetBase().GetRepo(); repo != nil {
-		githubID = repo.GetID()
-	}
-	head, base := pr.GetHead().GetSHA(), pr.GetBase().GetSHA()
+	head, base := pr.HeadSHA, pr.BaseSHA
 	payload, err := json.Marshal(map[string]any{"manual": true, "repository": repository, "number": number, "head_sha": head, "requested_at": time.Now().UTC().Format(time.RFC3339Nano)})
 	if err != nil {
 		return 0, err
@@ -81,8 +78,10 @@ func QueueManualReview(ctx context.Context, store *postgres.Store, client *river
 		DeliveryID:     fmt.Sprintf("manual-%s-%d-%s-%d", repository, number, head, time.Now().UnixNano()),
 		Action:         postgres.ManualReviewAction,
 		RepoName:       repository,
-		RepoID:         githubID,
-		InstallationID: installationID,
+		RepoID:         pr.RepositoryID,
+		InstallationID: selected.InstallationID,
+		ForgeID:        selected.ForgeID,
+		Forge:          selected.ForgeKind,
 		PR:             number,
 		HeadSHA:        head,
 		BaseSHA:        base,

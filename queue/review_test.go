@@ -23,7 +23,7 @@ func TestReviewWorkerTransitions(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRepository(ctx, "test/worker", false, true); err != nil {
+	if err := store.SaveRepository(ctx, "", "test/worker", false, true); err != nil {
 		t.Fatal(err)
 	}
 	var id int64

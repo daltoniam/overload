@@ -125,7 +125,7 @@ type configurationStore interface {
 	SaveAgent(context.Context, overload.AgentDefinition) error
 	SaveWorkflow(context.Context, overload.Workflow) error
 	SaveBinding(context.Context, overload.TriggerBinding) error
-	SaveRepository(context.Context, string, bool, bool) error
+	SaveRepository(context.Context, string, string, bool, bool) error
 	SaveSchedule(context.Context, overload.Schedule) error
 	SaveToolServer(context.Context, overload.ToolServer) error
 }
@@ -215,14 +215,17 @@ func applyConfiguration(ctx context.Context, store configurationStore, resource 
 		result = server
 	case "repositories":
 		var repo struct {
-			Name    string `json:"name"`
+			Name string `json:"name"`
+			// Forge names a GitLab or Forgejo connection (overload forges
+			// list); empty is GitHub.
+			Forge   string `json:"forge,omitempty"`
 			Enabled bool   `json:"enabled"`
 			DryRun  bool   `json:"dry_run"`
 		}
 		if err := decode("repository", &repo); err != nil {
 			return err
 		}
-		if err := store.SaveRepository(ctx, repo.Name, repo.Enabled, repo.DryRun); err != nil {
+		if err := store.SaveRepository(ctx, repo.Forge, repo.Name, repo.Enabled, repo.DryRun); err != nil {
 			return err
 		}
 		result = repo

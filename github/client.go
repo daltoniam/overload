@@ -64,21 +64,35 @@ func (client *Client) installation(id int64) (*gh.Client, error) {
 	return api, nil
 }
 
-func (client *Client) PullRequest(ctx context.Context, installationID int64, repository string, number int) (*gh.PullRequest, string, error) {
+func (client *Client) PullRequest(ctx context.Context, installationID int64, repository string, number int) (overload.PullRequest, string, error) {
 	owner, repo, err := splitRepository(repository)
 	if err != nil {
-		return nil, "", err
+		return overload.PullRequest{}, "", err
 	}
 	api, err := client.installation(installationID)
 	if err != nil {
-		return nil, "", err
+		return overload.PullRequest{}, "", err
 	}
 	pr, _, err := api.PullRequests.Get(ctx, owner, repo, number)
 	if err != nil {
-		return nil, "", err
+		return overload.PullRequest{}, "", err
 	}
 	patch, _, err := api.PullRequests.GetRaw(ctx, owner, repo, number, gh.RawOptions{Type: gh.Diff})
-	return pr, patch, err
+	return pullRequest(pr), patch, err
+}
+
+func pullRequest(pr *gh.PullRequest) overload.PullRequest {
+	if pr == nil {
+		return overload.PullRequest{}
+	}
+	return overload.PullRequest{
+		Number:       pr.GetNumber(),
+		State:        pr.GetState(),
+		Draft:        pr.GetDraft(),
+		HeadSHA:      pr.GetHead().GetSHA(),
+		BaseSHA:      pr.GetBase().GetSHA(),
+		RepositoryID: pr.GetBase().GetRepo().GetID(),
+	}
 }
 
 func (client *Client) Tarball(ctx context.Context, installationID int64, repository, sha string, writer io.Writer) error {
@@ -279,7 +293,7 @@ func (client *Client) FindReview(ctx context.Context, installationID int64, repo
 // ErrReviewRejected means GitHub refused the review itself, for example
 // because the commit is no longer part of the pull request after a force
 // push. Posting the same review again would fail the same way.
-var ErrReviewRejected = errors.New("GitHub rejected the review")
+var ErrReviewRejected = fmt.Errorf("GitHub: %w", overload.ErrReviewRejected)
 
 // PostReview posts a review with the given event (COMMENT, REQUEST_CHANGES
 // or APPROVE) and one comment per finding.
@@ -380,7 +394,7 @@ func (client *Client) SetStatus(ctx context.Context, installationID int64, repos
 
 // ErrStatusForbidden means the App may not set commit statuses (it lacks
 // "Commit statuses: write", or the installation has not accepted it yet).
-var ErrStatusForbidden = errors.New("GitHub App may not set commit statuses")
+var ErrStatusForbidden = fmt.Errorf("GitHub App: %w", overload.ErrStatusForbidden)
 
 // Delivery is one webhook GitHub sent (or tried to send) to the App.
 type Delivery struct {

@@ -64,24 +64,10 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 	}
 	source := w.Source
 	if source == nil {
-		if run.InstallationID > 0 {
-			client, err := appClient(ctx, w.Store)
-			if err != nil {
-				return w.failRun(ctx, runID, "missing_github_app", "GitHub App credentials unavailable to worker")
-			}
-			source = github.InstallationSource{Client: client, InstallationID: run.InstallationID}
+		var code string
+		if source, code, err = sourceFor(ctx, w.Store, run.ForgeID, run.InstallationID); err != nil {
+			return w.failRun(ctx, runID, code, err.Error()+" to worker")
 		}
-	}
-	if source == nil {
-		token := github.TokenFromEnvironment()
-		if token == "" {
-			return w.failRun(ctx, runID, "missing_github_credentials", "GitHub credentials unavailable to worker")
-		}
-		client, err := github.NewTokenClient(token)
-		if err != nil {
-			return w.failRun(ctx, runID, "github_client", "GitHub client unavailable")
-		}
-		source = client
 	}
 	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved}
 	if w.Sandbox != nil {

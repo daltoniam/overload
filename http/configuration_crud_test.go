@@ -44,7 +44,7 @@ func (store *crudStore) DeleteAgent(_ context.Context, name string) error {
 func (store *crudStore) ListRepositories(context.Context) ([]overload.Repository, error) {
 	return store.repos, nil
 }
-func (store *crudStore) SaveRepository(_ context.Context, name string, enabled, dryRun bool) error {
+func (store *crudStore) SaveRepository(_ context.Context, _ string, name string, enabled, dryRun bool) error {
 	for index := range store.repos {
 		if store.repos[index].FullName == name {
 			store.repos[index].Enabled = enabled
@@ -148,6 +148,16 @@ func TestConfigurationCRUDPages(t *testing.T) {
 	if store.repos[0].DryRun {
 		t.Fatal("posting opt-in not saved")
 	}
+	// A binding names its repository by ID; without one the form's host
+	// decides, so the same path on another host is not picked.
+	store.repos = append(store.repos, overload.Repository{ID: 2, FullName: "owner/repo", Forge: "codeberg", ForgeKind: overload.ForgeForgejo})
+	post("/configure/bindings", url.Values{"csrf": {token[1]}, "repository": {"owner/repo"}, "repository_id": {"2"}, "action": {"opened"}, "workflow": {"review"}, "enabled": {"true"}}, http.StatusSeeOther)
+	post("/configure/bindings", url.Values{"csrf": {token[1]}, "repository": {"owner/repo"}, "source": {"gitlab"}, "action": {"opened"}, "workflow": {"review"}, "enabled": {"true"}}, http.StatusBadRequest)
+	post("/configure/bindings", url.Values{"csrf": {token[1]}, "repository": {"owner/repo"}, "source": {"forgejo"}, "action": {"reopened"}, "workflow": {"review"}, "enabled": {"true"}}, http.StatusSeeOther)
+	if len(store.bindings) < 2 || store.bindings[len(store.bindings)-2].Source != overload.ForgeForgejo || store.bindings[len(store.bindings)-1].Source != overload.ForgeForgejo {
+		t.Fatalf("bindings = %+v", store.bindings)
+	}
+	store.repos = store.repos[:1]
 	post("/configure/agents/reviewer/delete", url.Values{"csrf": {token[1]}, "confirmed": {"true"}}, http.StatusSeeOther)
 	post("/configure/repositories/1/delete", url.Values{"csrf": {token[1]}, "confirmed": {"true"}}, http.StatusSeeOther)
 	if len(store.agents) != 0 || len(store.repos) != 0 {

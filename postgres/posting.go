@@ -21,8 +21,10 @@ type PostTarget struct {
 	PRNumber       int
 	HeadSHA        string
 	InstallationID int64
-	Findings       []overload.Finding
-	Duplicates     []int64
+	// ForgeID is the GitLab or Forgejo connection to post to; 0 is GitHub.
+	ForgeID    int64
+	Findings   []overload.Finding
+	Duplicates []int64
 	// DuplicateSeverities are the severities of findings already posted on
 	// an earlier commit and still present; they count toward the review
 	// decision without being commented again.
@@ -48,7 +50,7 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')), COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', '') FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.ReviewDecision, &target.BlockSeverity)
+	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(r.forge_id, 0), COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run, EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')), COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', '') FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.ForgeID, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.ReviewDecision, &target.BlockSeverity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}

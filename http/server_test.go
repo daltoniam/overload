@@ -91,8 +91,10 @@ func (store *fakeConfigStore) DeleteBinding(context.Context, int64, string) erro
 func (store *fakeConfigStore) ListRepositories(context.Context) ([]overload.Repository, error) {
 	return nil, nil
 }
-func (store *fakeConfigStore) SaveRepository(context.Context, string, bool, bool) error { return nil }
-func (store *fakeConfigStore) DeleteRepository(context.Context, int64) error            { return nil }
+func (store *fakeConfigStore) SaveRepository(context.Context, string, string, bool, bool) error {
+	return nil
+}
+func (store *fakeConfigStore) DeleteRepository(context.Context, int64) error { return nil }
 func (store *fakeConfigStore) ListSchedules(context.Context) ([]overload.Schedule, error) {
 	return nil, nil
 }
