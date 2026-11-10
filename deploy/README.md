@@ -599,14 +599,16 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
 - **What the fixer can do.** Its file tools only read and write files inside
   the worktree: they refuse paths outside it, symbolic links that leave it,
   and git's own files (`.git` at any depth, in any letter case), and they
-  never write through a symbolic link, even one that stays inside the
-  worktree. git runs with repository hooks, file system monitors and commit
-  signing turned off. After every round and after the final tests the loop
-  checks the worktree's `.git` file (which tells git where the repository
-  is); if anything changed it, the loop puts it back and stops with an
-  error. With `--test`, though, the fixer can run any code: it can edit a
-  test or a Makefile and then run the tests, which run as you, on your
-  machine, with your files and network. Tests get only `PATH`, `HOME`, user,
+  never read, list or write through a symbolic link, even one that stays
+  inside the worktree (a listing marks links with @). git runs with
+  repository hooks, file system monitors and commit signing turned off.
+  After every round and after the final tests the loop checks the worktree's
+  `.git` file (which tells git where the repository is); if anything changed
+  it, the loop puts it back and stops with an error. With `--test`, though,
+  the fixer can run any code: it can edit a test or a Makefile and then run
+  the tests, which run as you, on your machine, with your files and network,
+  so they can still change anything else you can, such as the original
+  repository's git configuration. Tests get only `PATH`, `HOME`, user,
   shell, temporary directory, locale, `TZ`, `TERM`, C compiler and
   `GO*`/`CGO_*` variables, minus any whose name mentions a token, key,
   secret, password or auth and any whose value is a URL with a user name or

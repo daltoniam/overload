@@ -408,7 +408,7 @@ func TestRunTestsEnvironmentAndTimeout(t *testing.T) {
 	}
 }
 
-func TestFixerWritesRefuseSymlinks(t *testing.T) {
+func TestFixerToolsRefuseSymlinks(t *testing.T) {
 	dir := t.TempDir()
 	gitFile := []byte("gitdir: /somewhere/.git/worktrees/fix\n")
 	if err := os.WriteFile(filepath.Join(dir, ".git"), gitFile, 0o644); err != nil {
@@ -445,6 +445,34 @@ func TestFixerWritesRefuseSymlinks(t *testing.T) {
 	}
 	if _, err := tools["write_file"].run(context.Background(), map[string]any{"path": "real/a.txt", "content": "ok"}); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "absolute")); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		tool, path, mentions string
+	}{
+		{"read_file", "cfg", ""},
+		{"read_file", "folder/a.txt", "symbolic link to real"},
+		{"read_file", "absolute/a.txt", ""},
+		{"list_files", "cfg", ""},
+		{"list_files", "folder", "symbolic link to real"},
+	} {
+		text, err := tools[test.tool].run(context.Background(), map[string]any{"path": test.path})
+		if err == nil {
+			t.Errorf("%s %s through a link: %q", test.tool, test.path, text)
+			continue
+		}
+		if strings.Contains(err.Error(), "gitdir") || strings.Contains(err.Error(), ".git") || strings.Contains(err.Error(), dir) || !strings.Contains(err.Error(), test.mentions) {
+			t.Errorf("%s %s: %v", test.tool, test.path, err)
+		}
+	}
+	listing, err := tools["list_files"].run(context.Background(), map[string]any{})
+	if err != nil || !strings.Contains(listing, "cfg@") || !strings.Contains(listing, "real/") || strings.Contains(listing, ".git") {
+		t.Fatalf("list: %q %v", listing, err)
+	}
+	if text, err := tools["read_file"].run(context.Background(), map[string]any{"path": "real/a.txt"}); err != nil || text != "ok" {
+		t.Fatalf("read real/a.txt: %q %v", text, err)
 	}
 }
 

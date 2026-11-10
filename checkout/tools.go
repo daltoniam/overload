@@ -99,11 +99,14 @@ func isGitName(component string) bool {
 	return strings.EqualFold(name, ".git") || strings.EqualFold(name, "git~1")
 }
 
-// refuseSymlinks refuses a write to name when it or any folder on the way
-// is a symbolic link. os.Root follows links that stay inside the worktree,
-// so a tracked link such as cfg -> .git would otherwise let a write replace
-// the worktree's .git file, which git reads to find its repository.
-func refuseSymlinks(root *os.Root, name string) error {
+// refuseSymlinks refuses to read, list or write name when it or any folder
+// on the way is a symbolic link. os.Root follows links that stay inside the
+// worktree, so a tracked link such as cfg -> .git would otherwise let a
+// write replace the worktree's .git file, which git reads to find its
+// repository, or a read send its local paths to a hosted model. The error
+// names the target when linkTarget says it is safe, so the fixer can use
+// the real path.
+func refuseSymlinks(root *os.Root, name, verb string) error {
 	parts := strings.Split(name, "/")
 	for index := range parts {
 		prefix := strings.Join(parts[:index+1], "/")
@@ -115,10 +118,28 @@ func refuseSymlinks(root *os.Root, name string) error {
 			return err
 		}
 		if info.Mode()&fs.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a symbolic link; write the file it points to instead", prefix)
+			if target, ok := linkTarget(root, prefix); ok {
+				return fmt.Errorf("%s is a symbolic link to %s; %s that path instead", prefix, target, verb)
+			}
+			return fmt.Errorf("%s is a symbolic link; %s the path it points to instead", prefix, verb)
 		}
 	}
 	return nil
+}
+
+// linkTarget is where the link at name points, relative to the worktree,
+// when that is safe to show: inside the worktree and not one of git's
+// files. Absolute targets would reveal local paths.
+func linkTarget(root *os.Root, name string) (string, bool) {
+	target, err := root.Readlink(name)
+	if err != nil || strings.HasPrefix(target, "/") || strings.Contains(target, "\\") {
+		return "", false
+	}
+	resolved := path.Join(path.Dir(name), target)
+	if !fs.ValidPath(resolved) || resolved == "." || slices.ContainsFunc(strings.Split(resolved, "/"), isGitName) {
+		return "", false
+	}
+	return resolved, true
 }
 
 // writtenPaths records the files a fixer wrote, so only those are
@@ -160,6 +181,9 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 			if err != nil {
 				return "", err
 			}
+			if err := refuseSymlinks(root, name, "read"); err != nil {
+				return "", err
+			}
 			data, err := root.ReadFile(name)
 			if err != nil {
 				return "", err
@@ -185,7 +209,7 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 			if len(content) > maxWriteBytes {
 				return "", fmt.Errorf("content is larger than %d bytes", maxWriteBytes)
 			}
-			if err := refuseSymlinks(root, name); err != nil {
+			if err := refuseSymlinks(root, name, "write"); err != nil {
 				return "", err
 			}
 			if dir := path.Dir(name); dir != "." {
@@ -200,11 +224,16 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 			written.add(name)
 			return "Wrote " + name, nil
 		}},
-		&localTool{info: fantasy.ToolInfo{Name: "list_files", Description: "List a directory of the checkout.", Parameters: map[string]any{"path": stringProp("Directory relative to the repository root; empty for the root")}}, run: func(_ context.Context, arguments map[string]any) (string, error) {
+		&localTool{info: fantasy.ToolInfo{Name: "list_files", Description: "List a directory of the checkout. Folders end in /, symbolic links in @.", Parameters: map[string]any{"path": stringProp("Directory relative to the repository root; empty for the root")}}, run: func(_ context.Context, arguments map[string]any) (string, error) {
 			raw, _ := arguments["path"].(string)
 			name, err := workPath(raw)
 			if err != nil {
 				return "", err
+			}
+			if name != "." {
+				if err := refuseSymlinks(root, name, "list"); err != nil {
+					return "", err
+				}
 			}
 			entries, err := fs.ReadDir(root.FS(), name)
 			if err != nil {
@@ -215,8 +244,13 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 				if isGitName(entry.Name()) {
 					continue
 				}
+				// A link is marked but not followed; its target may be one
+				// of git's files.
 				suffix := ""
-				if entry.IsDir() {
+				switch {
+				case entry.Type()&fs.ModeSymlink != 0:
+					suffix = "@"
+				case entry.IsDir():
 					suffix = "/"
 				}
 				lines = append(lines, entry.Name()+suffix)
