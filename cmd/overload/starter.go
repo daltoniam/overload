@@ -18,14 +18,14 @@ type starterStore interface {
 	ListReviewSettings(context.Context) ([]overload.ReviewSettings, error)
 	ListAgents(context.Context) ([]overload.AgentDefinition, error)
 	ListWorkflows(context.Context) ([]overload.Workflow, error)
-	SaveAgent(context.Context, overload.AgentDefinition) error
-	SaveWorkflow(context.Context, overload.Workflow) error
+	// SaveCohort saves the agents and workflow together or not at all.
+	SaveCohort(context.Context, []overload.AgentDefinition, overload.Workflow) error
 }
 
 // createStarterCohort saves the starter cohort's agents and workflow, all
 // on one model connection. It refuses to replace agents or a workflow
-// that already exist unless --force is given, and checks everything before
-// saving anything.
+// that already exist unless --force is given, checks everything first,
+// and saves everything together or nothing.
 func createStarterCohort(ctx context.Context, store starterStore, args []string, out io.Writer) error {
 	flags := flag.NewFlagSet("workflows starter", flag.ContinueOnError)
 	model := flags.String("model", "", "saved model connection every agent uses")
@@ -70,12 +70,7 @@ func createStarterCohort(ctx context.Context, store starterStore, args []string,
 			return fmt.Errorf("%s already exist; choose another --name or pass --force to replace them", strings.Join(existing, ", "))
 		}
 	}
-	for _, agent := range agents {
-		if err := store.SaveAgent(ctx, agent); err != nil {
-			return fmt.Errorf("save agent %s: %w", agent.Name, err)
-		}
-	}
-	if err := store.SaveWorkflow(ctx, workflow); err != nil {
+	if err := store.SaveCohort(ctx, agents, workflow); err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(out, "Saved workflow %s with %d agents on %s. Bind it to a repository, or run overload review --checkout . --workflow %s\n", workflow.Name, len(workflow.Agents), *model, workflow.Name)

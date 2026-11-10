@@ -23,14 +23,13 @@ func (store *fakeStarterStore) ListAgents(context.Context) ([]overload.AgentDefi
 func (store *fakeStarterStore) ListWorkflows(context.Context) ([]overload.Workflow, error) {
 	return store.workflows, nil
 }
-func (store *fakeStarterStore) SaveAgent(_ context.Context, agent overload.AgentDefinition) error {
-	if err := agent.Validate(); err != nil {
-		return err
+func (store *fakeStarterStore) SaveCohort(_ context.Context, agents []overload.AgentDefinition, workflow overload.Workflow) error {
+	for _, agent := range agents {
+		if err := agent.Validate(); err != nil {
+			return err
+		}
 	}
-	store.agents = append(store.agents, agent)
-	return nil
-}
-func (store *fakeStarterStore) SaveWorkflow(_ context.Context, workflow overload.Workflow) error {
+	store.agents = append(store.agents, agents...)
 	store.workflows = append(store.workflows, workflow)
 	return nil
 }

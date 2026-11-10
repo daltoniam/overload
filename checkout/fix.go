@@ -100,7 +100,18 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 	}
 	stamp := options.now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(suffix)
 	result = FixResult{Branch: "overload/fix-" + stamp, Worktree: filepath.Join(strings.TrimSpace(common), "overload-fix", stamp)}
+	// Cleanup after a failed add removes only what this run created, so
+	// the branch and folder must be new.
+	if _, err := original.git(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+result.Branch); err == nil {
+		return FixResult{}, fmt.Errorf("branch %s already exists", result.Branch)
+	}
+	if _, err := os.Lstat(result.Worktree); err == nil {
+		return FixResult{}, fmt.Errorf("%s already exists", result.Worktree)
+	}
 	if _, err := original.git(ctx, "worktree", "add", "-q", "-b", result.Branch, result.Worktree, "HEAD"); err != nil {
+		// git creates the branch before the worktree, so a failed add can
+		// leave the branch, a registered worktree or a partial folder.
+		cleanupFailedAdd(original, result)
 		return FixResult{}, err
 	}
 	defer func() {
@@ -214,6 +225,18 @@ func (snapshot gitFileSnapshot) verify() error {
 		return fmt.Errorf("the worktree's .git file was changed and could not be restored: %w", err)
 	}
 	return errors.New("the worktree's .git file was changed; it was restored and the loop stopped")
+}
+
+// cleanupFailedAdd removes what a failed git worktree add of result left
+// behind. It uses a fresh context so it still runs after an interrupt.
+func cleanupFailedAdd(original repository, result FixResult) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = original.git(ctx, "worktree", "remove", "--force", result.Worktree)
+	_ = os.RemoveAll(result.Worktree)
+	if _, err := original.git(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+result.Branch); err == nil {
+		_, _ = original.git(ctx, "branch", "-D", result.Branch)
+	}
 }
 
 // removeFixBranch removes a fix loop's worktree and branch when no round

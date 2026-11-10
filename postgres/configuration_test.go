@@ -219,3 +219,57 @@ func findWorkflow(t *testing.T, store *Store, name string) overload.Workflow {
 	t.Fatalf("workflow %s not listed", name)
 	return overload.Workflow{}
 }
+
+func TestSaveCohortIsAllOrNothing(t *testing.T) {
+	if os.Getenv("DATABASE_URL") == "" {
+		t.Skip("DATABASE_URL required")
+	}
+	ctx := context.Background()
+	store, err := Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatal(err)
+	}
+	names := []string{"test-cohort-main", "test-cohort-security"}
+	t.Cleanup(func() {
+		cleanup := context.Background()
+		_, _ = store.Pool.Exec(cleanup, `DELETE FROM workflows WHERE name='test-cohort'`)
+		_, _ = store.Pool.Exec(cleanup, `DELETE FROM agent_definitions WHERE name = ANY($1)`, names)
+		templates := []string{"agent:test-cohort-main", "agent:test-cohort-security", "workflow:test-cohort"}
+		_, _ = store.Pool.Exec(cleanup, `DELETE FROM prompt_revisions WHERE template_id IN (SELECT id FROM prompt_templates WHERE name = ANY($1))`, templates)
+		_, _ = store.Pool.Exec(cleanup, `DELETE FROM prompt_templates WHERE name = ANY($1)`, templates)
+		_, _ = store.Pool.Exec(cleanup, `DELETE FROM model_profiles WHERE name='test-model-cohort'`)
+		store.Pool.Close()
+	})
+	model := overload.ReviewSettings{Name: "test-model-cohort", Provider: "openaicompat", BaseURL: "http://127.0.0.1:8080/v1", Model: "test", PromptProfile: "context"}
+	if err := store.SaveReviewSettings(ctx, model); err != nil {
+		t.Fatal(err)
+	}
+	agents := []overload.AgentDefinition{{Name: names[0], Model: model.Name, Prompt: "Review.", Enabled: true}, {Name: names[1], Model: model.Name, Prompt: "Review security.", Enabled: true}}
+	broken := overload.Workflow{Name: "test-cohort", Kind: "pr_review", Agents: []string{names[0], names[1], "test-cohort-missing"}, Enabled: true}
+	if err := store.SaveCohort(ctx, agents, broken); err == nil {
+		t.Fatal("saved a workflow naming a missing agent")
+	}
+	assertCohortRows(t, store, names, 0, 0)
+	workflow := overload.Workflow{Name: "test-cohort", Kind: "pr_review", Agents: names, Enabled: true, Scopes: map[string]overload.Scope{names[1]: {Tiers: []string{overload.RiskFull}}}}
+	if err := store.SaveCohort(ctx, agents, workflow); err != nil {
+		t.Fatal(err)
+	}
+	assertCohortRows(t, store, names, 2, 1)
+}
+
+func assertCohortRows(t *testing.T, store *Store, names []string, wantAgents, wantWorkflows int) {
+	t.Helper()
+	var agents, workflows int
+	if err := store.Pool.QueryRow(context.Background(), `SELECT count(*) FROM agent_definitions WHERE name = ANY($1)`, names).Scan(&agents); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool.QueryRow(context.Background(), `SELECT count(*) FROM workflows WHERE name='test-cohort'`).Scan(&workflows); err != nil {
+		t.Fatal(err)
+	}
+	if agents != wantAgents || workflows != wantWorkflows {
+		t.Fatalf("agents %d workflows %d, want %d and %d", agents, workflows, wantAgents, wantWorkflows)
+	}
+}

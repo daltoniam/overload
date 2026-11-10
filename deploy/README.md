@@ -554,9 +554,10 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
 - `workflows starter` saves five agents on one model connection (main,
   security, schema, performance, tests) and a workflow with a coordinator
   (the verifier), sensitive paths and skip paths. Edit them like any other
-  agent or workflow; give specialists other models from the Agents page.
-  It refuses to replace a workflow or agents that already exist under the
-  same names; pass `--force` to overwrite them.
+  agent or workflow; give specialists other models from the Agents page. It
+  refuses to replace a workflow or agents that already exist under the same
+  names; pass `--force` to overwrite them. The agents and workflow are saved
+  together, so a failure saves none of them.
 - **Risk tiers.** A pull request is trivial up to 20 changed lines, lite up
   to 400 and full beyond that or when it touches a workflow's sensitive
   paths (migrations, auth, CI by default). Changed lines are added plus
@@ -572,15 +573,17 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
   Files not started by then are unreviewed and findings not yet verified
   are kept unchecked; either way the review is partial and the overload
   check fails.
-- `review --checkout DIR --base main` reviews the committed and
-  uncommitted changes to tracked files since the branch left `main`,
-  reading files from the working tree, and prints a report; nothing is
-  stored or posted. DIR may be any directory inside the checkout. Your
-  git settings for diff output (prefixes, relative paths, text conversion,
-  external diff tools) are ignored, and symbolic links that point outside
-  the checkout are not followed, so files elsewhere on the machine are
-  never sent to a model. `--check` exits with status 1 when the overload
-  check would fail, for a pre-push hook.
+- `review --checkout DIR --base main` reviews the committed and uncommitted
+  changes to tracked files since the branch left `main`, reading files from
+  the working tree, and prints a report; nothing is stored or posted. DIR
+  may be any directory inside the checkout. Your git settings for diff
+  output (prefixes, relative paths, text conversion, external diff tools,
+  ignored submodules) are ignored, git's clean, smudge and process filters
+  are switched off so no configured filter program runs (a Git LFS file
+  shows as its pointer), and symbolic links that point outside the checkout
+  are not followed, so files elsewhere on the machine are never sent to a
+  model. `--check` exits with status 1 when the overload check would fail,
+  for a pre-push hook.
 - `fix` (opt-in) needs committed changes: the fix branch starts from the
   last commit, so uncommitted changes are not part of it. It creates a
   branch `overload/fix-<time>-<random>` in a separate worktree under
@@ -601,24 +604,26 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
   and git's own files (`.git` at any depth, in any letter case), and they
   never read, list or write through a symbolic link, even one that stays
   inside the worktree (a listing marks links with @). git runs with
-  repository hooks, file system monitors and commit signing turned off.
-  After every round and after the final tests the loop checks the worktree's
-  `.git` file (which tells git where the repository is); if anything changed
-  it, the loop puts it back and stops with an error. With `--test`, though,
-  the fixer can run any code: it can edit a test or a Makefile and then run
-  the tests, which run as you, on your machine, with your files and network,
-  so they can still change anything else you can, such as the original
-  repository's git configuration. Tests get only `PATH`, `HOME`, user,
-  shell, temporary directory, locale, `TZ`, `TERM`, C compiler and
-  `GO*`/`CGO_*` variables, minus any whose name mentions a token, key,
-  secret, password or auth and any whose value is a URL with a user name or
-  password (such as `GOPROXY=https://user:token@...`); database URLs, API
-  keys and GitHub tokens are not passed. A test command that needs one sets
-  it itself, for example `--test "DATABASE_URL=postgres://localhost/test
-  make test"`; point it at a throwaway database. Review findings come from
-  pull request text, so treat the fixer's changes as untrusted until a
-  person has read them, and run `fix --test` only in a checkout you would
-  let an untrusted contributor's tests run in.
+  repository hooks, file system monitors, filters and commit signing turned
+  off, and git configuration inherited through environment variables is
+  ignored. After every round and after the final tests the loop checks the
+  worktree's `.git` file (which tells git where the repository is); if
+  anything changed it, the loop puts it back and stops with an error. With
+  `--test`, though, the fixer can run any code: it can edit a test or a
+  Makefile and then run the tests, which run as you, on your machine, with
+  your files and network, so they can still change anything else you can,
+  such as the original repository's git configuration. Tests get only
+  `PATH`, `HOME`, user, shell, temporary directory, locale, `TZ`, `TERM`, C
+  compiler and `GO*`/`CGO_*` variables, minus any whose name mentions a
+  token, key, secret, password or auth and any whose value is a URL with a
+  user name or password (such as `GOPROXY=https://user:token@...`); database
+  URLs, API keys and GitHub tokens are not passed. A test command that needs
+  one sets it itself, for example `--test
+  "DATABASE_URL=postgres://localhost/test make test"`; point it at a
+  throwaway database. Review findings come from pull request text, so treat
+  the fixer's changes as untrusted until a person has read them, and run
+  `fix --test` only in a checkout you would let an untrusted contributor's
+  tests run in.
 
 ## GitHub
 

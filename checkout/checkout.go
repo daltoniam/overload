@@ -32,20 +32,91 @@ var gitSafety = []string{"-c", "core.quotepath=off", "-c", "core.fsmonitor=false
 // editors that start overload set them.
 var gitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"}
 
-// Git runs git in dir and returns its standard output.
+// isInheritedGitConfig reports whether an environment variable carries git
+// configuration from whoever started overload. It is dropped so the filter
+// drivers Git lists are the ones git will see, and so Git's own
+// GIT_CONFIG_COUNT settings are not mixed with someone else's.
+func isInheritedGitConfig(name string) bool {
+	return name == "GIT_CONFIG_PARAMETERS" || name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+}
+
+func gitEnvironment() []string {
+	return slices.DeleteFunc(os.Environ(), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(gitLocationVariables, name) || isInheritedGitConfig(name)
+	})
+}
+
+// Git runs git in dir and returns its standard output. Every filter driver
+// in the configuration is switched off first: a clean, smudge or process
+// filter runs a program whenever git reads or writes a working-tree file
+// whose attributes name it, and a branch under review or a fixer can add
+// those attributes. Files are then read and written as they are stored, so
+// a Git LFS file shows as its pointer.
 func Git(ctx context.Context, dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	environment := gitEnvironment()
+	drivers, err := runGit(ctx, dir, environment, append(globalOptions(args), "config", "-z", "--get-regexp", `^filter\.`)...)
+	// Exit status 1 means no filter is configured.
+	var exit *exec.ExitError
+	if err != nil && (!errors.As(err, &exit) || exit.ExitCode() != 1) {
+		return "", fmt.Errorf("git config: %w", err)
+	}
+	names := filterDrivers(drivers)
+	if len(names) > 0 {
+		var settings []string
+		for _, name := range names {
+			for _, setting := range [][2]string{{"clean", ""}, {"smudge", ""}, {"process", ""}, {"required", "false"}} {
+				settings = append(settings, "GIT_CONFIG_KEY_"+fmt.Sprint(len(settings)/2)+"=filter."+name+"."+setting[0], "GIT_CONFIG_VALUE_"+fmt.Sprint(len(settings)/2)+"="+setting[1])
+			}
+		}
+		environment = append(append(environment, "GIT_CONFIG_COUNT="+fmt.Sprint(len(settings)/2)), settings...)
+	}
+	out, err := runGit(ctx, dir, environment, args...)
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w", subcommand(args), err)
+	}
+	return out, nil
+}
+
+// filterDrivers lists the driver names in the output of git config -z
+// --get-regexp '^filter\.': keys look like filter.<name>.<setting>, and a
+// name may contain dots.
+func filterDrivers(output string) []string {
+	var names []string
+	for entry := range strings.SplitSeq(output, "\x00") {
+		key, _, _ := strings.Cut(entry, "\n")
+		rest, ok := strings.CutPrefix(key, "filter.")
+		if index := strings.LastIndex(rest, "."); ok && index > 0 && !slices.Contains(names, rest[:index]) {
+			names = append(names, rest[:index])
+		}
+	}
+	return names
+}
+
+// globalOptions are the options before the subcommand, such as --git-dir,
+// so listing filters reads the same configuration the command will.
+func globalOptions(args []string) []string {
+	for index := 0; index < len(args); index++ {
+		switch {
+		case args[index] == "-c" || args[index] == "-C":
+			index++
+		case !strings.HasPrefix(args[index], "-"):
+			return slices.Clone(args[:index])
+		}
+	}
+	return slices.Clone(args)
+}
+
+func runGit(ctx context.Context, dir string, environment []string, args ...string) (string, error) {
 	command := exec.CommandContext(ctx, "git", append(append([]string{"-C", dir}, gitSafety...), args...)...)
-	command.Env = slices.DeleteFunc(os.Environ(), func(variable string) bool {
-		name, _, _ := strings.Cut(variable, "=")
-		return slices.Contains(gitLocationVariables, name)
-	})
+	command.Env = environment
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	out, err := command.Output()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %v: %s", subcommand(args), err, strings.TrimSpace(stderr.String()))
+		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return string(out), nil
 }
@@ -53,13 +124,8 @@ func Git(ctx context.Context, dir string, args ...string) (string, error) {
 // subcommand names a git invocation in errors: the first argument that is
 // not a global option.
 func subcommand(args []string) string {
-	for index := 0; index < len(args); index++ {
-		switch {
-		case args[index] == "-c" || args[index] == "-C":
-			index++
-		case !strings.HasPrefix(args[index], "-"):
-			return args[index]
-		}
+	if global := globalOptions(args); len(global) < len(args) {
+		return args[len(global)]
 	}
 	return strings.Join(args, " ")
 }
@@ -87,8 +153,9 @@ func openRepository(ctx context.Context, dir string) (repository, error) {
 
 // diffOptions keep the diff in the form the reviewer parses whatever the
 // user's git configuration says: a/ and b/ prefixes, paths from the
-// repository root, no external or text conversion programs.
-var diffOptions = []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--submodule=short"}
+// repository root, no external or text conversion programs, and submodule
+// updates shown even when diff.ignoreSubmodules would hide them.
+var diffOptions = []string{"diff", "--no-color", "--no-ext-diff", "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "--no-relative", "--submodule=short", "--ignore-submodules=none"}
 
 // mergeBase is the commit where HEAD left base.
 func (repo repository) mergeBase(ctx context.Context, base string) (string, error) {

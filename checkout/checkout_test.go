@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -536,5 +537,145 @@ func TestFixReportsAnInterruptDuringTheFinalTests(t *testing.T) {
 	result, err := Fix(ctx, FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, TestCommand: "touch started; sleep 30", Rounds: 1, Until: "high"})
 	if !errors.Is(err, context.Canceled) || result.TestsPassed != nil {
 		t.Fatalf("interrupted final tests: %+v %v", result, err)
+	}
+}
+
+func TestGitFiltersNeverRun(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		setup func(t *testing.T, dir, command string)
+	}{
+		{"clean filter from repository config, attributes on the base", func(t *testing.T, dir, command string) {
+			gitConfig(t, dir, "filter.evil.clean", command)
+			gitConfig(t, dir, "filter.evil.smudge", command)
+			commitAttributes(t, dir, "main", "*.go filter=evil\n")
+		}},
+		{"process filter with a dotted name, attributes added by the branch", func(t *testing.T, dir, command string) {
+			gitConfig(t, dir, "filter.evil.v2.process", command)
+			gitConfig(t, dir, "filter.evil.v2.required", "true")
+			commitAttributes(t, dir, "feature", "*.go filter=evil.v2\n")
+		}},
+		{"clean filter from the user's global config", func(t *testing.T, dir, command string) {
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+			if err := os.WriteFile(filepath.Join(home, ".gitconfig"), []byte("[filter \"evil\"]\n\tclean = "+command+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			commitAttributes(t, dir, "feature", "*.go filter=evil\n")
+		}},
+		{"clean filter from inherited environment", func(t *testing.T, dir, command string) {
+			t.Setenv("GIT_CONFIG_COUNT", "1")
+			t.Setenv("GIT_CONFIG_KEY_0", "filter.evil.clean")
+			t.Setenv("GIT_CONFIG_VALUE_0", command)
+			commitAttributes(t, dir, "feature", "*.go filter=evil\n")
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := gitRepo(t)
+			marker := filepath.Join(t.TempDir(), "filter-ran")
+			test.setup(t, dir, "touch "+marker+"; cat")
+			// An uncommitted change makes git read the working-tree file.
+			if err := os.WriteFile(filepath.Join(dir, "app.go"), []byte("package app\n\nfunc ok() {}\n\nfunc broken() { bug() }\n\nfunc more() {}\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var fixes atomic.Int64
+			server := fakeModels(t, &fixes)
+			defer server.Close()
+			if _, err := Diff(context.Background(), dir, "main"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Review(context.Background(), dir, "main", workflowFor(server.URL)); err != nil {
+				t.Fatal(err)
+			}
+			fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+			var out bytes.Buffer
+			if _, err := Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, Rounds: 1, Until: "high", Out: &out}); err != nil {
+				t.Fatalf("fix: %v\n%s", err, out.String())
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Fatal("a configured filter ran a program")
+			}
+		})
+	}
+}
+
+func gitConfig(t *testing.T, dir, key, value string) {
+	t.Helper()
+	if out, err := exec.Command("git", "-C", dir, "config", key, value).CombinedOutput(); err != nil {
+		t.Fatalf("git config: %v %s", err, out)
+	}
+}
+
+// commitAttributes commits a .gitattributes file on branch, with the test
+// filters switched off, and leaves the feature branch checked out on top
+// of it.
+func commitAttributes(t *testing.T, dir, branch, attributes string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, ".gitattributes"), []byte(attributes), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	steps := [][]string{{"stash", "-u", "-q"}, {"checkout", "-q", branch}, {"stash", "pop", "-q"}, {"add", ".gitattributes"}, {"commit", "-q", "-m", "attributes"}}
+	if branch == "main" {
+		steps = append(steps, []string{"rebase", "-q", "main", "feature"})
+	}
+	for _, args := range steps {
+		command := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false", "-c", "filter.evil.clean=", "-c", "filter.evil.smudge=", "-c", "filter.evil.process=", "-c", "filter.evil.v2.process=", "-c", "filter.evil.required=false", "-c", "filter.evil.v2.required=false"}, args...)...)
+		command.Env = slices.DeleteFunc(os.Environ(), func(variable string) bool { return strings.HasPrefix(variable, "GIT_CONFIG_") })
+		if out, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+	}
+}
+
+func TestDiffShowsIgnoredSubmodules(t *testing.T) {
+	dir := gitRepo(t)
+	head, err := Git(context.Background(), dir, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(context.Background(), dir, "update-index", "--add", "--cacheinfo", "160000,"+strings.TrimSpace(head)+",vendor/lib"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(context.Background(), dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "submodule"); err != nil {
+		t.Fatal(err)
+	}
+	gitConfig(t, dir, "diff.ignoreSubmodules", "all")
+	repo, err := openRepository(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diff, err := repo.diff(context.Background(), "main", true)
+	if err != nil || !strings.Contains(diff, "+Subproject commit "+strings.TrimSpace(head)) {
+		t.Fatalf("submodule update hidden: %q %v", diff, err)
+	}
+}
+
+func TestFixCleansUpAFailedWorktreeAdd(t *testing.T) {
+	dir := gitRepo(t)
+	// A file where the worktree folder should go makes git fail after it
+	// has created the branch.
+	if err := os.WriteFile(filepath.Join(dir, ".git", "overload-fix"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var fixes atomic.Int64
+	server := fakeModels(t, &fixes)
+	defer server.Close()
+	fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+	if _, err := Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, Rounds: 1, Until: "high"}); err == nil || !strings.Contains(err.Error(), "worktree") {
+		t.Fatalf("fix with a blocked worktree folder: %v", err)
+	}
+	if branches, err := Git(context.Background(), dir, "branch", "--list", "overload/fix-*"); err != nil || strings.TrimSpace(branches) != "" {
+		t.Fatalf("branches left: %q %v", branches, err)
+	}
+	if worktrees, err := Git(context.Background(), dir, "worktree", "list", "--porcelain"); err != nil || strings.Count(worktrees, "worktree ") != 1 {
+		t.Fatalf("worktrees left: %q %v", worktrees, err)
+	}
+}
+
+func TestFilterDrivers(t *testing.T) {
+	output := "filter.lfs.clean\ngit-lfs clean -- %f\x00filter.lfs.required\ntrue\x00filter.a.b.process\nx\x00filter.evil\nno setting\x00"
+	if got := strings.Join(filterDrivers(output), ","); got != "lfs,a.b" {
+		t.Fatalf("filterDrivers = %s", got)
 	}
 }
