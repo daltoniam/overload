@@ -58,3 +58,13 @@ func TestDecodeModelReviewToleratesQuotedNumbers(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeModelReviewReadsEvidenceSpelledFromThePrompt(t *testing.T) {
+	result, err := decodeModelReview(`{"summary":"s","findings":[{"path":"a.go","line":9,"side":"RIGHT","severity":"high","category":"bug","title":"t","body":"b","confidence":1,"exact evidence":"total * 100 / percent"},{"path":"a.go","line":2,"exact_evidence":"x := y"},{"path":"a.go","line":3,"evidence":"kept","exact evidence":"ignored"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 3 || result.Findings[0].Evidence != "total * 100 / percent" || result.Findings[1].Evidence != "x := y" || result.Findings[2].Evidence != "kept" {
+		t.Fatalf("findings = %+v", result.Findings)
+	}
+}

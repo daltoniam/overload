@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -66,6 +67,9 @@ func decodeModelReview(text string) (overload.ReviewResult, error) {
 	result := overload.ReviewResult{Summary: raw.Summary, Findings: make([]overload.Finding, 0, len(raw.Findings))}
 	for index, item := range raw.Findings {
 		finding := item.Finding
+		if finding.Evidence == "" {
+			finding.Evidence = cmp.Or(item.ExactEvidence, item.ExactEvidence2)
+		}
 		var err error
 		if finding.Line, err = looseInt(item.Line); err != nil {
 			return overload.ReviewResult{}, fmt.Errorf("finding %d line: %w", index, err)
@@ -96,6 +100,9 @@ type looseFinding struct {
 	Line       json.RawMessage `json:"line"`
 	StartLine  json.RawMessage `json:"start_line"`
 	Confidence json.RawMessage `json:"confidence"`
+	// Models sometimes spell the evidence key after the prompt's wording.
+	ExactEvidence  string `json:"exact evidence"`
+	ExactEvidence2 string `json:"exact_evidence"`
 }
 
 func looseNumber(raw json.RawMessage) (string, error) {
