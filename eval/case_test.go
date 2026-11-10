@@ -252,6 +252,27 @@ func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
 
 // TestNewFileDiffAppliesToTheSameFile checks that git, applying the diff,
 // writes exactly the case's content.
+func TestNewFileDiffQuotesUnusualNames(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for _, name := range []string{"plain.go", "tab\there.go", "new\nline.go", "caf\u00e9.go", "quote\"d.go", "back\\slash.go"} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			patch := filepath.Join(t.TempDir(), "new.patch")
+			if err := os.WriteFile(patch, []byte(NewFileDiff(name, "x\n")), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("git", "-C", dir, "apply", patch).CombinedOutput(); err != nil {
+				t.Fatalf("git apply: %v %s\n%s", err, out, NewFileDiff(name, "x\n"))
+			}
+			if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != "x\n" {
+				t.Fatalf("applied %q: %q, %v", name, got, err)
+			}
+		})
+	}
+}
+
 func TestNewFileDiffAppliesToTheSameFile(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

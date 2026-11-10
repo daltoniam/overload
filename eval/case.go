@@ -115,6 +115,36 @@ func (item Case) Validate() error {
 	return nil
 }
 
+// quotePath writes a name in a diff header the way git does: in double
+// quotes, with C escapes, when it holds control characters, quotes,
+// backslashes or non-ASCII bytes.
+func quotePath(name string) string {
+	if !strings.ContainsFunc(name, func(char rune) bool {
+		return char < 0x20 || char == 0x7f || char == '"' || char == '\\' || char >= 0x80
+	}) {
+		return name
+	}
+	var quoted strings.Builder
+	quoted.WriteByte('"')
+	for _, char := range []byte(name) {
+		switch {
+		case char == '"' || char == '\\':
+			quoted.WriteByte('\\')
+			quoted.WriteByte(char)
+		case char == '\t':
+			quoted.WriteString(`\t`)
+		case char == '\n':
+			quoted.WriteString(`\n`)
+		case char < 0x20 || char >= 0x7f:
+			fmt.Fprintf(&quoted, `\%03o`, char)
+		default:
+			quoted.WriteByte(char)
+		}
+	}
+	quoted.WriteByte('"')
+	return quoted.String()
+}
+
 // lineCount is how many lines content has; a last line without a newline
 // counts.
 func lineCount(content string) int {
@@ -138,13 +168,13 @@ func (item Case) Repository() fs.FS {
 // introduced the whole file.
 func NewFileDiff(path, content string) string {
 	var diff strings.Builder
-	fmt.Fprintf(&diff, "diff --git a/%s b/%s\nnew file mode 100644\n", path, path)
+	fmt.Fprintf(&diff, "diff --git %s %s\nnew file mode 100644\n", quotePath("a/"+path), quotePath("b/"+path))
 	// Git writes no hunk for an empty file.
 	if content == "" {
 		return diff.String()
 	}
 	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-	fmt.Fprintf(&diff, "--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, len(lines))
+	fmt.Fprintf(&diff, "--- /dev/null\n+++ %s\n@@ -0,0 +1,%d @@\n", quotePath("b/"+path), len(lines))
 	for _, line := range lines {
 		diff.WriteString("+" + line + "\n")
 	}
