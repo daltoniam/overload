@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"math/rand/v2"
+	"slices"
 	"testing"
 
 	"github.com/daltoniam/overload"
@@ -58,6 +60,18 @@ func TestScoreFindings(t *testing.T) {
 			want:     Score{Expected: 2, Reported: 2, Misplaced: 2, PlacementChecked: 2},
 		},
 		{
+			name:     "on-line findings are chosen so a misplaced one still counts",
+			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Keywords: []string{"alpha"}}, {Path: "a.go", StartLine: 20, EndLine: 20, Keywords: []string{"beta"}}},
+			findings: []overload.Finding{{Path: "a.go", Line: 10, Title: "alpha beta"}, {Path: "a.go", Line: 10, Title: "alpha"}},
+			want:     Score{Expected: 2, Matched: 1, Reported: 2, Misplaced: 1, Recall: 0.5, PlacementChecked: 2},
+		},
+		{
+			name:     "the same findings in the other order",
+			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Keywords: []string{"alpha"}}, {Path: "a.go", StartLine: 20, EndLine: 20, Keywords: []string{"beta"}}},
+			findings: []overload.Finding{{Path: "a.go", Line: 10, Title: "alpha"}, {Path: "a.go", Line: 10, Title: "alpha beta"}},
+			want:     Score{Expected: 2, Matched: 1, Reported: 2, Misplaced: 1, Recall: 0.5, PlacementChecked: 2},
+		},
+		{
 			name:     "a missed fix is not checked for placement",
 			expected: oneFix,
 			findings: []overload.Finding{{Path: "a.go", Line: 25}},
@@ -86,6 +100,42 @@ func TestKeywordsMatch(t *testing.T) {
 	} {
 		if got := keywordsMatch(test.groups, test.text); got != test.want {
 			t.Errorf("keywordsMatch(%q, %q) = %v", test.groups, test.text, got)
+		}
+	}
+}
+
+// TestScoreFindingsIgnoresOrder checks that shuffling the findings never
+// changes the score.
+func TestScoreFindingsIgnoresOrder(t *testing.T) {
+	random := rand.New(rand.NewPCG(1, 2))
+	words := []string{"alpha", "beta", "gamma"}
+	for trial := range 300 {
+		var expected []ExpectedFinding
+		for index := range 1 + random.IntN(4) {
+			item := ExpectedFinding{Path: "a.go", StartLine: 10 * (index + 1), EndLine: 10*(index+1) + random.IntN(3)}
+			if random.IntN(2) == 0 {
+				item.Keywords = []string{words[random.IntN(len(words))]}
+			}
+			if random.IntN(3) == 0 {
+				item.Bug = "shared"
+			}
+			expected = append(expected, item)
+		}
+		var findings []overload.Finding
+		for range random.IntN(6) {
+			title := words[random.IntN(len(words))] + " " + words[random.IntN(len(words))]
+			findings = append(findings, overload.Finding{Path: "a.go", Line: 5 + random.IntN(45), Title: title})
+		}
+		want := ScoreFindings(expected, findings, 1)
+		if want.Unmatched < 0 {
+			t.Fatalf("trial %d: negative unmatched %+v", trial, want)
+		}
+		for range 5 {
+			shuffled := slices.Clone(findings)
+			random.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+			if got := ScoreFindings(expected, shuffled, 1); got.Matched != want.Matched || got.Misplaced != want.Misplaced {
+				t.Fatalf("trial %d: %+v then %+v for %+v and %+v", trial, want, got, expected, shuffled)
+			}
 		}
 	}
 }

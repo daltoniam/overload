@@ -56,37 +56,42 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	withinLines := func(item ExpectedFinding, finding overload.Finding) bool {
 		return item.StartLine >= 1 && item.EndLine >= item.StartLine && finding.Line >= item.StartLine-tolerance && finding.Line <= item.EndLine+tolerance
 	}
-	// Bugs and findings are paired by maximum matching rather than in
-	// order: a grouped bug with several locations must not take the only
-	// finding another bug could have matched.
+	// Bugs and findings are paired as a whole rather than in order: first
+	// as many bugs as possible get a finding on their lines, then as many
+	// of the rest as possible get a misplaced one. Pairing in order would
+	// let a bug take the only finding another bug could match, so the
+	// counts would depend on the order of the findings.
 	describes := func(item ExpectedFinding, finding overload.Finding) bool {
 		return finding.Path == item.Path && keywordsMatch(item.Keywords, finding.Title+" "+finding.Body)
 	}
-	found := pairBugs(bugs, actual, used, func(item ExpectedFinding, finding overload.Finding) bool {
-		return describes(item, finding) && withinLines(item, finding)
-	})
-	for index := range bugs {
-		if found[index] {
-			matched[index] = true
-			result.Matched++
+	// Without keywords any finding in the file would look like a misplaced
+	// report of the bug, so only described bugs can be misplaced.
+	hasKeywords := func(item ExpectedFinding) bool { return len(item.Keywords) > 0 }
+	onLines := len(bugs) + 1
+	weights := make([][]int, len(bugs))
+	for index, bug := range bugs {
+		if slices.ContainsFunc(bug, hasKeywords) {
+			result.PlacementChecked++
+		}
+		weights[index] = make([]int, len(actual))
+		for findingIndex, finding := range actual {
+			switch {
+			case slices.ContainsFunc(bug, func(item ExpectedFinding) bool { return describes(item, finding) && withinLines(item, finding) }):
+				weights[index][findingIndex] = onLines
+			case slices.ContainsFunc(bug, func(item ExpectedFinding) bool { return hasKeywords(item) && describes(item, finding) }):
+				weights[index][findingIndex] = 1
+			}
 		}
 	}
-	// Without keywords any finding in the file would look like a misplaced
-	// report of the bug, so only described bugs count, and they are paired
-	// with the findings left over in the same way.
-	hasKeywords := func(item ExpectedFinding) bool { return len(item.Keywords) > 0 }
-	described := make([][]ExpectedFinding, len(bugs))
-	for index, bug := range bugs {
-		if !slices.ContainsFunc(bug, hasKeywords) {
+	for index, findingIndex := range maxWeightPairs(weights, len(actual)) {
+		if findingIndex < 0 {
 			continue
 		}
-		result.PlacementChecked++
-		if !matched[index] {
-			described[index] = slices.DeleteFunc(slices.Clone(bug), func(item ExpectedFinding) bool { return !hasKeywords(item) })
-		}
-	}
-	for _, misplaced := range pairBugs(described, actual, used, describes) {
-		if misplaced {
+		used[findingIndex] = true
+		if weights[index][findingIndex] == onLines {
+			matched[index] = true
+			result.Matched++
+		} else {
 			result.Misplaced++
 		}
 	}
@@ -112,39 +117,71 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	return result
 }
 
-// pairBugs pairs bugs with unused findings so that as many bugs as
-// possible get one, using augmenting paths; fits says whether a finding
-// matches one of a bug's expected findings. It marks the paired findings
-// used and reports which bugs got one.
-func pairBugs(bugs [][]ExpectedFinding, actual []overload.Finding, used []bool, fits func(ExpectedFinding, overload.Finding) bool) []bool {
-	owner := make([]int, len(actual))
-	for index := range owner {
-		owner[index] = -1
+// maxWeightPairs pairs rows with columns to maximise the total weight
+// (the Hungarian algorithm), returning each row's column or -1. A weight of
+// zero means the pair is not allowed.
+func maxWeightPairs(weights [][]int, columns int) []int {
+	size := max(len(weights), columns)
+	cost := func(row, column int) int {
+		if row < len(weights) && column < columns {
+			return -weights[row][column]
+		}
+		return 0
 	}
-	var assign func(bug int, seen []bool) bool
-	assign = func(bug int, seen []bool) bool {
-		for index, finding := range actual {
-			if used[index] || seen[index] || !slices.ContainsFunc(bugs[bug], func(item ExpectedFinding) bool { return fits(item, finding) }) {
-				continue
+	const infinity = int(^uint(0) >> 2)
+	rowPotential, columnPotential := make([]int, size+1), make([]int, size+1)
+	owner, way := make([]int, size+1), make([]int, size+1)
+	for row := 1; row <= size; row++ {
+		owner[0] = row
+		column := 0
+		lowest := make([]int, size+1)
+		for index := range lowest {
+			lowest[index] = infinity
+		}
+		visited := make([]bool, size+1)
+		for {
+			visited[column] = true
+			current, delta, next := owner[column], infinity, 0
+			for candidate := 1; candidate <= size; candidate++ {
+				if visited[candidate] {
+					continue
+				}
+				if reduced := cost(current-1, candidate-1) - rowPotential[current] - columnPotential[candidate]; reduced < lowest[candidate] {
+					lowest[candidate], way[candidate] = reduced, column
+				}
+				if lowest[candidate] < delta {
+					delta, next = lowest[candidate], candidate
+				}
 			}
-			seen[index] = true
-			if owner[index] < 0 || assign(owner[index], seen) {
-				owner[index] = bug
-				return true
+			for candidate := 0; candidate <= size; candidate++ {
+				if visited[candidate] {
+					rowPotential[owner[candidate]] += delta
+					columnPotential[candidate] -= delta
+				} else {
+					lowest[candidate] -= delta
+				}
+			}
+			column = next
+			if owner[column] == 0 {
+				break
 			}
 		}
-		return false
-	}
-	paired := make([]bool, len(bugs))
-	for index := range bugs {
-		paired[index] = len(bugs[index]) > 0 && assign(index, make([]bool, len(actual)))
-	}
-	for index := range actual {
-		if owner[index] >= 0 {
-			used[index] = true
+		for column != 0 {
+			previous := way[column]
+			owner[column] = owner[previous]
+			column = previous
 		}
 	}
-	return paired
+	pairs := make([]int, len(weights))
+	for index := range pairs {
+		pairs[index] = -1
+	}
+	for column := 1; column <= size; column++ {
+		if row := owner[column] - 1; row >= 0 && row < len(weights) && column-1 < columns && weights[row][column-1] > 0 {
+			pairs[row] = column - 1
+		}
+	}
+	return pairs
 }
 
 // groupBugs returns the expected findings grouped by bug, in the order

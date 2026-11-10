@@ -27,8 +27,9 @@ var (
 
 // stableDiff pins every diff option a user's git configuration could
 // change (colour, external diff and textconv drivers, path prefixes,
-// relative paths, rename detection), so a case is the same everywhere.
-var stableDiff = []string{"--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/"}
+// relative paths, rename detection, hunks merged across unchanged lines),
+// so a case is the same everywhere.
+var stableDiff = []string{"--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--inter-hunk-context=0", "--src-prefix=a/", "--dst-prefix=b/"}
 
 // CaseFromCommit builds a case from a commit that fixed a bug in the
 // repository at dir: the reviewer sees the change that undoes the fix
