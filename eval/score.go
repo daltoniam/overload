@@ -56,11 +56,40 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	withinLines := func(item ExpectedFinding, finding overload.Finding) bool {
 		return item.StartLine >= 1 && item.EndLine >= item.StartLine && finding.Line >= item.StartLine-tolerance && finding.Line <= item.EndLine+tolerance
 	}
-	for index, bug := range bugs {
-		matched[index] = claimFinding(bug, actual, used, withinLines)
-		if matched[index] {
+	// Bugs and findings are paired by maximum matching rather than in
+	// order: a grouped bug with several locations must not take the only
+	// finding another bug could have matched.
+	fits := func(bug []ExpectedFinding, finding overload.Finding) bool {
+		return slices.ContainsFunc(bug, func(item ExpectedFinding) bool {
+			return finding.Path == item.Path && keywordsMatch(item.Keywords, finding.Title+" "+finding.Body) && withinLines(item, finding)
+		})
+	}
+	owner := make([]int, len(actual))
+	for index := range owner {
+		owner[index] = -1
+	}
+	var assign func(bug int, seen []bool) bool
+	assign = func(bug int, seen []bool) bool {
+		for index, finding := range actual {
+			if seen[index] || !fits(bugs[bug], finding) {
+				continue
+			}
+			seen[index] = true
+			if owner[index] < 0 || assign(owner[index], seen) {
+				owner[index] = bug
+				return true
+			}
+		}
+		return false
+	}
+	for index := range bugs {
+		if assign(index, make([]bool, len(actual))) {
+			matched[index] = true
 			result.Matched++
 		}
+	}
+	for index := range actual {
+		used[index] = owner[index] >= 0
 	}
 	hasKeywords := func(item ExpectedFinding) bool { return len(item.Keywords) > 0 }
 	for index, bug := range bugs {

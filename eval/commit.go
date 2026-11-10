@@ -89,10 +89,19 @@ func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error)
 		return Case{}, fmt.Errorf("the commit modifies %d files; pick one that changes at most %d", len(paths), MaxCommitFiles)
 	}
 	// Submodule pointers are listed like text files but are not files.
-	paths = slices.DeleteFunc(paths, func(path string) bool {
-		kind, err := git("cat-file", "-t", parent+":"+path)
-		return err == nil && strings.TrimSpace(kind) != "blob"
-	})
+	// Their tree entries say so (mode 160000) without needing the
+	// submodule's commit, which lives in the submodule's own repository.
+	tree, err := git(append([]string{"ls-tree", "-z", "--full-tree", parent, "--"}, paths...)...)
+	if err != nil {
+		return Case{}, err
+	}
+	submodules := map[string]bool{}
+	for entry := range strings.SplitSeq(tree, "\x00") {
+		if meta, path, ok := strings.Cut(entry, "\t"); ok && strings.HasPrefix(meta, "160000 ") {
+			submodules[path] = true
+		}
+	}
+	paths = slices.DeleteFunc(paths, func(path string) bool { return submodules[path] })
 	if len(paths) == 0 {
 		return Case{}, errors.New("the commit modifies no existing text files")
 	}

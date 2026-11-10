@@ -46,6 +46,12 @@ func TestScoreFindings(t *testing.T) {
 			want:     Score{Expected: 1, Matched: 1, Reported: 3, Unmatched: 1, Repeats: 1, Recall: 1, PlacementChecked: 1},
 		},
 		{
+			name:     "a grouped bug does not take another bug's only finding",
+			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Bug: "a"}, {Path: "a.go", StartLine: 30, EndLine: 30, Bug: "a"}, {Path: "a.go", StartLine: 11, EndLine: 11}},
+			findings: []overload.Finding{{Path: "a.go", Line: 11}, {Path: "a.go", Line: 30}},
+			want:     Score{Expected: 2, Matched: 2, Reported: 2, Recall: 1},
+		},
+		{
 			name:     "a missed fix is not checked for placement",
 			expected: oneFix,
 			findings: []overload.Finding{{Path: "a.go", Line: 25}},

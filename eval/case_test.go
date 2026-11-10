@@ -198,3 +198,24 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 		}
 	}
 }
+
+func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir, git, write := gitRepo(t)
+	write("a.go", "package a\n\nconst A = 1\n")
+	git("add", ".")
+	// The submodule's commits live in its own repository, so these hashes
+	// name objects this repository does not have.
+	git("update-index", "--add", "--cacheinfo", "160000,1111111111111111111111111111111111111111,vendor/lib")
+	git("commit", "-q", "-m", "first")
+	write("a.go", "package a\n\nconst A = 2\n")
+	git("add", "a.go")
+	git("update-index", "--cacheinfo", "160000,2222222222222222222222222222222222222222,vendor/lib")
+	git("commit", "-q", "-m", "fix A and bump the submodule")
+	item, err := CaseFromCommit(context.Background(), dir, git("rev-parse", "HEAD"), "")
+	if err != nil || len(item.Files) != 1 || item.Files[0].Path != "a.go" {
+		t.Fatalf("case = %+v, %v", item, err)
+	}
+}
