@@ -128,6 +128,8 @@ func TestPlacement(t *testing.T) {
 		"five nodes":    func(p *Placement) { p.Nodes = []string{"a", "b", "c", "d", "e"} },
 		"bad model":     func(p *Placement) { p.Model = "beam; rm -rf /" },
 		"bad ip":        func(p *Placement) { p.Rank0IP = "studio-1" },
+		"wildcard ipv4": func(p *Placement) { p.Rank0IP = "0.0.0.0" },
+		"wildcard ipv6": func(p *Placement) { p.Rank0IP = "::" },
 		"bad host":      func(p *Placement) { p.Host = "0.0.0.0 --trust-remote-code" },
 		"bad port":      func(p *Placement) { p.Port = 70000 },
 		"bad mode":      func(p *Placement) { p.Mode = "ring" },

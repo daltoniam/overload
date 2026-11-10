@@ -65,8 +65,8 @@ func (placement Placement) Validate() error {
 		return errors.New("the model must be a Hugging Face repository such as mlx-community/Model-4bit")
 	case len(placement.Nodes) < 2 || len(placement.Nodes) > MaxPlacementNodes:
 		return fmt.Errorf("a placement needs 2 to %d nodes, each cabled to every other", MaxPlacementNodes)
-	case net.ParseIP(placement.Rank0IP) == nil:
-		return errors.New("rank0_ip must be an IP address of the first node")
+	case net.ParseIP(placement.Rank0IP) == nil || net.ParseIP(placement.Rank0IP).IsUnspecified():
+		return errors.New("rank0_ip must be an IP address of the first node (not 0.0.0.0 or ::)")
 	case placement.Host != "" && net.ParseIP(placement.Host) == nil:
 		return errors.New("host must be an IP address the first node serves the API on")
 	case placement.Port < 0 || placement.Port > 65535:
