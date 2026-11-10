@@ -539,6 +539,85 @@ overload bakeoff show 4
   reviews run in sandboxes: a case is a few files held in memory that the
   reviewer only reads, and no repository code or tool runs.
 
+## Nodes and clusters
+
+Every machine that runs models can report its hardware, runtime versions,
+downloads and model services to one overload, which lists them under Nodes
+and flags version drift (clusters need the same macOS, llama.cpp, MLX and
+overload versions on every node; operating system versions are compared
+only between machines running the same operating system).
+
+```sh
+# On the control plane: create an API key with the nodes scope.
+overload keys create --name nodes --scopes nodes
+# On each Mac: put the key in the install's configuration, then
+echo 'OVERLOAD_NODE_KEY=ovl_...' >> ~/Library/Application\ Support/overload/overload.env
+overload node install --server https://overload.example.com   # reports every minute
+```
+
+- Only keys created with `overload keys create` or by an administrator can
+  report nodes; members cannot create them. The first key to report a name
+  claims it, and reports for that name from any other valid key are
+  refused. One key may claim at most 100 names and the inventory holds at
+  most 500.
+- To rotate the key, create a new one, put it in each Mac's configuration
+  file and restart the reporter (`overload node install` again), then
+  revoke the old key: names held by a revoked or expired key go to the next
+  key that reports them. To move a node before the old key is revoked, an
+  administrator uses Release on the Nodes page: the node and its
+  placements stay, the old key is refused for that name from then on, and
+  the next other key to report takes it over. Taking over a name counts
+  toward the new key's limit of 100.
+- `--server` must use https unless overload runs on the same machine, since
+  every report carries the key.
+- `overload node report --server URL` reports once; add `--every 1m` (at
+  least 10s) to keep going, for example under systemd on Linux.
+- The node is named after its host name without `.local`; pass `--name` to
+  `node install` or `node report` to choose another.
+- The MLX version is read with `python3` on the service's PATH (Homebrew
+  first). macOS's own `/usr/bin/python3` is skipped unless the Command Line
+  Tools are installed, because otherwise it opens an install dialog. If MLX
+  lives in a virtual environment, pass `--python /path/to/venv/bin/python`
+  or set `OVERLOAD_PYTHON` in the configuration file.
+- A node that has not reported for five minutes is shown offline. Forget
+  removes it until it reports again (stop that with `overload node
+  uninstall`, which `overload uninstall` also does); a node a placement
+  uses cannot be forgotten until the placement is deleted.
+
+Placements record a model sharded across Macs with MLX over Thunderbolt 5
+RDMA (the JACCL backend, MLX 0.30.1 or newer, macOS 26.2 with RDMA enabled
+from Recovery on each Mac). JACCL needs a cable between every pair of
+nodes, so a placement has two to four nodes; larger rings are not
+supported yet. Overload stores the placement and prints the launcher's
+hostfile and command; it does not start the cluster. None of this has run
+on real Thunderbolt 5 hardware yet: that waits for the two-node spike in
+PLAN.md 16.3.
+
+```sh
+# rdma.json: rdma[i][j] is node i's RDMA device that reaches node j.
+echo '[["", "rdma_en5"], ["rdma_en5", ""]]' > rdma.json
+overload cluster place beam --model mlx-community/Beam-4bit \
+  --nodes studio-1,studio-2 --rank0-ip 192.168.1.10 --rdma rdma.json \
+  --host 192.168.1.10 --port 8080 --mode tensor
+overload cluster config beam   # hostfile.json, the mlx.launch command and the endpoint
+```
+
+- Node names in a placement are the SSH host names `mlx.launch` connects
+  to, so each must resolve over SSH from the machine that runs it (by
+  default the host name without `.local`; add `.local` names or IPs to
+  `~/.ssh/config` if they do not).
+- `--host` and `--port` are where the first node serves the
+  OpenAI-compatible API (by default `--rank0-ip` and 8080, since
+  `mlx_lm.server` otherwise listens only on 127.0.0.1); save that address
+  as a model in overload. `--rank0-ip` is often a Thunderbolt bridge
+  address only the cluster can reach, so pass the first node's LAN address
+  as `--host`. The server has no authentication, so keep the port reachable
+  only from overload.
+- `--mode tensor` decodes faster; `--mode pipeline` fits bigger models.
+- MLX can find the RDMA devices and write a hostfile itself with
+  `mlx.distributed_config --hosts studio-1,studio-2 --over thunderbolt
+  --backend jaccl`; copy its `rdma` lists into `rdma.json`.
+
 ## Multi-agent review on your machine
 
 A team of reviewers on one machine, with hosted or local models: a main

@@ -8,10 +8,12 @@ import (
 )
 
 // API key scopes. ScopeModels calls models through the gateway;
-// ScopeReviews requests pull request reviews through /api/reviews.
+// ScopeReviews requests pull request reviews through /api/reviews;
+// ScopeNodes reports a machine's inventory.
 const (
 	ScopeModels  = "models"
 	ScopeReviews = "reviews"
+	ScopeNodes   = "nodes"
 )
 
 // MaxAPIKeyLifetime bounds how long an API key can live.
@@ -71,8 +73,8 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 		return errors.New("choose at least one scope")
 	}
 	for _, scope := range scopes {
-		if scope != ScopeModels && scope != ScopeReviews {
-			return errors.New("scopes are models and reviews")
+		if scope != ScopeModels && scope != ScopeReviews && scope != ScopeNodes {
+			return errors.New("scopes are models, reviews and nodes")
 		}
 	}
 	if lifetime < time.Hour || lifetime > MaxAPIKeyLifetime {

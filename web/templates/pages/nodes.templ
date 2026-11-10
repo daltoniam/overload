@@ -1,0 +1,177 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Nodes(nodes []overload.Node, drift []overload.VersionDrift, placements []overload.Placement, now time.Time, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Nodes", CurrentPath: "/nodes"}) {
+		<div class="page-header"><div><p class="eyebrow">Models / Nodes</p><h1>Nodes</h1><p class="muted">Macs and servers that run models report their hardware, runtime versions and model services with <code>overload node report</code>. Clusters need the same versions on every node, so differences are flagged.</p></div></div>
+		if len(drift) > 0 {
+			<section class="panel"><h2>Version drift</h2><ul>
+				for _, found := range drift {
+					<li>{ driftText(found) }</li>
+				}
+			</ul></section>
+		}
+		<section class="panel">
+			if len(nodes) == 0 {
+				<div class="empty">No nodes have reported. Create an API key with the nodes scope and run <code>overload node install --server URL</code> on each machine.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Nodes</caption><thead><tr><th>Node</th><th>Hardware</th><th>Versions</th><th>Model services</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+					for _, node := range nodes {
+						<tr>
+							<td>{ node.Report.Name }<span class="secondary-line">{ node.Report.OS } { node.Report.OSVersion }</span></td>
+							<td>{ textOr(node.Report.Chip, "Unknown chip") }<span class="secondary-line">{ memoryText(node.Report.MemoryBytes) } memory, { diskText(node.Report.DiskFreeBytes) } free</span></td>
+							<td class="mono">overload { textOr(node.Report.OverloadVersion, "?") }<span class="secondary-line">{ runtimeText(node.Report) }</span></td>
+							<td>
+								if len(node.Report.Services) == 0 {
+									<span class="muted">None</span>
+								}
+								for _, service := range node.Report.Services {
+									<span class="secondary-line">{ service.Model }: { service.Health }</span>
+								}
+								if len(node.Report.Downloads) > 0 {
+									<details><summary>{ downloadsText(len(node.Report.Downloads)) }</summary>
+										<ul>
+											for _, download := range node.Report.Downloads {
+												<li class="mono">{ download }</li>
+											}
+										</ul>
+									</details>
+								}
+							</td>
+							<td>
+								if node.Online(now) {
+									<span class="badge enabled">Online</span>
+								} else {
+									<span class="badge disabled">Offline</span>
+								}
+								<span class="secondary-line mono">{ node.LastSeen.UTC().Format("2006-01-02 15:04") }</span>
+							</td>
+							<td>
+								if node.KeyPrefix != "" {
+									<span class="secondary-line mono">Key { node.KeyPrefix }</span>
+									<form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/release") } data-confirm-title={ "Release node " + node.Report.Name } data-confirm={ ReleaseNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit" aria-label={ "Release " + node.Report.Name }>Release</button></form>
+								}
+								<form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") } data-confirm-title={ "Forget node " + node.Report.Name } data-confirm={ ForgetNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit" aria-label={ "Forget " + node.Report.Name }>Forget</button></form>
+							</td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+		<section class="panel"><h2>Placements</h2>
+			<p class="muted">Models sharded across nodes with MLX over Thunderbolt 5 RDMA. Overload records the placement and generates the launcher configuration; start it from a machine that can reach every node over SSH. Define placements with <code>overload cluster place</code>.</p>
+			if len(placements) == 0 {
+				<div class="empty">No placements.</div>
+			}
+			for _, placement := range placements {
+				<h3>{ placement.Name }: <span class="mono">{ placement.Model }</span></h3>
+				<p class="muted">{ strconv.Itoa(len(placement.Nodes)) } nodes, { placementMode(placement) } parallel: { strings.Join(placement.Nodes, ", ") }. Once started, the first node serves <span class="mono">{ placement.BaseURL() }</span>.</p>
+				<pre><code>{ placement.Command("hostfile.json") }</code></pre>
+				<pre><code>{ hostfileText(placement) }</code></pre>
+			}
+		</section>
+	}
+}
+
+// ForgetNodeImpact is what forgetting a node does.
+const ForgetNodeImpact = "It leaves the inventory and its name is released, so any key with the nodes scope can report under it. It reappears if it reports again; run overload node uninstall on it to stop that."
+
+// ReleaseNodeImpact is what releasing a node does.
+const ReleaseNodeImpact = "Its current key loses the name and cannot take it back: the next other key with the nodes scope to report under it takes it over. The node and its placements stay. Use this when moving a node to a new key."
+
+// ReleaseNodePrompt confirms releasing node name.
+func ReleaseNodePrompt(name string) ConfirmPrompt {
+	return ConfirmPrompt{Eyebrow: "Nodes / Release", Title: "Release node " + name + "?", Impact: ReleaseNodeImpact, Button: "Release node", Cancel: "/nodes"}
+}
+
+// ForgetNodePrompt confirms forgetting node name.
+func ForgetNodePrompt(name string) ConfirmPrompt {
+	return ConfirmPrompt{Eyebrow: "Nodes / Forget", Title: "Forget node " + name + "?", Impact: ForgetNodeImpact, Button: "Forget node", Cancel: "/nodes"}
+}
+
+func driftText(found overload.VersionDrift) string {
+	label := driftLabel(found.Field)
+	if found.OS != "" {
+		label += " (" + found.OS + ")"
+	}
+	nodes := strings.Join(found.Nodes, ", ")
+	if found.Even {
+		return label + " differs between " + nodes + ", and no version is on most of them"
+	}
+	return label + " differs on " + nodes
+}
+
+func driftLabel(field string) string {
+	switch field {
+	case "os_version":
+		return "The operating system version"
+	case "overload_version":
+		return "The overload version"
+	case "llama_build":
+		return "The llama.cpp build"
+	default:
+		return "The MLX version"
+	}
+}
+
+// memoryText shows memory in binary gigabytes, as Apple sizes it, so a
+// 64 GB Mac shows 64 GB.
+func memoryText(size int64) string {
+	if size == 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%.0f GB", float64(size)/(1<<30))
+}
+
+// diskText shows disk space in decimal gigabytes, as Finder does.
+func diskText(size int64) string {
+	if size == 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%.0f GB", float64(size)/1e9)
+}
+
+func downloadsText(count int) string {
+	if count == 1 {
+		return "1 downloaded model"
+	}
+	return strconv.Itoa(count) + " downloaded models"
+}
+
+func placementMode(placement overload.Placement) string {
+	if placement.Mode == "" {
+		return overload.PlacementTensor
+	}
+	return placement.Mode
+}
+
+func runtimeText(report overload.NodeReport) string {
+	var parts []string
+	if report.LlamaBuild > 0 {
+		parts = append(parts, fmt.Sprintf("llama.cpp b%d", report.LlamaBuild))
+	}
+	if report.MLXVersion != "" {
+		parts = append(parts, "MLX "+report.MLXVersion)
+	}
+	if len(parts) == 0 {
+		return "No model runtime found"
+	}
+	return strings.Join(parts, ", ")
+}
+
+func hostfileText(placement overload.Placement) string {
+	data, err := placement.Hostfile()
+	if err != nil {
+		return err.Error()
+	}
+	return string(data)
+}

@@ -44,6 +44,9 @@ templ APIKeys(page KeysPage, nonce string) {
 				<fieldset class="field"><legend>Scopes</legend>
 					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>
 					<label class="check"><input type="checkbox" name="scopes" value="reviews"/> Request pull request reviews</label>
+					if page.All {
+						<label class="check"><input type="checkbox" name="scopes" value="nodes"/> Report a node's inventory (administrators only)</label>
+					}
 				</fieldset>
 				<label class="field"><span>Expires after (days)</span><input name="days" type="number" min="1" max="365" required value="90"/></label>
 				<div class="actions"><button type="submit">Create key</button></div>

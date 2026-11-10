@@ -343,6 +343,10 @@ func (inst *installation) agents() map[string]string {
 	return agents
 }
 
+// servicePath is the PATH overload's launchd agents run with; launchd's
+// default leaves out Homebrew.
+const servicePath = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
 func (inst *installation) startServices(exe string) error {
 	logs := filepath.Join(inst.home, "logs")
 	if inst.values["OVERLOAD_POSTGRES"] == "native" {
@@ -354,8 +358,7 @@ func (inst *installation) startServices(exe string) error {
 			return err
 		}
 	}
-	path := "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-	agent := launchd.Agent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": path}}
+	agent := launchd.Agent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": servicePath}}
 	if err := launchd.Write(agent); err != nil {
 		return err
 	}
@@ -366,6 +369,13 @@ func (inst *installation) stopServices() {
 	for _, label := range []string{inst.label, inst.label + ".postgres"} {
 		launchd.Stop(label)
 	}
+}
+
+// serviceLabels are the launchd agents an install may have started, which
+// uninstall removes: the server, its Postgres, the tunnel and the node
+// reporter.
+func (inst *installation) serviceLabels() []string {
+	return []string{inst.label, inst.label + ".postgres", inst.label + ".tunnel", inst.label + ".node"}
 }
 
 func uninstall(args []string) error {
@@ -387,7 +397,7 @@ func uninstall(args []string) error {
 		if err := removeModelServices(modelDir, inst.label); err != nil {
 			fmt.Printf("Could not remove every model service: %v. Remove the remaining %s.model.* agents with launchctl bootout.\n", err, inst.label)
 		}
-		for _, label := range []string{inst.label, inst.label + ".postgres", inst.label + ".tunnel"} {
+		for _, label := range inst.serviceLabels() {
 			if err := launchd.Remove(label); err != nil {
 				return err
 			}

@@ -90,6 +90,10 @@ func run(args []string) error {
 		return manageBakeoff(args[1:])
 	case "fix":
 		return manageFix(args[1:])
+	case "node":
+		return manageNode(args[1:])
+	case "cluster":
+		return manageCluster(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	default:
