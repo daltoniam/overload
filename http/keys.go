@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -90,8 +91,10 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 		}
 		keys, err := store.ListAPIKeys(r.Context(), userID, all)
 		if err != nil {
-			http.Error(w, "Unable to load API keys", http.StatusInternalServerError)
-			return
+			// The secret is shown only now, so show it even when the rest
+			// of the list cannot be loaded.
+			slog.Warn("listing API keys after creating one failed", "error", err)
+			keys = []overload.APIKey{key}
 		}
 		w.Header().Set("Cache-Control", "no-store")
 		_ = pages.APIKeys(keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret}), formTokenFor(r, csrf)).Render(r.Context(), w)

@@ -211,7 +211,7 @@ func TestGateway(t *testing.T) {
 		t.Fatalf("stream upstream: %v %q", body, headers.Get("Authorization"))
 	}
 
-	for index, request := range []string{`{"model":"flint","stream":true,"stream_options":{"include_usage":false}}`, `{"model":"flint","stream":true}`} {
+	for index, request := range []string{`{"model":"flint","stream":true,"stream_options":{"include_usage":false}}`, `{"model":"flint","stream":true}`, `{"model":"flint","stream":true,"stream_options":null}`} {
 		response = call(http.MethodPost, "/v1/chat/completions", "ovl_good", request)
 		want := "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\ndata: [DONE]\n\n"
 		if response.Code != http.StatusOK || response.Body.String() != want {
@@ -223,17 +223,21 @@ func TestGateway(t *testing.T) {
 	}
 
 	response = call(http.MethodPost, "/v1/messages", "", `{"model":"claude","stream":true}`, "X-Api-Key", "ovl_good", "Anthropic-Beta", "mcp-client-2025-04-04")
-	headers, body = upstream.request(before + 4)
+	if response := call(http.MethodPost, "/v1/chat/completions", "ovl_good", `{"model":"flint","stream":true,"stream_options":"yes"}`); response.Code != http.StatusBadRequest {
+		t.Fatalf("non-object stream_options: %d", response.Code)
+	}
+
+	headers, body = upstream.request(before + 5)
 	if response.Code != http.StatusOK || headers.Get("X-Api-Key") != "claude-key" || headers.Get("Anthropic-Version") != defaultAnthropicVersion || headers.Get("Anthropic-Beta") != "" || headers.Get("Authorization") != "" || body["model"] != "claude-opus-5-5" {
 		t.Fatalf("messages: %d %v %v", response.Code, headers, body)
 	}
 
 	response = call(http.MethodPost, "/v1/messages", "ovl_good", `{"model":"claude"}`, "Anthropic-Version", "2025-01-01")
-	if headers, _ := upstream.request(before + 5); response.Code != http.StatusOK || headers.Get("Anthropic-Version") != "2025-01-01" || headers.Get("Authorization") != "" {
+	if headers, _ := upstream.request(before + 6); response.Code != http.StatusOK || headers.Get("Anthropic-Version") != "2025-01-01" || headers.Get("Authorization") != "" {
 		t.Fatalf("messages without streaming: %d %v", response.Code, headers)
 	}
 
-	want := []string{"gpt 9/3", "flint 11/5", "flint 11/5", "flint 11/5", "claude 1000/12", "claude 20/7"}
+	want := []string{"gpt 9/3", "flint 11/5", "flint 11/5", "flint 11/5", "flint 11/5", "claude 1000/12", "claude 20/7"}
 	usage := store.recorded()[beforeUsage:]
 	if len(usage) != len(want) {
 		t.Fatalf("usage = %+v", usage)

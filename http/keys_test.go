@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -16,8 +17,9 @@ import (
 
 type fakeKeyStore struct {
 	fakeStore
-	keys  []overload.APIKey
-	usage []overload.Usage
+	listErr error
+	keys    []overload.APIKey
+	usage   []overload.Usage
 }
 
 func (store *fakeKeyStore) CreateAPIKey(_ context.Context, userID int64, name string, scopes []string, lifetime time.Duration) (overload.APIKey, string, error) {
@@ -26,7 +28,7 @@ func (store *fakeKeyStore) CreateAPIKey(_ context.Context, userID int64, name st
 	return key, "ovl_test_secret", nil
 }
 func (store *fakeKeyStore) ListAPIKeys(context.Context, int64, bool) ([]overload.APIKey, error) {
-	return store.keys, nil
+	return store.keys, store.listErr
 }
 func (store *fakeKeyStore) RevokeAPIKey(_ context.Context, id, _ int64, _ bool) error {
 	if id < 1 || int(id) > len(store.keys) {
@@ -114,6 +116,11 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 	if !strings.Contains(created.Body.String(), "ovl_test_secret") || created.Header().Get("Cache-Control") != "no-store" || !strings.Contains(created.Body.String(), "http://example.com/v1") {
 		t.Fatalf("created page: %v %s", created.Header(), created.Body.String())
 	}
+	store.listErr = errors.New("database unavailable")
+	if again := post("/keys", url.Values{"csrf": {csrf}, "name": {"ci"}, "scopes": {"models"}, "days": {"30"}}, http.StatusOK); !strings.Contains(again.Body.String(), "ovl_test_secret") {
+		t.Fatal("the new key's secret was lost when the list failed to load")
+	}
+	store.listErr, store.keys = nil, store.keys[:1]
 	if strings.Contains(get("/keys"), "ovl_test_secret") {
 		t.Fatal("the secret is shown again")
 	}

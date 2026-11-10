@@ -239,8 +239,14 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 	if stream && provider == overload.ProviderOpenAICompat {
 		// Usage is always requested so every call is counted; the extra
 		// chunk is dropped again for clients that did not ask for it.
-		options := map[string]json.RawMessage{}
-		_ = json.Unmarshal(request["stream_options"], &options)
+		var options map[string]json.RawMessage
+		if raw, ok := request["stream_options"]; ok && json.Unmarshal(raw, &options) != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request_error", "stream_options must be an object")
+			return
+		}
+		if options == nil {
+			options = map[string]json.RawMessage{}
+		}
 		_ = json.Unmarshal(options["include_usage"], &clientWantsUsage)
 		options["include_usage"] = json.RawMessage("true")
 		request["stream_options"], _ = json.Marshal(options)
