@@ -61,6 +61,7 @@ func TestChangedPaths(t *testing.T) {
 		{"rename with spaces", "diff --git a/old name.go b/new name.go\nsimilarity index 100%\nrename from old name.go\nrename to new name.go\n", []string{"old name.go", "new name.go"}, false},
 		{"copy", "diff --git a/a.go b/b.go\nsimilarity index 100%\ncopy from a.go\ncopy to b.go\n", []string{"a.go", "b.go"}, false},
 		{"quoted", "diff --git \"a/caf\\303\\251.md\" \"b/caf\\303\\251.md\"\nnew file mode 100644\n", []string{"café.md"}, false},
+		{"quoted old name, unquoted new name ending in a space", "diff --git \"a/old\\tname\" b/new \nsimilarity index 100%\nrename from \"old\\tname\"\nrename to new \n", []string{"old\tname", "new "}, false},
 		{"hunk lines are not headers", "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n--- a/evil.go\n+++ b/evil.go\n", []string{"a.go"}, false},
 		{"crlf", "diff --git a/crlf.go b/crlf.go\r\n--- a/crlf.go\r\n+++ b/crlf.go\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n", []string{"crlf.go"}, false},
 		{"repeats once", "diff --git a/a.go b/a.go\nold mode 100644\nnew mode 100755\ndiff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n", []string{"a.go"}, false},

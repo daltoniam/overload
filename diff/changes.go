@@ -81,7 +81,9 @@ func headerPaths(header string) []string {
 			return nil
 		}
 		paths := []string{prefixedPath(first, "a/")}
-		if second := strings.TrimSpace(header[len(first):]); second != "" {
+		// Only the separating space is removed: an unquoted second name may
+		// itself end in spaces.
+		if second, ok := strings.CutPrefix(header[len(first):], " "); ok && second != "" {
 			paths = append(paths, prefixedPath(second, "b/"))
 		}
 		return paths
