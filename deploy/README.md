@@ -1054,7 +1054,10 @@ jobs 15 seconds to finish; jobs still running are then cancelled, and their
 reviews and scheduled jobs are queued again when the server next starts.
 Give it 30 seconds from SIGTERM to SIGKILL, as the launchd agent from
 `overload install`, `deploy/systemd/overload.service`, the compose file and
-the Kubernetes default do.
+the Kubernetes default do. Mac installs upgraded through Homebrew,
+`install.sh` or the package keep launchd's 20-second limit until
+`overload install` runs again and rewrites the agent; until then a slow
+shutdown may be killed, and recovery queues its jobs again.
 
 ### Docker Compose
 

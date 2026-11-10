@@ -38,6 +38,11 @@ owners=$(lsbom -p U "$work/flat/Bom" | sort -u | tr '\n' ' ')
 [ "$owners" = "root " ] || fail "payload owners are [$owners], want root"
 archived=$(gzip -dc "$work/flat/Payload" | cpio -it --quiet | LC_ALL=C sort | tr '\n' ' ')
 [ "$archived" = "$want_entries" ] || fail "payload is [$archived], want [$want_entries]"
+# The installer writes files with the archive's modes, so check them there
+# too, not only in the bill of materials.
+archive_modes=$(gzip -dc "$work/flat/Payload" | cpio -itv --quiet 2>/dev/null | awk '{print $1 "=" $NF}' | LC_ALL=C sort -t= -k2 | tr '\n' ' ')
+want_archive_modes="drwxr-xr-x=. -rw-r--r--=./LICENSE drwxr-xr-x=./bin -rwxr-xr-x=./bin/overload "
+[ "$archive_modes" = "$want_archive_modes" ] || fail "payload archive modes are [$archive_modes], want [$want_archive_modes]"
 scripts=$(cd "$work/flat/Scripts" && find . -type f | LC_ALL=C sort | tr '\n' ' ')
 [ "$scripts" = "./postinstall " ] || fail "scripts are [$scripts], want [./postinstall ]"
 [ -x "$work/flat/Scripts/postinstall" ] || fail "postinstall is not executable"
