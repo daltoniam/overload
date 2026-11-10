@@ -122,9 +122,6 @@ func TestWorkflowRoutesFilesByScope(t *testing.T) {
 		t.Fatalf("findings %+v", result.Findings)
 	}
 	routing := result.Metrics["routing"].(overload.Routing)
-	if strings.Join(routing.Uncommentable, ",") != "auth/old.go,logo.png" || !slices.Contains(routing.ChangedFiles(), "auth/old.go") {
-		t.Fatalf("deleted and binary files missing from the routing: %+v", routing)
-	}
 	if len(routing.Skipped) != 1 || routing.Agents[1].Capped != 2 || routing.Agents[1].Findings != 1 || routing.Agents[0].Reviewed != 1 || routing.Agents[1].InputTokens == 0 || result.Metrics["skipped_files"] != 1 {
 		t.Fatalf("routing %+v metrics %+v", routing, result.Metrics)
 	}

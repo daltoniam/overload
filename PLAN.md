@@ -1479,8 +1479,10 @@ plan and deploy/README.md.
    from the sandbox; protected paths that always need a human, matched
    against every changed name (deleted, binary and both names of a
    rename); bot approval limited to named low-risk paths and withdrawn
-   when a later review does not approve; a documented branch-protection
-   recipe that pins the status to the overload GitHub App.
+   when a later review does not approve; a failing verdict that a re-review
+   of the same commit requested through the API cannot clear (only a
+   person's re-review can); a documented branch-protection recipe that
+   pins the status to the overload GitHub App.
 8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.

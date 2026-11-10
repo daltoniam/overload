@@ -113,6 +113,13 @@ type Gate struct {
 	// paths; Unreviewed are changed files no review covered.
 	HumanFiles []string
 	Unreviewed []string
+	// FilesUnknown is set when the changed files could not be read. Held
+	// is set when an earlier failing verdict on the commit stands over
+	// this review, and HeldBack when it kept this review from approving
+	// or passing.
+	FilesUnknown bool
+	Held         bool
+	HeldBack     bool
 }
 
 // GateFiles are a pull request's changed files as the host read them from
@@ -160,6 +167,10 @@ type GateInput struct {
 	// NotPosted is set when the review is not posted to GitHub, so the
 	// status must not claim it approved or requested changes.
 	NotPosted bool
+	// HeldFailure is set when an earlier verdict on the same commit failed
+	// and this review was not started by a person: it may add to that
+	// verdict but cannot clear it.
+	HeldFailure bool
 }
 
 // GateOutcome decides a finished review's event and commit status. It
@@ -172,9 +183,12 @@ type GateInput struct {
 //     name (old and new names, deleted and binary files included) is on a
 //     human review path, or when the workflow names approve paths and any
 //     changed name is outside them;
-//   - blocking findings request changes and fail the status.
+//   - blocking findings request changes and fail the status;
+//   - a review held by an earlier failing verdict on the same commit
+//     neither approves nor passes, so automation re-running a commit cannot
+//     clear a block; only a person's re-run can.
 func GateOutcome(input GateInput) Gate {
-	var gate Gate
+	gate := Gate{FilesUnknown: input.Files == nil, Held: input.HeldFailure}
 	var changed []string
 	reviewed := 0
 	if input.Files != nil {
@@ -190,7 +204,8 @@ func GateOutcome(input GateInput) Gate {
 		}
 	}
 	approvable := humanErr == nil && len(gate.HumanFiles) == 0 && reviewed > 0 && allMatch(input.ApprovePaths, changed)
-	if gate.Event == ReviewApprove && !approvable {
+	if gate.Event == ReviewApprove && (!approvable || input.HeldFailure) {
+		gate.HeldBack = approvable
 		gate.Event = ReviewComment
 	}
 	switch {
@@ -210,6 +225,10 @@ func GateOutcome(input GateInput) Gate {
 		gate.State, gate.Description = GateSuccess, "No issues found"
 	default:
 		gate.State, gate.Description = GateSuccess, fmt.Sprintf("%d issue(s) noted as comments", len(input.Severities))
+	}
+	if input.HeldFailure && gate.State == GateSuccess {
+		gate.HeldBack = true
+		gate.State, gate.Description = GateFailure, "An earlier review of this commit failed; only a re-review started by a person can clear it"
 	}
 	if humanErr != nil {
 		gate.Description += "; human review paths are invalid, so no approval"
@@ -238,8 +257,9 @@ func coverage(routing Routing, files GateFiles, skipPaths []string) ([]string, i
 	for _, path := range routing.Skipped {
 		skipped[path] = skip.match(path)
 	}
+	unreviewed := routing.UnreviewedFiles()
 	failed := map[string]bool{}
-	for _, path := range routing.UnreviewedFiles() {
+	for _, path := range unreviewed {
 		failed[path] = true
 	}
 	assigned := map[string]bool{}
@@ -248,7 +268,6 @@ func coverage(routing Routing, files GateFiles, skipPaths []string) ([]string, i
 			assigned[path] = true
 		}
 	}
-	unreviewed := routing.UnreviewedFiles()
 	reviewed := 0
 	for _, path := range files.Commentable {
 		switch {

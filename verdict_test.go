@@ -99,12 +99,18 @@ func TestGateOutcome(t *testing.T) {
 		{"approve paths cover skipped files", gateInput(GateInput{Decision: ReviewDecisionApprove, ApprovePaths: []string{"docs/**"}}, "docs/a.md"), ReviewComment, GateSuccess, "No issues found"},
 		{"approve paths cover binary files", GateInput{Decision: ReviewDecisionApprove, ApprovePaths: []string{"docs/**"}, Routing: routing("docs/a.md"), Files: changed([]string{"docs/a.md"}, "logo.png")}, ReviewComment, GateSuccess, "No issues found"},
 		{"approve paths match case", gateInput(GateInput{Decision: ReviewDecisionApprove, ApprovePaths: []string{"docs/**", "go.sum"}}, "Docs/a.md"), ReviewComment, GateSuccess, "No issues found"},
+		{"a held verdict neither approves nor passes", gateInput(GateInput{Decision: ReviewDecisionApprove, HeldFailure: true}, "a.go"), ReviewComment, GateFailure, "started by a person"},
+		{"a held verdict still requests changes", gateInput(GateInput{Decision: ReviewDecisionApprove, Severities: []string{"high"}, HeldFailure: true}, "a.go"), ReviewRequestChanges, GateFailure, "Changes requested"},
+		{"a held comment-only review fails", gateInput(GateInput{HeldFailure: true}, "a.go"), ReviewComment, GateFailure, "earlier review of this commit failed"},
 		{"approve paths inside", gateInput(GateInput{Decision: ReviewDecisionApprove, ApprovePaths: []string{"docs/**", "go.sum"}}, "docs/a.md"), ReviewApprove, GateSuccess, "Approved"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			gate := GateOutcome(test.input)
 			if gate.Event != test.event || gate.State != test.state || !strings.Contains(gate.Description, test.phrase) {
 				t.Fatalf("gate = %+v", gate)
+			}
+			if gate.FilesUnknown != (test.input.Files == nil) || gate.Held != test.input.HeldFailure {
+				t.Fatalf("gate flags = %+v", gate)
 			}
 		})
 	}

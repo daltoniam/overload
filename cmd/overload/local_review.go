@@ -212,7 +212,7 @@ func queueReview(options reviewOptions) error {
 	if err != nil {
 		return err
 	}
-	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr, options.again)
+	runID, err := queue.QueueManualReview(ctx, store, client, reader, options.repo, options.pr, options.again, false)
 	if err != nil {
 		return err
 	}

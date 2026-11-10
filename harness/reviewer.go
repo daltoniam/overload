@@ -110,11 +110,11 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	}
 	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(reviewable) > len(routing.Skipped) {
 		var usage plannerUsage
-		tooLarge, uncommentable := routing.TooLarge, routing.Uncommentable
+		tooLarge := routing.TooLarge
 		if routing, usage, err = planRouting(ctx, workflow, parsed, reviewable, routing); err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
-		routing.TooLarge, routing.Uncommentable = tooLarge, uncommentable
+		routing.TooLarge = tooLarge
 		result.Metrics["planner_input_tokens"], result.Metrics["planner_output_tokens"] = usage.inputTokens, usage.outputTokens
 		result.Metrics["input_tokens"], result.Metrics["output_tokens"] = usage.inputTokens, usage.outputTokens
 	}
@@ -220,12 +220,10 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 
 // routeFiles routes the changed files of a diff. Files too large to review
 // are left out of routing and listed on it, unless skip paths already drop
-// them; uncommentable names are listed too. It also returns the paths that
-// were routed.
+// them. It also returns the paths that were routed.
 func routeFiles(workflow overload.ResolvedWorkflow, parsed reviewDiff) (overload.Routing, []string, error) {
 	changed := parsed.paths()
 	initial, err := workflow.Route(changed)
-	initial.Uncommentable = parsed.uncommentable
 	large := parsed.tooLarge(workflow.FileCharBudget())
 	if len(large) == 0 {
 		return initial, changed, err
@@ -239,7 +237,7 @@ func routeFiles(workflow overload.ResolvedWorkflow, parsed reviewDiff) (overload
 		routed = append(routed, path)
 	}
 	routing, err := workflow.Route(routed)
-	routing.TooLarge, routing.Uncommentable = tooLarge, parsed.uncommentable
+	routing.TooLarge = tooLarge
 	return routing, routed, err
 }
 

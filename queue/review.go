@@ -218,9 +218,20 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	if !plan.enqueue {
+		history, err := w.Store.LoadGateHistory(ctx, runID)
+		if err != nil {
+			// A verdict set without its history, or not recorded, could
+			// clear an earlier failure, so the status is left pending.
+			slog.Error("merge gate history unavailable", "run_id", runID, "error", err)
+			return nil
+		}
 		input := gateInput(spec.Workflow, result, files)
-		input.NotPosted = true
+		input.NotPosted, input.HeldFailure = true, history.HeldFailure
 		gate := overload.GateOutcome(input)
+		if err := w.Store.RecordGate(ctx, runID, gate); err != nil {
+			slog.Error("merge gate verdict not recorded", "run_id", runID, "error", err)
+			return nil
+		}
 		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 	}
 	return nil

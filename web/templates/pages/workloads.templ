@@ -45,6 +45,7 @@ templ WorkloadRuleForm(rule overload.WorkloadRule, nonce string) {
 			<fieldset class="field"><legend>Scopes</legend>
 				<label class="check"><input type="checkbox" name="scopes" value="reviews" checked?={ contains(rule.Scopes, "reviews") }/> Request pull request reviews</label>
 				<label class="check"><input type="checkbox" name="scopes" value="models" checked?={ contains(rule.Scopes, "models") }/> Call models through the gateway</label>
+				<small>Do not let <code>pull_request</code> jobs request reviews: they run the workflow file from the pull request, so its author controls what they send. Match <code>job_workflow_ref</code> to a <code>pull_request_target</code> workflow on the default branch instead. Reviews requested this way cannot clear an earlier failing check on the same commit.</small>
 			</fieldset>
 			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ rule.Enabled }/> Enabled</label>
 			<div class="actions"><button type="submit">Save rule</button><a class="button secondary" href="/configure/workloads">Cancel</a></div>

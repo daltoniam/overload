@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -60,6 +61,9 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		}
 		input.NotPosted = true
 		gate := overload.GateOutcome(input)
+		if err := w.Store.RecordGate(ctx, runID, gate); err != nil {
+			return err
+		}
 		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 		return nil
 	}
@@ -96,7 +100,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		// withdrawing stale reviews and setting the status.
 		return w.finish(ctx, poster, target, gate, standing, "posted", existing)
 	}
-	notes := gateNotes(gate)
+	notes := gateNotes(gate, target.History)
 	if len(target.Findings) == 0 && notes == "" && event != overload.ReviewApprove && (event != overload.ReviewRequestChanges || requestsChanges(standing)) {
 		return w.finish(ctx, poster, target, gate, standing, "nothing_new", 0)
 	}
@@ -115,10 +119,14 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	return w.finish(ctx, poster, target, gate, standing, "posted", reviewID)
 }
 
-// finish withdraws stale reviews, records the post and sets the commit
-// status.
+// finish withdraws stale reviews, records the verdict and the post, and
+// sets the commit status. The verdict is recorded before the post, because
+// a recorded post is never retried.
 func (w *PostWorker) finish(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, gate overload.Gate, standing []github.StandingReview, postStatus string, reviewID int64) error {
-	if err := w.dismiss(ctx, poster, target, gate.Event, standing, reviewID); err != nil {
+	if err := w.dismiss(ctx, poster, target, gate, standing, reviewID); err != nil {
+		return err
+	}
+	if err := w.Store.RecordGate(ctx, target.RunID, gate); err != nil {
 		return err
 	}
 	if err := w.Store.FinishPost(ctx, target, postStatus, reviewID); err != nil {
@@ -137,17 +145,33 @@ func requestsChanges(standing []github.StandingReview) bool {
 	return false
 }
 
-// gateNotes tells reviewers which files the review did not cover and which
-// sensitive files still need a person.
-func gateNotes(gate overload.Gate) string {
+// gateNotes explains a failing or held gate on the pull request: changed
+// files that could not be read or were not reviewed, an earlier failing
+// verdict this review cannot clear, and sensitive files that still need a
+// person. The sensitive files are listed only when they differ from those
+// of overload's last posted review, so each push does not repeat them.
+func gateNotes(gate overload.Gate, history postgres.GateHistory) string {
 	var notes strings.Builder
+	if gate.FilesUnknown {
+		notes.WriteString("\n\nOverload could not read this pull request's changed files, so the overload check fails until the pull request is reviewed again.")
+	}
 	if len(gate.Unreviewed) > 0 {
 		fmt.Fprintf(&notes, "\n\nNot reviewed, so the overload check fails for this commit: %s.", codeList(gate.Unreviewed))
 	}
-	if len(gate.HumanFiles) > 0 {
+	if gate.HeldBack {
+		notes.WriteString("\n\nAn earlier overload review of this commit failed the check. A review requested through the API or by automation cannot clear that; a person can review the commit again from overload's UI or CLI.")
+	}
+	if len(gate.HumanFiles) > 0 && (!history.HumanFilesKnown || !sameFiles(history.PostedHumanFiles, gate.HumanFiles)) {
 		fmt.Fprintf(&notes, "\n\nThese files are on this workflow's human review paths, so overload does not approve this pull request: %s.", codeList(gate.HumanFiles))
 	}
 	return notes.String()
+}
+
+func sameFiles(first, second []string) bool {
+	first, second = slices.Clone(first), slices.Clone(second)
+	slices.Sort(first)
+	slices.Sort(second)
+	return slices.Equal(first, second)
 }
 
 // codeList formats up to ten paths for a review body. Paths come from the
@@ -182,24 +206,28 @@ func codeList(paths []string) string {
 // dismiss withdraws overload's earlier reviews that the new one no longer
 // stands behind: an approval unless this review approves, and, when the
 // workflow decides, a request for changes unless this review requests
-// changes. GitHub counts each reviewer's latest approval or request and a
-// comment replaces neither, so a stale approval would otherwise keep
-// counting toward the merge.
-func (w *PostWorker) dismiss(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, event string, standing []github.StandingReview, posted int64) error {
+// changes or is held by an earlier failing verdict. GitHub counts each
+// reviewer's latest approval or request and a comment replaces neither, so
+// a stale approval would otherwise keep counting toward the merge; when one
+// cannot be withdrawn, the status fails before the job is retried.
+func (w *PostWorker) dismiss(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, gate overload.Gate, standing []github.StandingReview, posted int64) error {
 	decides := target.ReviewDecision == overload.ReviewDecisionRequestChanges || target.ReviewDecision == overload.ReviewDecisionApprove
 	for _, review := range standing {
 		var message string
 		switch {
 		case review.ID == posted:
 			continue
-		case review.State == github.ReviewStateApproved && event != overload.ReviewApprove:
+		case review.State == github.ReviewStateApproved && gate.Event != overload.ReviewApprove:
 			message = withdrawApprovalMessage
-		case review.State == github.ReviewStateChangesRequested && decides && event != overload.ReviewRequestChanges:
+		case review.State == github.ReviewStateChangesRequested && decides && gate.Event != overload.ReviewRequestChanges && !gate.Held:
 			message = dismissMessage
 		default:
 			continue
 		}
 		if err := poster.DismissReview(ctx, target.InstallationID, target.Repository, target.PRNumber, review.ID, message); err != nil {
+			if review.State == github.ReviewStateApproved {
+				reportStatus(ctx, w.Store, w.Status, target.RunID, overload.GateFailure, "Could not withdraw overload's earlier approval")
+			}
 			return fmt.Errorf("dismiss earlier review: %w", err)
 		}
 	}

@@ -2,6 +2,7 @@ package queue
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -15,13 +16,14 @@ import (
 )
 
 type fakePoster struct {
-	reject    bool
-	existing  int64
-	posts     [][]overload.Finding
-	events    []string
-	summary   string
-	standing  []github.StandingReview
-	dismissed []int64
+	reject     bool
+	existing   int64
+	posts      [][]overload.Finding
+	events     []string
+	summary    string
+	standing   []github.StandingReview
+	dismissed  []int64
+	dismissErr error
 }
 
 type fakeStatus struct {
@@ -47,6 +49,9 @@ func (poster *fakePoster) StandingReviews(context.Context, int64, string, int) (
 func (poster *fakePoster) DismissReview(_ context.Context, _ int64, _ string, _ int, reviewID int64, message string) error {
 	if message == "" {
 		return fmt.Errorf("dismissal without a message")
+	}
+	if poster.dismissErr != nil {
+		return poster.dismissErr
 	}
 	poster.dismissed = append(poster.dismissed, reviewID)
 	return nil
@@ -266,24 +271,28 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	pr := 10
-	newGatedRun := func(snapshot, metrics string, findings ...overload.Finding) int64 {
+	insertRun := func(number int, trigger, snapshot, metrics string, findings ...overload.Finding) int64 {
 		t.Helper()
-		pr++
 		var runID int64
-		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, post_status, installation_id, config_snapshot, metrics) VALUES ($1, $2, $3, $4, 'webhook', 'completed', false, 'queued', $5, $6, $7) RETURNING id`, repoID, pr, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID, snapshot, metrics).Scan(&runID); err != nil {
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, post_status, installation_id, config_snapshot, metrics) VALUES ($1, $2, $3, $4, $5, 'completed', false, 'queued', $6, $7, $8) RETURNING id`, repoID, number, strings.Repeat("b", 40), strings.Repeat("a", 40), trigger, installationID, snapshot, metrics).Scan(&runID); err != nil {
 			t.Fatal(err)
 		}
 		tx, err := store.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := postgres.InsertFindings(ctx, tx, runID, repo, pr, "pending", findings); err != nil {
+		if err := postgres.InsertFindings(ctx, tx, runID, repo, number, "pending", findings); err != nil {
 			t.Fatal(err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatal(err)
 		}
 		return runID
+	}
+	newGatedRun := func(snapshot, metrics string, findings ...overload.Finding) int64 {
+		t.Helper()
+		pr++
+		return insertRun(pr, postgres.TriggerWebhook, snapshot, metrics, findings...)
 	}
 	// reviewedA is a complete review of a pull request changing only a.go.
 	const reviewedA = `{"routing":{"agents":[{"agent":"main","files":["a.go"]}]},"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`
@@ -393,6 +402,80 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("unknown changed files are explained even with nothing new", func(t *testing.T) {
+		poster := &fakePoster{}
+		status := work(poster, newGatedRun(`{"review_decision":"approve"}`, `{"routing":{"agents":[{"agent":"main","files":["a.go"]}]}}`))
+		if status != "posted" || len(poster.events) != 1 || poster.events[0] != overload.ReviewComment || !strings.Contains(poster.summary, "could not read this pull request's changed files") {
+			t.Fatalf("status %q events %v summary %q", status, poster.events, poster.summary)
+		}
+	})
+
+	t.Run("a failed withdrawal of an approval fails the check", func(t *testing.T) {
+		poster := &fakePoster{standing: []github.StandingReview{approved(5)}, dismissErr: fmt.Errorf("403 dismissal restricted")}
+		before := len(statuses.states)
+		err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: newRun(overload.ReviewDecisionApprove, finding("critical"))}})
+		if err == nil || !strings.Contains(err.Error(), "dismiss earlier review") {
+			t.Fatalf("withdrawal failure not reported for a retry: %v", err)
+		}
+		if fmt.Sprint(statuses.states[before:]) != "[failure]" || !strings.Contains(statuses.descriptions[before], "Could not withdraw overload's earlier approval") {
+			t.Fatalf("commit statuses %v %v", statuses.states[before:], statuses.descriptions[before:])
+		}
+	})
+
+	t.Run("an automated re-review cannot clear a failing verdict on the same commit", func(t *testing.T) {
+		pr++
+		number := pr
+		snapshot := `{"review_decision":"approve"}`
+		first := insertRun(number, postgres.TriggerWebhook, snapshot, reviewedA, finding("critical"))
+		if status := work(&fakePoster{}, first); status != "posted" {
+			t.Fatalf("first review %q", status)
+		}
+		before := len(statuses.states)
+		poster := &fakePoster{standing: []github.StandingReview{requested(77)}}
+		if status := work(poster, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "posted" {
+			t.Fatalf("automated re-review %q", status)
+		}
+		if len(poster.events) != 1 || poster.events[0] != overload.ReviewComment || len(poster.dismissed) != 0 || !strings.Contains(poster.summary, "cannot clear that") {
+			t.Fatalf("automated re-review approved or withdrew the request: events %v dismissed %v summary %q", poster.events, poster.dismissed, poster.summary)
+		}
+		if statuses.states[before] != "failure" || !strings.Contains(statuses.descriptions[before], "started by a person") {
+			t.Fatalf("automated re-review cleared the status: %v %v", statuses.states[before:], statuses.descriptions[before:])
+		}
+		poster = &fakePoster{standing: []github.StandingReview{requested(77)}}
+		if status := work(poster, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "posted" || statuses.states[len(statuses.states)-1] != "failure" {
+			t.Fatalf("a held verdict must stay held for the next automated review: %q %v", status, statuses.states[before:])
+		}
+		poster = &fakePoster{standing: []github.StandingReview{requested(77)}}
+		if status := work(poster, insertRun(number, postgres.TriggerManual, snapshot, reviewedA)); status != "posted" || len(poster.events) != 1 || poster.events[0] != overload.ReviewApprove || fmt.Sprint(poster.dismissed) != "[77]" || statuses.states[len(statuses.states)-1] != "success" {
+			t.Fatalf("a person's re-review should clear the block: %q events %v dismissed %v statuses %v", status, poster.events, poster.dismissed, statuses.states[before:])
+		}
+		if status := work(&fakePoster{}, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "posted" || statuses.states[len(statuses.states)-1] != "success" {
+			t.Fatalf("after a person cleared it, automation may pass again: %q %v", status, statuses.states[before:])
+		}
+	})
+
+	t.Run("human review files are listed again only when they change", func(t *testing.T) {
+		pr++
+		number := pr
+		snapshot := `{"review_decision":"approve","human_review_paths":["auth/**"]}`
+		human := func(files ...string) string {
+			list, _ := json.Marshal(files)
+			return fmt.Sprintf(`{"routing":{"agents":[{"agent":"main","files":%s}]},"gate_files":{"changed":%s,"commentable":%s}}`, list, list, list)
+		}
+		poster := &fakePoster{}
+		if status := work(poster, insertRun(number, postgres.TriggerWebhook, snapshot, human("auth/a.go"))); status != "posted" || !strings.Contains(poster.summary, "`auth/a.go`") {
+			t.Fatalf("first review %q %q", status, poster.summary)
+		}
+		poster = &fakePoster{}
+		if status := work(poster, insertRun(number, postgres.TriggerWebhook, snapshot, human("auth/a.go", "main.go"))); status != "nothing_new" || len(poster.events) != 0 {
+			t.Fatalf("unchanged human review files were posted again: %q %v", status, poster.events)
+		}
+		poster = &fakePoster{}
+		if status := work(poster, insertRun(number, postgres.TriggerWebhook, snapshot, human("auth/a.go", "auth/b.go"))); status != "posted" || !strings.Contains(poster.summary, "`auth/b.go`") {
+			t.Fatalf("changed human review files were not posted: %q %q", status, poster.summary)
+		}
+	})
 
 	t.Run("gate notes are posted even with nothing new", func(t *testing.T) {
 		poster := &fakePoster{}
