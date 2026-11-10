@@ -52,6 +52,12 @@ func TestScoreFindings(t *testing.T) {
 			want:     Score{Expected: 2, Matched: 2, Reported: 2, Recall: 1},
 		},
 		{
+			name:     "misplaced findings are paired with bugs as a whole",
+			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Keywords: []string{"race"}}, {Path: "a.go", StartLine: 20, EndLine: 20, Keywords: []string{"race", "mutex"}}},
+			findings: []overload.Finding{{Path: "a.go", Line: 50, Title: "race mutex"}, {Path: "a.go", Line: 60, Title: "race"}},
+			want:     Score{Expected: 2, Reported: 2, Misplaced: 2, PlacementChecked: 2},
+		},
+		{
 			name:     "a missed fix is not checked for placement",
 			expected: oneFix,
 			findings: []overload.Finding{{Path: "a.go", Line: 25}},

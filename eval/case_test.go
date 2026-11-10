@@ -36,16 +36,18 @@ func TestPlantedSuite(t *testing.T) {
 func TestSuiteValidate(t *testing.T) {
 	good := PlantedSuite().Cases[1]
 	for name, suite := range map[string]Suite{
-		"no cases":      {Name: "s"},
-		"bad name":      {Name: "a b", Cases: []Case{good}},
-		"repeated case": {Name: "s", Cases: []Case{good, good}},
-		"unknown file":  {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff, Expected: []ExpectedFinding{{Path: "nope.go", StartLine: 1, EndLine: 1}}}}},
-		"backwards":     {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff, Expected: []ExpectedFinding{{Path: "util/textutil.go", StartLine: 5, EndLine: 4}}}}},
-		"escaping path": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "../x.go"}}, Diff: good.Diff, Expected: good.Expected}}},
-		"too large":     {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: strings.Repeat("x", MaxCaseBytes)}}, Diff: good.Diff, Expected: good.Expected}}},
-		"missing diff":  {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Expected: good.Expected}}},
-		"NUL in a file": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: "a\x00b"}}, Diff: good.Diff, Expected: good.Expected}}},
-		"NUL in diff":   {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff + "\x00", Expected: good.Expected}}},
+		"no cases":        {Name: "s"},
+		"bad name":        {Name: "a b", Cases: []Case{good}},
+		"repeated case":   {Name: "s", Cases: []Case{good, good}},
+		"unknown file":    {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff, Expected: []ExpectedFinding{{Path: "nope.go", StartLine: 1, EndLine: 1}}}}},
+		"backwards":       {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff, Expected: []ExpectedFinding{{Path: "util/textutil.go", StartLine: 5, EndLine: 4}}}}},
+		"escaping path":   {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "../x.go"}}, Diff: good.Diff, Expected: good.Expected}}},
+		"too large":       {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: strings.Repeat("x", MaxCaseBytes)}}, Diff: good.Diff, Expected: good.Expected}}},
+		"missing diff":    {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Expected: good.Expected}}},
+		"root as a file":  {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "."}}, Diff: good.Diff, Expected: good.Expected}}},
+		"file and folder": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util"}, {Path: "util/textutil.go"}}, Diff: good.Diff, Expected: good.Expected}}},
+		"NUL in a file":   {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: "a\x00b"}}, Diff: good.Diff, Expected: good.Expected}}},
+		"NUL in diff":     {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff + "\x00", Expected: good.Expected}}},
 	} {
 		if err := suite.Validate(); err == nil {
 			t.Errorf("%s: valid", name)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -77,7 +78,7 @@ func (item Case) Validate() error {
 	size := len(item.Diff)
 	paths := map[string]bool{}
 	for _, file := range item.Files {
-		if !fs.ValidPath(file.Path) || paths[file.Path] {
+		if !fs.ValidPath(file.Path) || file.Path == "." || paths[file.Path] {
 			return fmt.Errorf("invalid or repeated file %q", file.Path)
 		}
 		if strings.ContainsRune(file.Content, 0) {
@@ -85,6 +86,14 @@ func (item Case) Validate() error {
 		}
 		paths[file.Path] = true
 		size += len(file.Content)
+	}
+	// A file cannot also be a folder holding other files of the case.
+	for name := range paths {
+		for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+			if paths[parent] {
+				return fmt.Errorf("file %q is also a folder of %q", parent, name)
+			}
+		}
 	}
 	if size > MaxCaseBytes {
 		return fmt.Errorf("a case may hold at most %d KiB of files and diff", MaxCaseBytes>>10)

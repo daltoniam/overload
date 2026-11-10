@@ -59,47 +59,34 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	// Bugs and findings are paired by maximum matching rather than in
 	// order: a grouped bug with several locations must not take the only
 	// finding another bug could have matched.
-	fits := func(bug []ExpectedFinding, finding overload.Finding) bool {
-		return slices.ContainsFunc(bug, func(item ExpectedFinding) bool {
-			return finding.Path == item.Path && keywordsMatch(item.Keywords, finding.Title+" "+finding.Body) && withinLines(item, finding)
-		})
+	describes := func(item ExpectedFinding, finding overload.Finding) bool {
+		return finding.Path == item.Path && keywordsMatch(item.Keywords, finding.Title+" "+finding.Body)
 	}
-	owner := make([]int, len(actual))
-	for index := range owner {
-		owner[index] = -1
-	}
-	var assign func(bug int, seen []bool) bool
-	assign = func(bug int, seen []bool) bool {
-		for index, finding := range actual {
-			if seen[index] || !fits(bugs[bug], finding) {
-				continue
-			}
-			seen[index] = true
-			if owner[index] < 0 || assign(owner[index], seen) {
-				owner[index] = bug
-				return true
-			}
-		}
-		return false
-	}
+	found := pairBugs(bugs, actual, used, func(item ExpectedFinding, finding overload.Finding) bool {
+		return describes(item, finding) && withinLines(item, finding)
+	})
 	for index := range bugs {
-		if assign(index, make([]bool, len(actual))) {
+		if found[index] {
 			matched[index] = true
 			result.Matched++
 		}
 	}
-	for index := range actual {
-		used[index] = owner[index] >= 0
-	}
+	// Without keywords any finding in the file would look like a misplaced
+	// report of the bug, so only described bugs count, and they are paired
+	// with the findings left over in the same way.
 	hasKeywords := func(item ExpectedFinding) bool { return len(item.Keywords) > 0 }
+	described := make([][]ExpectedFinding, len(bugs))
 	for index, bug := range bugs {
 		if !slices.ContainsFunc(bug, hasKeywords) {
 			continue
 		}
 		result.PlacementChecked++
-		// Without keywords any finding in the file would look like a
-		// misplaced report of the bug, so only described bugs count.
-		if !matched[index] && claimFinding(bug, actual, used, func(item ExpectedFinding, _ overload.Finding) bool { return hasKeywords(item) }) {
+		if !matched[index] {
+			described[index] = slices.DeleteFunc(slices.Clone(bug), func(item ExpectedFinding) bool { return !hasKeywords(item) })
+		}
+	}
+	for _, misplaced := range pairBugs(described, actual, used, describes) {
+		if misplaced {
 			result.Misplaced++
 		}
 	}
@@ -125,6 +112,41 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	return result
 }
 
+// pairBugs pairs bugs with unused findings so that as many bugs as
+// possible get one, using augmenting paths; fits says whether a finding
+// matches one of a bug's expected findings. It marks the paired findings
+// used and reports which bugs got one.
+func pairBugs(bugs [][]ExpectedFinding, actual []overload.Finding, used []bool, fits func(ExpectedFinding, overload.Finding) bool) []bool {
+	owner := make([]int, len(actual))
+	for index := range owner {
+		owner[index] = -1
+	}
+	var assign func(bug int, seen []bool) bool
+	assign = func(bug int, seen []bool) bool {
+		for index, finding := range actual {
+			if used[index] || seen[index] || !slices.ContainsFunc(bugs[bug], func(item ExpectedFinding) bool { return fits(item, finding) }) {
+				continue
+			}
+			seen[index] = true
+			if owner[index] < 0 || assign(owner[index], seen) {
+				owner[index] = bug
+				return true
+			}
+		}
+		return false
+	}
+	paired := make([]bool, len(bugs))
+	for index := range bugs {
+		paired[index] = len(bugs[index]) > 0 && assign(index, make([]bool, len(actual)))
+	}
+	for index := range actual {
+		if owner[index] >= 0 {
+			used[index] = true
+		}
+	}
+	return paired
+}
+
 // groupBugs returns the expected findings grouped by bug, in the order
 // each bug first appears.
 func groupBugs(expected []ExpectedFinding) [][]ExpectedFinding {
@@ -143,19 +165,4 @@ func groupBugs(expected []ExpectedFinding) [][]ExpectedFinding {
 		bugs = append(bugs, []ExpectedFinding{item})
 	}
 	return bugs
-}
-
-// claimFinding marks used the first unused finding in the right file whose
-// text matches one of the bug's expected findings and that accept allows.
-func claimFinding(bug []ExpectedFinding, actual []overload.Finding, used []bool, accept func(ExpectedFinding, overload.Finding) bool) bool {
-	for _, item := range bug {
-		for index, finding := range actual {
-			if used[index] || finding.Path != item.Path || !keywordsMatch(item.Keywords, finding.Title+" "+finding.Body) || !accept(item, finding) {
-				continue
-			}
-			used[index] = true
-			return true
-		}
-	}
-	return false
 }
