@@ -24,8 +24,8 @@ type Agent struct {
 	Dir   string
 	Log   string
 	Env   map[string]string
-	// ExitTimeout is how long launchd waits after SIGTERM before SIGKILL;
-	// zero keeps launchd's default of 20 seconds.
+	// ExitTimeout is how long launchd waits after SIGTERM before SIGKILL,
+	// rounded up to whole seconds; zero keeps launchd's default of 20 seconds.
 	ExitTimeout time.Duration
 }
 
@@ -67,7 +67,9 @@ func (agent Agent) plist() []byte {
 	key("StandardOutPath", agent.Log)
 	key("StandardErrorPath", agent.Log)
 	if agent.ExitTimeout > 0 {
-		out.WriteString("\t<key>ExitTimeOut</key>\n\t<integer>" + strconv.Itoa(int(agent.ExitTimeout/time.Second)) + "</integer>\n")
+		// launchd counts whole seconds and treats 0 as no limit, so round up.
+		seconds := (agent.ExitTimeout + time.Second - 1) / time.Second
+		out.WriteString("\t<key>ExitTimeOut</key>\n\t<integer>" + strconv.Itoa(int(seconds)) + "</integer>\n")
 	}
 	out.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\t<key>ProcessType</key>\n\t<string>Background</string>\n</dict>\n</plist>\n")
 	return out.Bytes()

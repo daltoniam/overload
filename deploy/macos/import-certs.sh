@@ -45,8 +45,16 @@ import_p12() {
 import_p12 "$MACOS_SIGN_P12_BASE64" application
 import_p12 "$MACOS_INSTALLER_P12_BASE64" installer
 security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
-# shellcheck disable=SC2046
-security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+# Keep the runner's existing keychains, one argument each, since their paths
+# may contain spaces.
+set -- "$keychain"
+while IFS= read -r line; do
+	line=$(printf '%s\n' "$line" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
+	if [ -n "$line" ]; then set -- "$@" "$line"; fi
+done <<EOF
+$(security list-keychains -d user)
+EOF
+security list-keychains -d user -s "$@"
 
 if [ -n "${MACOS_NOTARY_APPLE_ID:-}" ]; then
 	: "${MACOS_NOTARY_TEAM_ID:?}" "${MACOS_NOTARY_PASSWORD:?}"
