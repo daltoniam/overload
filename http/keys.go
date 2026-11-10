@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -84,6 +85,12 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			return
 		}
 		userID, all := owner(r.Context())
+		// Node reports shape cluster placements, so only administrators
+		// may hand out keys that make them.
+		if slices.Contains(scopes, overload.ScopeNodes) && !all {
+			http.Error(w, "Key not created: only administrators can create keys that report nodes.", http.StatusForbidden)
+			return
+		}
 		key, secret, err := store.CreateAPIKey(r.Context(), userID, name, scopes, lifetime)
 		if err != nil {
 			http.Error(w, "Unable to create the key", http.StatusInternalServerError)

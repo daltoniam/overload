@@ -3,7 +3,9 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/daltoniam/overload"
 	"github.com/jackc/pgx/v5"
@@ -12,8 +14,18 @@ import (
 // MaxNodes bounds the inventory; reports from more machines are refused.
 const MaxNodes = 500
 
-// ReportNode stores a node's latest report.
-func (s *Store) ReportNode(ctx context.Context, report overload.NodeReport) error {
+// MaxNodesPerKey bounds the names one API key may claim, so one leaked key
+// cannot fill the inventory.
+const MaxNodesPerKey = 100
+
+// nodeLock serializes reports of new names so the caps hold under
+// concurrent reports.
+const nodeLock = 729140
+
+// ReportNode stores a node's latest report from the API key keyID. The
+// first key to report a name claims it; reports for that name from any
+// other key are refused until the node is forgotten.
+func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.NodeReport) error {
 	if err := report.Validate(); err != nil {
 		return err
 	}
@@ -21,15 +33,41 @@ func (s *Store) ReportNode(ctx context.Context, report overload.NodeReport) erro
 	if err != nil {
 		return err
 	}
-	command, err := s.Pool.Exec(ctx, `INSERT INTO nodes (name, report) SELECT $1, $2 WHERE EXISTS (SELECT 1 FROM nodes WHERE name = $1) OR (SELECT count(*) FROM nodes) < $3
-		ON CONFLICT (name) DO UPDATE SET report = EXCLUDED.report, last_seen = now()`, report.Name, data, MaxNodes)
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() == 0 {
-		return fmt.Errorf("the inventory already holds %d nodes", MaxNodes)
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, nodeLock); err != nil {
+		return err
 	}
-	return nil
+	var owner *int64
+	err = tx.QueryRow(ctx, `SELECT api_key_id FROM nodes WHERE name = $1`, report.Name).Scan(&owner)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		var total, owned int
+		if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE api_key_id = $1) FROM nodes`, keyID).Scan(&total, &owned); err != nil {
+			return err
+		}
+		if total >= MaxNodes {
+			return fmt.Errorf("%w: the inventory already holds %d nodes; forget nodes that are gone", overload.ErrTooManyNodes, MaxNodes)
+		}
+		if owned >= MaxNodesPerKey {
+			return fmt.Errorf("%w: this API key already reports %d nodes; use another key", overload.ErrTooManyNodes, MaxNodesPerKey)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO nodes (name, report, api_key_id) VALUES ($1, $2, $3)`, report.Name, data, keyID); err != nil {
+			return err
+		}
+	case err != nil:
+		return err
+	case owner != nil && *owner != keyID:
+		return overload.ErrNodeClaimed
+	default:
+		if _, err := tx.Exec(ctx, `UPDATE nodes SET report = $2, api_key_id = $3, last_seen = now() WHERE name = $1`, report.Name, data, keyID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // ListNodes returns the inventory by name.
@@ -54,16 +92,32 @@ func (s *Store) ListNodes(ctx context.Context) ([]overload.Node, error) {
 	return nodes, rows.Err()
 }
 
-// DeleteNode forgets a node; it reappears if it reports again.
+// DeleteNode forgets a node and releases its name for any key; it
+// reappears if it reports again. A node a placement names is kept, since
+// the placement's launch configuration still uses it.
 func (s *Store) DeleteNode(ctx context.Context, name string) error {
-	command, err := s.Pool.Exec(ctx, `DELETE FROM nodes WHERE name = $1`, name)
+	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if command.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+	defer func() { _ = tx.Rollback(ctx) }()
+	// Locking the row first makes a placement saved at the same time,
+	// which share-locks its nodes, visible to the check below.
+	if err := tx.QueryRow(ctx, `SELECT name FROM nodes WHERE name = $1 FOR UPDATE`, name).Scan(&name); err != nil {
+		return err
 	}
-	return nil
+	var placement string
+	err = tx.QueryRow(ctx, `SELECT name FROM placements WHERE spec->'nodes' ? $1 ORDER BY name LIMIT 1`, name).Scan(&placement)
+	if err == nil {
+		return fmt.Errorf("%w: placement %s uses %s; delete the placement first", overload.ErrNodeInPlacement, placement, name)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM nodes WHERE name = $1`, name); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // SavePlacement validates and stores a placement; every node must be in
@@ -72,21 +126,32 @@ func (s *Store) SavePlacement(ctx context.Context, placement overload.Placement)
 	if err := placement.Validate(); err != nil {
 		return err
 	}
-	for _, node := range placement.Nodes {
-		var exists bool
-		if err := s.Pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM nodes WHERE name = $1)`, node).Scan(&exists); err != nil {
-			return err
-		}
-		if !exists {
-			return fmt.Errorf("node %s has not reported; run overload node report on it first", node)
-		}
-	}
 	data, err := json.Marshal(placement)
 	if err != nil {
 		return err
 	}
-	_, err = s.Pool.Exec(ctx, `INSERT INTO placements (name, spec) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, updated_at = now()`, placement.Name, data)
-	return err
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	rows, err := tx.Query(ctx, `SELECT name FROM nodes WHERE name = ANY($1) FOR SHARE`, placement.Nodes)
+	if err != nil {
+		return err
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	for _, node := range placement.Nodes {
+		if !slices.Contains(found, node) {
+			return fmt.Errorf("node %s has not reported; run overload node report on it first", node)
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO placements (name, spec) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET spec = EXCLUDED.spec, updated_at = now()`, placement.Name, data); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ListPlacements returns the placements by name.

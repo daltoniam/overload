@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -26,7 +27,23 @@ type Placement struct {
 	RDMA [][]string `json:"rdma"`
 	// Python is the interpreter path, the same on every node.
 	Python string `json:"python,omitempty"`
+	// Host and Port are where the first node serves the OpenAI-compatible
+	// API. mlx_lm.server listens on 127.0.0.1 by default, which the
+	// gateway on another machine cannot reach.
+	Host string `json:"host,omitempty"`
+	Port int    `json:"port,omitempty"`
+	// Mode is tensor (faster decode) or pipeline (bigger models).
+	Mode string `json:"mode,omitempty"`
 }
+
+// Placement modes.
+const (
+	PlacementTensor   = "tensor"
+	PlacementPipeline = "pipeline"
+)
+
+// DefaultPlacementPort is mlx_lm.server's default port.
+const DefaultPlacementPort = 8080
 
 var (
 	mlxModel  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,95}/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$`)
@@ -34,8 +51,10 @@ var (
 	pythonBin = regexp.MustCompile(`^/[A-Za-z0-9._/+-]{1,200}$`)
 )
 
-// MaxPlacementNodes bounds a placement; Thunderbolt meshes are small.
-const MaxPlacementNodes = 8
+// MaxPlacementNodes bounds a placement. The JACCL backend needs a cable
+// between every pair of nodes and Thunderbolt has no switch, so a mesh
+// larger than four needs more ports than a Mac has.
+const MaxPlacementNodes = 4
 
 // Validate checks a placement.
 func (placement Placement) Validate() error {
@@ -45,9 +64,15 @@ func (placement Placement) Validate() error {
 	case !mlxModel.MatchString(placement.Model):
 		return errors.New("the model must be a Hugging Face repository such as mlx-community/Model-4bit")
 	case len(placement.Nodes) < 2 || len(placement.Nodes) > MaxPlacementNodes:
-		return fmt.Errorf("a placement needs 2 to %d nodes", MaxPlacementNodes)
+		return fmt.Errorf("a placement needs 2 to %d nodes, each cabled to every other", MaxPlacementNodes)
 	case net.ParseIP(placement.Rank0IP) == nil:
 		return errors.New("rank0_ip must be an IP address of the first node")
+	case placement.Host != "" && net.ParseIP(placement.Host) == nil:
+		return errors.New("host must be an IP address the first node serves the API on")
+	case placement.Port < 0 || placement.Port > 65535:
+		return errors.New("port must be between 1 and 65535")
+	case placement.Mode != "" && placement.Mode != PlacementTensor && placement.Mode != PlacementPipeline:
+		return errors.New("mode must be tensor or pipeline")
 	case placement.Python != "" && !pythonBin.MatchString(placement.Python):
 		return errors.New("python must be an absolute path")
 	case len(placement.RDMA) != len(placement.Nodes):
@@ -73,8 +98,34 @@ func (placement Placement) Validate() error {
 	return nil
 }
 
+// ServeHost is the address the first node serves the API on: Host, or
+// Rank0IP when Host is unset.
+func (placement Placement) ServeHost() string {
+	if placement.Host != "" {
+		return placement.Host
+	}
+	return placement.Rank0IP
+}
+
+// ServePort is the port the first node serves the API on.
+func (placement Placement) ServePort() int {
+	if placement.Port != 0 {
+		return placement.Port
+	}
+	return DefaultPlacementPort
+}
+
+// BaseURL is the OpenAI-compatible endpoint the cluster serves once
+// started, to save as a model in overload.
+func (placement Placement) BaseURL() string {
+	return "http://" + net.JoinHostPort(placement.ServeHost(), strconv.Itoa(placement.ServePort())) + "/v1"
+}
+
 // Hostfile is the JSON hostfile for mlx.launch --backend jaccl.
 func (placement Placement) Hostfile() ([]byte, error) {
+	if err := placement.Validate(); err != nil {
+		return nil, err
+	}
 	type host struct {
 		SSH  string    `json:"ssh"`
 		IPs  []string  `json:"ips"`
@@ -105,5 +156,9 @@ func (placement Placement) Command(hostfile string) string {
 	if python == "" {
 		python = "python3"
 	}
-	return strings.Join([]string{"mlx.launch", "--backend", "jaccl", "--hostfile", hostfile, "--", python, "-m", "mlx_lm.server", "--model", placement.Model}, " ")
+	command := []string{"mlx.launch", "--backend", "jaccl", "--hostfile", hostfile, "--", python, "-m", "mlx_lm.server", "--model", placement.Model, "--host", placement.ServeHost(), "--port", strconv.Itoa(placement.ServePort())}
+	if placement.Mode == PlacementPipeline {
+		command = append(command, "--pipeline")
+	}
+	return strings.Join(command, " ")
 }

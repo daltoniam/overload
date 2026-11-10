@@ -75,7 +75,7 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		flags := flag.NewFlagSet("keys create", flag.ContinueOnError)
 		name := flags.String("name", "", "what the key is for")
 		days := flags.Int("days", 90, "days until the key expires (1 to 365)")
-		scopes := flags.String("scopes", overload.ScopeModels, "comma-separated scopes: models, reviews")
+		scopes := flags.String("scopes", overload.ScopeModels, "comma-separated scopes: models, reviews, nodes")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}

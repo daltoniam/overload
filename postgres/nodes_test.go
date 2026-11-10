@@ -2,25 +2,39 @@ package postgres_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/postgres/pgtest"
 )
 
 func TestNodesAndPlacements(t *testing.T) {
 	store := pgtest.Isolated(t)
 	ctx := context.Background()
+	key, _, err := store.CreateAPIKey(ctx, 0, "nodes", []string{overload.ScopeNodes}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := store.CreateAPIKey(ctx, 0, "other nodes", []string{overload.ScopeNodes}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, name := range []string{"studio-1", "studio-2"} {
-		if err := store.ReportNode(ctx, overload.NodeReport{Name: name, OS: "darwin", OSVersion: "26.2"}); err != nil {
+		if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: name, OS: "darwin", OSVersion: "26.2"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.ReportNode(ctx, overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "26.3"}); err != nil {
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "26.3"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.ReportNode(ctx, overload.NodeReport{Name: "bad name"}); err == nil {
-		t.Fatal("stored an invalid report")
+	if err := store.ReportNode(ctx, other.ID, overload.NodeReport{Name: "studio-1", OS: "darwin", OSVersion: "1.0"}); !errors.Is(err, overload.ErrNodeClaimed) {
+		t.Fatalf("another key overwrote a node: %v", err)
+	}
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "bad name"}); !errors.Is(err, overload.ErrInvalidNodeReport) {
+		t.Fatalf("stored an invalid report: %v", err)
 	}
 	nodes, err := store.ListNodes(ctx)
 	if err != nil || len(nodes) != 2 || nodes[0].Report.OSVersion != "26.3" {
@@ -38,13 +52,50 @@ func TestNodesAndPlacements(t *testing.T) {
 	if err != nil || len(placements) != 1 || placements[0].Nodes[1] != "studio-2" {
 		t.Fatalf("placements = %+v, %v", placements, err)
 	}
+	if err := store.DeleteNode(ctx, "studio-2"); !errors.Is(err, overload.ErrNodeInPlacement) {
+		t.Fatalf("forgot a node a placement uses: %v", err)
+	}
 	if err := store.DeletePlacement(ctx, "beam"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteNode(ctx, "studio-2"); err != nil {
+	if err := store.DeleteNode(ctx, "studio-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.DeleteNode(ctx, "studio-2"); err == nil {
+	if err := store.DeleteNode(ctx, "studio-1"); err == nil {
 		t.Fatal("deleted a missing node")
+	}
+	if err := store.ReportNode(ctx, other.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); err != nil {
+		t.Fatalf("forgetting a node did not release its name: %v", err)
+	}
+}
+
+func TestNodeLimits(t *testing.T) {
+	store := pgtest.Isolated(t)
+	ctx := context.Background()
+	key, _, err := store.CreateAPIKey(ctx, 0, "nodes", []string{overload.ScopeNodes}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := store.CreateAPIKey(ctx, 0, "other nodes", []string{overload.ScopeNodes}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO nodes (name, report, api_key_id) SELECT 'node-' || n, '{}', $1 FROM generate_series(1, $2) AS n`, key.ID, postgres.MaxNodesPerKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "one-too-many"}); !errors.Is(err, overload.ErrTooManyNodes) {
+		t.Fatalf("a key claimed more than its share: %v", err)
+	}
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "node-1"}); err != nil {
+		t.Fatalf("a full key cannot update its own node: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO nodes (name, report) SELECT 'unclaimed-' || n, '{}' FROM generate_series(1, $1) AS n`, postgres.MaxNodes-postgres.MaxNodesPerKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, other.ID, overload.NodeReport{Name: "new"}); !errors.Is(err, overload.ErrTooManyNodes) {
+		t.Fatalf("the inventory grew past its limit: %v", err)
+	}
+	if err := store.ReportNode(ctx, other.ID, overload.NodeReport{Name: "unclaimed-1"}); err != nil {
+		t.Fatalf("a full inventory refused a known node: %v", err)
 	}
 }

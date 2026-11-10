@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -15,13 +16,18 @@ import (
 
 // NodeStore keeps the node inventory and placements.
 type NodeStore interface {
-	ReportNode(context.Context, overload.NodeReport) error
+	ReportNode(ctx context.Context, keyID int64, report overload.NodeReport) error
 	ListNodes(context.Context) ([]overload.Node, error)
 	DeleteNode(context.Context, string) error
 	ListPlacements(context.Context) ([]overload.Placement, error)
 }
 
+// maxNodeReport bounds a report body; a full report is far smaller.
+const maxNodeReport = 256 << 10
+
 // nodesAPI accepts a node's report from an API key with the nodes scope.
+// Node reports shape cluster placements, so the key must belong to an
+// administrator or have been created on the server with the CLI.
 func nodesAPI(store NodeStore, keys apiKeyAuthenticator) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -34,23 +40,35 @@ func nodesAPI(store NodeStore, keys apiKeyAuthenticator) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "send an overload API key with the nodes scope"})
 			return
 		}
-		key, _, err := keys.AuthenticateAPIKey(r.Context(), token)
+		key, user, err := keys.AuthenticateAPIKey(r.Context(), token)
 		if err != nil || !key.HasScope(overload.ScopeNodes) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid API key, or it cannot report nodes"})
 			return
 		}
+		if user != nil && !overload.RoleAtLeast(user.Role, overload.RoleAdmin) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "only an administrator's key, or one created with overload keys create, can report nodes"})
+			return
+		}
 		var report overload.NodeReport
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&report); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid report"})
+		// Unknown fields are ignored so newer nodes can report to an older
+		// control plane during an upgrade.
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxNodeReport))
+		if err := decoder.Decode(&report); err != nil || decoder.More() {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "send one JSON report of at most 256 KiB"})
 			return
 		}
-		if err := store.ReportNode(r.Context(), report); err != nil {
+		err = store.ReportNode(r.Context(), key.ID, report)
+		switch {
+		case err == nil:
+			w.WriteHeader(http.StatusNoContent)
+		case errors.Is(err, overload.ErrNodeClaimed):
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+		case errors.Is(err, overload.ErrInvalidNodeReport), errors.Is(err, overload.ErrTooManyNodes):
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
-			return
+		default:
+			slog.Error("node report not stored", "node", report.Name, "key_prefix", key.Prefix, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "report not stored"})
 		}
-		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
@@ -67,20 +85,22 @@ func registerNodes(mux *http.ServeMux, store NodeStore, csrf string) {
 			return
 		}
 		now := time.Now()
-		_ = pages.Nodes(nodes, overload.Drift(nodes, now), placements, now, csrf).Render(r.Context(), w)
+		_ = pages.Nodes(nodes, overload.Drift(nodes, now), placements, now, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /nodes/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
 			return
 		}
-		if err := store.DeleteNode(r.Context(), r.PathValue("name")); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				http.NotFound(w, r)
-				return
-			}
-			http.Error(w, "Unable to remove the node", http.StatusInternalServerError)
-			return
+		err := store.DeleteNode(r.Context(), r.PathValue("name"))
+		switch {
+		case err == nil:
+			http.Redirect(w, r, "/nodes", http.StatusSeeOther)
+		case errors.Is(err, pgx.ErrNoRows):
+			http.NotFound(w, r)
+		case errors.Is(err, overload.ErrNodeInPlacement):
+			http.Error(w, "Node not forgotten: "+strings.TrimPrefix(err.Error(), overload.ErrNodeInPlacement.Error()+": ")+".", http.StatusConflict)
+		default:
+			http.Error(w, "Unable to forget the node", http.StatusInternalServerError)
 		}
-		http.Redirect(w, r, "/nodes", http.StatusSeeOther)
 	})
 }

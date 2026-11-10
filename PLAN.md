@@ -1510,8 +1510,11 @@ plan and deploy/README.md.
 10. **Node inventory and cluster control** (16.4 item 4; done): Macs report
     hardware, runtime versions, models and health; version drift is flagged;
     model placements across nodes are recorded and an MLX launch
-    configuration is generated. Running models across a real Thunderbolt 5
-    cluster still waits for the hardware spike in 16.3.
+    configuration is generated. Each node name belongs to the API key that
+    first reports it (administrator or CLI keys only), and placements are
+    full JACCL meshes of two to four nodes; larger rings are not modelled.
+    Running models across a real Thunderbolt 5 cluster still waits for the
+    hardware spike in 16.3.
 11. **Packaging** (16.4 item 5): a signed and notarized macOS package when
     signing credentials are configured, and a published control-plane
     container image.

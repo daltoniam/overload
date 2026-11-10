@@ -36,6 +36,7 @@ func TestValidateAPIKey(t *testing.T) {
 		{"no name", " ", []string{ScopeModels}, 24 * time.Hour, false},
 		{"no scope", "laptop", nil, 24 * time.Hour, false},
 		{"reviews", "laptop", []string{ScopeModels, ScopeReviews}, 24 * time.Hour, true},
+		{"nodes", "studio-1", []string{ScopeNodes}, 24 * time.Hour, true},
 		{"unknown scope", "laptop", []string{"admin"}, 24 * time.Hour, false},
 		{"too long", "laptop", []string{ScopeModels}, MaxAPIKeyLifetime + time.Hour, false},
 	} {

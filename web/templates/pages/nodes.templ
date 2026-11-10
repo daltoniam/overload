@@ -10,13 +10,13 @@ import (
 	"github.com/daltoniam/overload/web/templates/layouts"
 )
 
-templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overload.Placement, now time.Time, nonce string) {
+templ Nodes(nodes []overload.Node, drift []overload.VersionDrift, placements []overload.Placement, now time.Time, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Nodes", CurrentPath: "/nodes"}) {
 		<div class="page-header"><div><p class="eyebrow">Models / Nodes</p><h1>Nodes</h1><p class="muted">Macs and servers that run models report their hardware, runtime versions and model services with <code>overload node report</code>. Clusters need the same versions on every node, so differences are flagged.</p></div></div>
 		if len(drift) > 0 {
 			<section class="panel"><h2>Version drift</h2><ul>
-				for _, field := range driftFields(drift) {
-					<li>{ driftLabel(field) } differs on { strings.Join(drift[field], ", ") }</li>
+				for _, found := range drift {
+					<li>{ driftText(found) }</li>
 				}
 			</ul></section>
 		}
@@ -28,7 +28,7 @@ templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overl
 					for _, node := range nodes {
 						<tr>
 							<td>{ node.Report.Name }<span class="secondary-line">{ node.Report.OS } { node.Report.OSVersion }</span></td>
-							<td>{ textOr(node.Report.Chip, "Unknown chip") }<span class="secondary-line">{ bytesText(node.Report.MemoryBytes) } memory, { bytesText(node.Report.DiskFreeBytes) } free</span></td>
+							<td>{ textOr(node.Report.Chip, "Unknown chip") }<span class="secondary-line">{ memoryText(node.Report.MemoryBytes) } memory, { diskText(node.Report.DiskFreeBytes) } free</span></td>
 							<td class="mono">overload { textOr(node.Report.OverloadVersion, "?") }<span class="secondary-line">{ runtimeText(node.Report) }</span></td>
 							<td>
 								if len(node.Report.Services) == 0 {
@@ -36,6 +36,15 @@ templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overl
 								}
 								for _, service := range node.Report.Services {
 									<span class="secondary-line">{ service.Model }: { service.Health }</span>
+								}
+								if len(node.Report.Downloads) > 0 {
+									<details><summary>{ downloadsText(len(node.Report.Downloads)) }</summary>
+										<ul>
+											for _, download := range node.Report.Downloads {
+												<li class="mono">{ download }</li>
+											}
+										</ul>
+									</details>
 								}
 							</td>
 							<td>
@@ -46,7 +55,7 @@ templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overl
 								}
 								<span class="secondary-line mono">{ node.LastSeen.UTC().Format("2006-01-02 15:04") }</span>
 							</td>
-							<td><form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="secondary" type="submit">Forget</button></form></td>
+							<td><form method="post" action={ templ.URL("/nodes/" + node.Report.Name + "/delete") } data-confirm-title={ "Forget node " + node.Report.Name } data-confirm={ ForgetNodeImpact }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit" aria-label={ "Forget " + node.Report.Name }>Forget</button></form></td>
 						</tr>
 					}
 				</tbody></table></div>
@@ -59,7 +68,7 @@ templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overl
 			}
 			for _, placement := range placements {
 				<h3>{ placement.Name }: <span class="mono">{ placement.Model }</span></h3>
-				<p class="muted">{ strconv.Itoa(len(placement.Nodes)) } nodes: { strings.Join(placement.Nodes, ", ") }</p>
+				<p class="muted">{ strconv.Itoa(len(placement.Nodes)) } nodes, { placementMode(placement) } parallel: { strings.Join(placement.Nodes, ", ") }. Once started, the first node serves <span class="mono">{ placement.BaseURL() }</span>.</p>
 				<pre><code>{ placement.Command("hostfile.json") }</code></pre>
 				<pre><code>{ hostfileText(placement) }</code></pre>
 			}
@@ -67,14 +76,24 @@ templ Nodes(nodes []overload.Node, drift map[string][]string, placements []overl
 	}
 }
 
-func driftFields(drift map[string][]string) []string {
-	var fields []string
-	for _, field := range []string{"os_version", "overload_version", "llama_build", "mlx_version"} {
-		if len(drift[field]) > 0 {
-			fields = append(fields, field)
-		}
+// ForgetNodeImpact is what forgetting a node does.
+const ForgetNodeImpact = "It leaves the inventory and its name is released, so any key with the nodes scope can report under it. It reappears if it reports again; run overload node uninstall on it to stop that."
+
+// ForgetNodePrompt confirms forgetting node name.
+func ForgetNodePrompt(name string) ConfirmPrompt {
+	return ConfirmPrompt{Eyebrow: "Nodes / Forget", Title: "Forget node " + name + "?", Impact: ForgetNodeImpact, Button: "Forget node", Cancel: "/nodes"}
+}
+
+func driftText(found overload.VersionDrift) string {
+	label := driftLabel(found.Field)
+	if found.OS != "" {
+		label += " (" + found.OS + ")"
 	}
-	return fields
+	nodes := strings.Join(found.Nodes, ", ")
+	if found.Even {
+		return label + " differs between " + nodes + ", and no version is on most of them"
+	}
+	return label + " differs on " + nodes
 }
 
 func driftLabel(field string) string {
@@ -90,11 +109,35 @@ func driftLabel(field string) string {
 	}
 }
 
-func bytesText(size int64) string {
+// memoryText shows memory in binary gigabytes, as Apple sizes it, so a
+// 64 GB Mac shows 64 GB.
+func memoryText(size int64) string {
+	if size == 0 {
+		return "?"
+	}
+	return fmt.Sprintf("%.0f GB", float64(size)/(1<<30))
+}
+
+// diskText shows disk space in decimal gigabytes, as Finder does.
+func diskText(size int64) string {
 	if size == 0 {
 		return "?"
 	}
 	return fmt.Sprintf("%.0f GB", float64(size)/1e9)
+}
+
+func downloadsText(count int) string {
+	if count == 1 {
+		return "1 downloaded model"
+	}
+	return strconv.Itoa(count) + " downloaded models"
+}
+
+func placementMode(placement overload.Placement) string {
+	if placement.Mode == "" {
+		return overload.PlacementTensor
+	}
+	return placement.Mode
 }
 
 func runtimeText(report overload.NodeReport) string {

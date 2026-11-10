@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/jackc/pgx/v5"
 )
 
 const clusterUsage = `usage: overload cluster COMMAND
-  place NAME --model REPO --nodes a,b --rank0-ip IP --rdma rdma.json [--python /path/to/python]
+  place NAME --model REPO --nodes a,b --rank0-ip IP --rdma rdma.json
+        [--host IP] [--port 8080] [--mode tensor|pipeline] [--python /path/to/python]
   config NAME          print the mlx.launch hostfile and command
   list | delete NAME`
 
@@ -52,10 +54,13 @@ func runCluster(ctx context.Context, store clusterStore, args []string, out io.W
 		rank0 := flags.String("rank0-ip", "", "an IP address of the first node every node can reach")
 		rdma := flags.String("rdma", "", "JSON file: rdma[i][j] is node i's RDMA device reaching node j, empty for itself")
 		python := flags.String("python", "", "Python interpreter path, the same on every node")
+		host := flags.String("host", "", "IP address the first node serves the API on, reachable from overload (default: --rank0-ip)")
+		port := flags.Int("port", overload.DefaultPlacementPort, "port the first node serves the API on")
+		mode := flags.String("mode", overload.PlacementTensor, "tensor (faster decode) or pipeline (bigger models)")
 		if err := flags.Parse(args[2:]); err != nil {
 			return err
 		}
-		placement := overload.Placement{Name: args[1], Model: *model, Nodes: strings.Split(*nodes, ","), Rank0IP: *rank0, Python: *python}
+		placement := overload.Placement{Name: args[1], Model: *model, Nodes: strings.Split(*nodes, ","), Rank0IP: *rank0, Python: *python, Host: *host, Port: *port, Mode: *mode}
 		data, err := os.ReadFile(*rdma)
 		if err != nil {
 			return fmt.Errorf("--rdma: %w", err)
@@ -70,7 +75,15 @@ func runCluster(ctx context.Context, store clusterStore, args []string, out io.W
 		return err
 	case args[0] == "config" && len(args) == 2, args[0] == "delete" && len(args) == 2:
 		if args[0] == "delete" {
-			return store.DeletePlacement(ctx, args[1])
+			err := store.DeletePlacement(ctx, args[1])
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("no placement named %s", args[1])
+			}
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(out, "Deleted placement %s\n", args[1])
+			return err
 		}
 		placements, err := store.ListPlacements(ctx)
 		if err != nil {
@@ -84,7 +97,7 @@ func runCluster(ctx context.Context, store clusterStore, args []string, out io.W
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(out, "# Save as hostfile.json:\n%s\n\n# Then run, from a machine that can reach every node over SSH:\n%s\n", hostfile, placement.Command("hostfile.json"))
+			_, err = fmt.Fprintf(out, "# Save as hostfile.json:\n%s\n\n# Then run, from a machine that can reach every node over SSH by these names:\n%s\n\n# The first node then serves %s; save it as a model in overload.\n", hostfile, placement.Command("hostfile.json"), placement.BaseURL())
 			return err
 		}
 		return fmt.Errorf("no placement named %s", args[1])

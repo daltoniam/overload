@@ -8,6 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,7 +25,10 @@ import (
 	"github.com/daltoniam/overload/localmodels"
 )
 
-const nodeUsage = "usage: overload node report --server URL [--every 1m] | install --server URL | uninstall"
+const nodeUsage = "usage: overload node report --server URL [--every 1m] [--name NAME] [--python PATH] | install --server URL [--name NAME] [--python PATH] | uninstall"
+
+// minReportInterval keeps a misconfigured node from hammering overload.
+const minReportInterval = 10 * time.Second
 
 func manageNode(args []string) error {
 	if len(args) == 0 {
@@ -31,13 +36,25 @@ func manageNode(args []string) error {
 	}
 	flags := flag.NewFlagSet("node "+args[0], flag.ContinueOnError)
 	server := flags.String("server", "", "overload address, such as https://overload.example.com")
-	every := flags.Duration("every", 0, "keep reporting at this interval (default: report once)")
+	every := flags.Duration("every", 0, "keep reporting at this interval, at least 10s (default: report once)")
 	name := flags.String("name", "", "node name (default: the host name)")
+	python := flags.String("python", os.Getenv("OVERLOAD_PYTHON"), "Python with MLX installed, such as a virtual environment's bin/python (default: OVERLOAD_PYTHON, else python3 on PATH)")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 {
 		return errors.New(nodeUsage)
+	}
+	if *every != 0 && *every < minReportInterval {
+		return fmt.Errorf("--every must be at least %s", minReportInterval)
+	}
+	if *name != "" {
+		if err := (overload.NodeReport{Name: *name}).Validate(); err != nil {
+			return errors.New("--name must be letters, digits, dots, dashes or underscores, at most 64")
+		}
+	}
+	if *python != "" && !filepath.IsAbs(*python) {
+		return errors.New("--python must be an absolute path")
 	}
 	label := os.Getenv("OVERLOAD_INSTALL_LABEL")
 	if label == "" {
@@ -55,12 +72,12 @@ func manageNode(args []string) error {
 		}
 		ctx := context.Background()
 		for {
-			err := sendReport(ctx, http.DefaultClient, target, key, collectReport(ctx, *name))
+			err := sendReport(ctx, http.DefaultClient, target, key, collectReport(ctx, systemProbe, *name, *python))
 			if *every <= 0 {
 				return err
 			}
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "node report failed:", err)
+				slog.Warn("node report failed", "server", target, "error", err)
 			}
 			time.Sleep(*every)
 		}
@@ -82,7 +99,7 @@ func manageNode(args []string) error {
 		if err := os.MkdirAll(logs, 0o700); err != nil {
 			return err
 		}
-		agent := launchd.Agent{Label: label + ".node", Args: []string{executable, "node", "report", "--server", *server, "--every", "1m"}, Dir: filepath.Dir(configPath()), Log: filepath.Join(logs, "node.log"), Env: map[string]string{"OVERLOAD_CONFIG": configPath()}}
+		agent := nodeAgent(label, executable, *server, *name, *python, logs)
 		launchd.Stop(agent.Label)
 		if err := launchd.Write(agent); err != nil {
 			return err
@@ -99,12 +116,40 @@ func manageNode(args []string) error {
 	}
 }
 
-func nodeEndpoint(server string) (string, error) {
-	parsed, err := url.Parse(strings.TrimRight(server, "/"))
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" {
-		return "", errors.New("--server must be overload's address, such as https://overload.example.com")
+// nodeAgent is the launchd agent that reports every minute. launchd starts
+// agents with a minimal PATH, so it gets the same PATH as overload's own
+// service to find Homebrew's llama-server and python3.
+func nodeAgent(label, executable, server, name, python, logs string) launchd.Agent {
+	args := []string{executable, "node", "report", "--server", server, "--every", "1m"}
+	if name != "" {
+		args = append(args, "--name", name)
 	}
-	return parsed.String() + "/api/nodes", nil
+	if python != "" {
+		args = append(args, "--python", python)
+	}
+	return launchd.Agent{Label: label + ".node", Args: args, Dir: filepath.Dir(configPath()), Log: filepath.Join(logs, "node.log"), Env: map[string]string{"OVERLOAD_CONFIG": configPath(), "PATH": servicePath}}
+}
+
+// nodeEndpoint is the report address on server. Plain http is allowed only
+// to this machine, since the request carries an API key.
+func nodeEndpoint(server string) (string, error) {
+	invalid := errors.New("--server must be overload's address, such as https://overload.example.com")
+	parsed, err := url.Parse(server)
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" {
+		return "", invalid
+	}
+	if parsed.Scheme == "http" && !loopbackHost(parsed.Hostname()) {
+		return "", errors.New("--server must use https unless overload runs on this machine; plain http would send the API key unencrypted")
+	}
+	return url.JoinPath(parsed.String(), "api", "nodes")
+}
+
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func sendReport(ctx context.Context, client *http.Client, target, key string, report overload.NodeReport) error {
@@ -132,39 +177,80 @@ func sendReport(ctx context.Context, client *http.Client, target, key string, re
 	return nil
 }
 
-// commandOutput runs a short command and returns its trimmed output, or ""
-// when it is not available.
-func commandOutput(ctx context.Context, name string, args ...string) string {
+// nodeProbe runs the commands a report needs; tests replace it so they
+// never run sysctl, sw_vers or python3.
+type nodeProbe struct {
+	run      func(ctx context.Context, name string, args ...string) (string, error)
+	lookPath func(string) (string, error)
+	goos     string
+}
+
+var systemProbe = nodeProbe{run: runCommand, lookPath: exec.LookPath, goos: runtime.GOOS}
+
+// runCommand runs a short command and returns its trimmed output.
+func runCommand(ctx context.Context, name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, name, args...).Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// output is a command's output, or "" when it is not available.
+func (probe nodeProbe) output(ctx context.Context, name string, args ...string) string {
+	out, err := probe.run(ctx, name, args...)
 	if err != nil {
 		return ""
 	}
-	return strings.TrimSpace(string(out))
+	return out
+}
+
+// mlxPython is the interpreter to ask for MLX's version, or "" when there is
+// none worth asking. Without the Command Line Tools, macOS's /usr/bin/python3
+// is a stub that opens an install dialog each time it runs, which on a
+// headless node would be every minute.
+func (probe nodeProbe) mlxPython(ctx context.Context, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	found, err := probe.lookPath("python3")
+	if err != nil {
+		return ""
+	}
+	if probe.goos == "darwin" && found == "/usr/bin/python3" {
+		if _, err := probe.run(ctx, "xcode-select", "-p"); err != nil {
+			return ""
+		}
+	}
+	return found
 }
 
 // collectReport gathers what this machine can say about itself; anything
-// unavailable is left empty.
-func collectReport(ctx context.Context, name string) overload.NodeReport {
+// unavailable is left empty, and the result fits the server's limits.
+func collectReport(ctx context.Context, probe nodeProbe, name, python string) overload.NodeReport {
 	if name == "" {
 		name, _ = os.Hostname()
 		name = strings.TrimSuffix(name, ".local")
 	}
-	report := overload.NodeReport{Name: name, OS: runtime.GOOS, OverloadVersion: version}
-	if runtime.GOOS == "darwin" {
-		report.OSVersion = commandOutput(ctx, "sw_vers", "-productVersion")
-		report.Chip = commandOutput(ctx, "sysctl", "-n", "machdep.cpu.brand_string")
-		report.MemoryBytes, _ = strconv.ParseInt(commandOutput(ctx, "sysctl", "-n", "hw.memsize"), 10, 64)
+	report := overload.NodeReport{Name: name, OS: probe.goos, OverloadVersion: version}
+	if probe.goos == "darwin" {
+		report.OSVersion = probe.output(ctx, "sw_vers", "-productVersion")
+		report.Chip = probe.output(ctx, "sysctl", "-n", "machdep.cpu.brand_string")
+		report.MemoryBytes, _ = strconv.ParseInt(probe.output(ctx, "sysctl", "-n", "hw.memsize"), 10, 64)
 	} else {
-		report.OSVersion = commandOutput(ctx, "uname", "-r")
+		report.OSVersion = probe.output(ctx, "uname", "-r")
 	}
-	if binary, err := llamaServerBinary(""); err == nil {
+	binary := os.Getenv("OVERLOAD_LLAMA_SERVER")
+	if binary == "" {
+		binary, _ = probe.lookPath("llama-server")
+	}
+	if binary != "" {
 		if detected, err := localmodels.DetectLlama(ctx, binary); err == nil {
 			report.LlamaBuild = detected.Build
 		}
 	}
-	report.MLXVersion = commandOutput(ctx, "python3", "-c", "import mlx.core as mx; print(mx.__version__)")
+	if interpreter := probe.mlxPython(ctx, python); interpreter != "" {
+		report.MLXVersion = probe.output(ctx, interpreter, "-c", "import mlx.core as mx; print(mx.__version__)")
+	}
 	if dir, err := modelsDir(""); err == nil {
 		store := localmodels.NewStore(dir)
 		if installed, err := store.List(); err == nil {
@@ -182,5 +268,5 @@ func collectReport(ctx context.Context, name string) overload.NodeReport {
 			report.DiskFreeBytes = free
 		}
 	}
-	return report
+	return report.Bounded()
 }
