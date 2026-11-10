@@ -564,6 +564,11 @@ func TestGitFiltersNeverRun(t *testing.T) {
 			}
 			commitAttributes(t, dir, "feature", "*.go filter=evil\n")
 		}},
+		{"clean filter from repository config hidden from git config by GIT_CONFIG", func(t *testing.T, dir, command string) {
+			gitConfig(t, dir, "filter.evil.clean", command)
+			commitAttributes(t, dir, "feature", "*.go filter=evil\n")
+			t.Setenv("GIT_CONFIG", os.DevNull)
+		}},
 		{"clean filter from inherited environment", func(t *testing.T, dir, command string) {
 			t.Setenv("GIT_CONFIG_COUNT", "1")
 			t.Setenv("GIT_CONFIG_KEY_0", "filter.evil.clean")
@@ -819,5 +824,29 @@ func TestFixKeepsTheBranchWhenACommitErrorFollowsTheCommit(t *testing.T) {
 				t.Fatalf("worktree removed: %v", err)
 			}
 		})
+	}
+}
+
+func TestOpenRepositoryKeepsTrailingSpaces(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := filepath.Join(t.TempDir(), "project ")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v %s", err, out)
+	}
+	repo, err := openRepository(context.Background(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := filepath.EvalSymlinks(repo.dir); got != want {
+		t.Fatalf("repository at %q, want %q", repo.dir, want)
 	}
 }

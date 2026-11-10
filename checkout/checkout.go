@@ -33,11 +33,12 @@ var gitSafety = []string{"-c", "core.quotepath=off", "-c", "core.fsmonitor=false
 var gitLocationVariables = []string{"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM"}
 
 // isInheritedGitConfig reports whether an environment variable carries git
-// configuration from whoever started overload. It is dropped so the filter
-// drivers Git lists are the ones git will see, and so Git's own
-// GIT_CONFIG_COUNT settings are not mixed with someone else's.
+// configuration from whoever started overload, or (GIT_CONFIG) changes
+// which files only `git config` reads. It is dropped so the filter drivers
+// Git lists are the ones git will see, and so Git's own GIT_CONFIG_COUNT
+// settings are not mixed with someone else's.
 func isInheritedGitConfig(name string) bool {
-	return name == "GIT_CONFIG_PARAMETERS" || name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
+	return name == "GIT_CONFIG" || name == "GIT_CONFIG_PARAMETERS" || name == "GIT_CONFIG_COUNT" || strings.HasPrefix(name, "GIT_CONFIG_KEY_") || strings.HasPrefix(name, "GIT_CONFIG_VALUE_")
 }
 
 func gitEnvironment() []string {
@@ -154,7 +155,8 @@ func openRepository(ctx context.Context, dir string) (repository, error) {
 	if err != nil {
 		return repository{}, err
 	}
-	return repository{dir: strings.TrimSpace(top)}, nil
+	// Only git's line ending is removed: the path itself may end in spaces.
+	return repository{dir: strings.TrimSuffix(strings.TrimSuffix(top, "\n"), "\r")}, nil
 }
 
 // diffOptions keep the diff in the form the reviewer parses whatever the
