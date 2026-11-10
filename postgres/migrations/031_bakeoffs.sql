@@ -19,7 +19,10 @@ CREATE TABLE IF NOT EXISTS bakeoffs (
     error text NOT NULL DEFAULT '',
     created_at timestamptz NOT NULL DEFAULT now(),
     started_at timestamptz,
-    finished_at timestamptz
+    finished_at timestamptz,
+    -- The River job running the bake-off, so a retry of that job can take
+    -- over a start it could not confirm.
+    job_id bigint
 );
 CREATE TABLE IF NOT EXISTS bakeoff_results (
     id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

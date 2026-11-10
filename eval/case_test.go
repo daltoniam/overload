@@ -249,3 +249,32 @@ func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
 		t.Fatalf("case = %+v, %v", item, err)
 	}
 }
+
+// TestNewFileDiffAppliesToTheSameFile checks that git, applying the diff,
+// writes exactly the case's content.
+func TestNewFileDiffAppliesToTheSameFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	for name, content := range map[string]string{
+		"empty":            "",
+		"trailing newline": "a\nb\n",
+		"no newline":       "a\nb",
+		"one line":         "only",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			patch := filepath.Join(t.TempDir(), "new.patch")
+			if err := os.WriteFile(patch, []byte(NewFileDiff("new.txt", content)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if out, err := exec.Command("git", "-C", dir, "apply", patch).CombinedOutput(); err != nil {
+				t.Fatalf("git apply: %v %s\n%s", err, out, NewFileDiff("new.txt", content))
+			}
+			got, err := os.ReadFile(filepath.Join(dir, "new.txt"))
+			if err != nil || string(got) != content {
+				t.Fatalf("applied content %q, want %q (%v)", got, content, err)
+			}
+		})
+	}
+}

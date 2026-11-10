@@ -137,11 +137,19 @@ func (item Case) Repository() fs.FS {
 // NewFileDiff is a diff that adds path with content, as if a pull request
 // introduced the whole file.
 func NewFileDiff(path, content string) string {
-	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
 	var diff strings.Builder
-	fmt.Fprintf(&diff, "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
+	fmt.Fprintf(&diff, "diff --git a/%s b/%s\nnew file mode 100644\n", path, path)
+	// Git writes no hunk for an empty file.
+	if content == "" {
+		return diff.String()
+	}
+	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+	fmt.Fprintf(&diff, "--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, len(lines))
 	for _, line := range lines {
 		diff.WriteString("+" + line + "\n")
+	}
+	if !strings.HasSuffix(content, "\n") {
+		diff.WriteString("\\ No newline at end of file\n")
 	}
 	return diff.String()
 }

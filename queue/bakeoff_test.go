@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 )
 
 func bakeoffStore(t *testing.T) (*postgres.Store, *river.Client[pgx.Tx]) {
@@ -36,6 +37,40 @@ func bakeoffStore(t *testing.T) (*postgres.Store, *river.Client[pgx.Tx]) {
 		t.Fatal(err)
 	}
 	return store, client
+}
+
+func TestStartBakeoffClaims(t *testing.T) {
+	store, client := bakeoffStore(t)
+	ctx := context.Background()
+	id, err := store.CreateBakeoff(ctx, client, []string{"flint"}, []string{eval.BuiltinSuite}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, release, ok, err := store.StartBakeoff(ctx, id, 7)
+	if err != nil || !ok {
+		t.Fatalf("first claim: %v %v", ok, err)
+	}
+	// An attempt River starts beside a live one does nothing.
+	if _, _, ok, err := store.StartBakeoff(ctx, id, 7); err != nil || ok {
+		t.Fatalf("claim while the first attempt runs: %v %v", ok, err)
+	}
+	release()
+	// A retry of the same job takes over a start it could not confirm.
+	_, release, ok, err = store.StartBakeoff(ctx, id, 7)
+	if err != nil || !ok {
+		t.Fatalf("retry of the same job: %v %v", ok, err)
+	}
+	release()
+	// Another job never takes over a running bake-off.
+	if _, _, ok, err := store.StartBakeoff(ctx, id, 8); err != nil || ok {
+		t.Fatalf("another job claimed a running bake-off: %v %v", ok, err)
+	}
+	if err := store.FinishBakeoff(ctx, id, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, err := store.StartBakeoff(ctx, id, 7); err != nil || ok {
+		t.Fatalf("claimed a finished bake-off: %v %v", ok, err)
+	}
 }
 
 func plantedFindings() []overload.Finding {
@@ -80,7 +115,7 @@ func TestBakeoffWorker(t *testing.T) {
 		}
 		return overload.ReviewResult{Findings: plantedFindings(), Metrics: map[string]any{"input_tokens": int64(100), "output_tokens": float64(20)}}, nil
 	}}
-	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 1}, Args: postgres.BakeoffArgs{ID: id}}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 4 {
@@ -108,7 +143,7 @@ func TestBakeoffWorker(t *testing.T) {
 	if refused != 4 || matched != 2 || len(failures) != 2 || failures[0] != "model timed out" || !strings.Contains(failures[1], "review incomplete: 1 files were too large") {
 		t.Fatalf("refused %d, matched %d, failures %q", refused, matched, failures)
 	}
-	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil || calls != 4 {
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 1}, Args: postgres.BakeoffArgs{ID: id}}); err != nil || calls != 4 {
 		t.Fatalf("a finished bake-off ran again: %v", err)
 	}
 	list, err := store.ListBakeoffs(ctx)
@@ -135,7 +170,7 @@ func TestBakeoffWorkerChecksPolicyBeforeEachReview(t *testing.T) {
 		calls++
 		return overload.ReviewResult{}, store.SaveModelPolicy(ctx, catalog.Policy{BlockedOrigins: []string{"US"}})
 	}}
-	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 1}, Args: postgres.BakeoffArgs{ID: id}}); err != nil {
 		t.Fatal(err)
 	}
 	bakeoff, err := store.GetBakeoff(ctx, id)
@@ -155,7 +190,7 @@ func TestBakeoffWorkerReviewTimeout(t *testing.T) {
 		<-reviewCtx.Done()
 		return overload.ReviewResult{}, reviewCtx.Err()
 	}}
-	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 1}, Args: postgres.BakeoffArgs{ID: id}}); err != nil {
 		t.Fatal(err)
 	}
 	bakeoff, err := store.GetBakeoff(ctx, id)
@@ -181,7 +216,7 @@ func TestBakeoffWorkerInterrupted(t *testing.T) {
 		cancel()
 		return overload.ReviewResult{}, reviewCtx.Err()
 	}}
-	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{Args: postgres.BakeoffArgs{ID: id}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.BakeoffArgs]{JobRow: &rivertype.JobRow{ID: 1}, Args: postgres.BakeoffArgs{ID: id}}); err != nil {
 		t.Fatal(err)
 	}
 	bakeoff, err := store.GetBakeoff(context.Background(), id)

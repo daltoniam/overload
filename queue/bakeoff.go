@@ -40,17 +40,18 @@ type BakeoffWorker struct {
 // Timeout is unlimited because a bake-off runs many reviews, each bounded
 // by ReviewTimeout. River treats a job running longer than the review
 // timeout plus an hour as stuck and queues another attempt; that attempt
-// finds the bake-off no longer queued and does nothing, so the first one
-// carries on.
+// finds the running attempt's lock taken and does nothing, so the first
+// one carries on.
 func (worker *BakeoffWorker) Timeout(*river.Job[postgres.BakeoffArgs]) time.Duration {
 	return -1
 }
 
 func (worker *BakeoffWorker) Work(ctx context.Context, job *river.Job[postgres.BakeoffArgs]) error {
-	plan, ok, err := worker.Store.StartBakeoff(ctx, job.Args.ID)
+	plan, release, ok, err := worker.Store.StartBakeoff(ctx, job.Args.ID, job.ID)
 	if err != nil || !ok {
 		return err
 	}
+	defer release()
 	review := worker.Review
 	if review == nil {
 		review = harness.Reviewer{}.Review

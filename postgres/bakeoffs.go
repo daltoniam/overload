@@ -249,30 +249,56 @@ func (s *Store) CreateBakeoff(ctx context.Context, client *river.Client[pgx.Tx],
 	return id, tx.Commit(ctx)
 }
 
-// StartBakeoff marks a queued bake-off running and returns what it runs; ok
-// is false when it is not queued (already run, or running).
-func (s *Store) StartBakeoff(ctx context.Context, id int64) (BakeoffPlan, bool, error) {
-	plan := BakeoffPlan{ID: id}
+// StartBakeoff claims a bake-off for job and returns what it runs; ok is
+// false when the bake-off is finished or another attempt is running it.
+// The claim holds a session lock for as long as the attempt runs, so a
+// retry of the same job can take over a bake-off whose start was
+// committed but not reported (the connection dropped), while an attempt
+// River starts beside a live one finds the lock taken and does nothing.
+// release must be called when the attempt ends.
+func (s *Store) StartBakeoff(ctx context.Context, id, job int64) (plan BakeoffPlan, release func(), ok bool, err error) {
+	plan = BakeoffPlan{ID: id}
+	release = func() {}
+	conn, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return plan, release, false, err
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtextextended('overload-bakeoff:' || current_schema() || ':' || $1::bigint::text, 0))`, id).Scan(&locked); err != nil || !locked {
+		conn.Release()
+		return plan, release, false, err
+	}
+	release = func() {
+		// The lock belongs to this session, so unlock it before the
+		// connection goes back to the pool; a closed connection drops it.
+		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock(hashtextextended('overload-bakeoff:' || current_schema() || ':' || $1::bigint::text, 0))`, id); err != nil {
+			_ = conn.Conn().Close(context.WithoutCancel(ctx))
+		}
+		conn.Release()
+	}
 	var models, suites []byte
-	err := s.Pool.QueryRow(ctx, `UPDATE bakeoffs SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued' RETURNING models, suites, runs`, id).Scan(&models, &suites, &plan.Runs)
+	err = conn.QueryRow(ctx, `UPDATE bakeoffs SET status = 'running', started_at = COALESCE(started_at, now()), job_id = $2 WHERE id = $1 AND (status = 'queued' OR (status = 'running' AND job_id = $2)) RETURNING models, suites, runs`, id, job).Scan(&models, &suites, &plan.Runs)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return plan, false, nil
+		release()
+		return plan, func() {}, false, nil
 	}
 	if err != nil {
-		return plan, false, err
+		release()
+		return plan, func() {}, false, err
 	}
 	decodeErr := json.Unmarshal(models, &plan.Models)
 	if decodeErr == nil {
 		decodeErr = json.Unmarshal(suites, &plan.Suites)
 	}
 	if decodeErr != nil {
-		// A retry would find the bake-off running, so end it here.
+		release()
+		// A retry could not read them either, so end the bake-off here.
 		if err := s.FinishBakeoff(ctx, id, "the pinned models or suites could not be read"); err != nil {
-			return plan, false, err
+			return plan, func() {}, false, err
 		}
-		return plan, false, fmt.Errorf("read bake-off %d: %w", id, decodeErr)
+		return plan, func() {}, false, fmt.Errorf("read bake-off %d: %w", id, decodeErr)
 	}
-	return plan, true, nil
+	return plan, release, true, nil
 }
 
 // AddBakeoffResult stores one result.
