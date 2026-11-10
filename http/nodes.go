@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/gateway"
 	"github.com/daltoniam/overload/web/templates/pages"
 	"github.com/jackc/pgx/v5"
 )
@@ -37,7 +38,7 @@ func nodesAPI(store NodeStore, keys apiKeyAuthenticator) http.Handler {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "use POST"})
 			return
 		}
-		token := bearerToken(r)
+		token := gateway.Credential(r)
 		if keys == nil || !strings.HasPrefix(token, "ovl_") {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "send an overload API key with the nodes scope"})
 			return
