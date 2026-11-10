@@ -722,6 +722,10 @@ func TestOIDCSettings(t *testing.T) {
 	if _, err := oidcFromEnv(); err == nil {
 		t.Fatal("accepted a plain-http public base URL")
 	}
+	t.Setenv("OVERLOAD_BASE_URL", "HTTPS://overload.example.com")
+	if upper, err := oidcFromEnv(); err != nil || !(&oidcAuth{settings: upper}).secureCookies() {
+		t.Fatalf("an upper-case https base URL did not get secure cookies: %v", err)
+	}
 	t.Setenv("OVERLOAD_BASE_URL", "https://overload.example.com")
 	t.Setenv("OVERLOAD_ACCESS_TEAM_DOMAIN", "team.cloudflareaccess.com")
 	t.Setenv("OVERLOAD_ACCESS_AUD", "aud")
@@ -733,6 +737,7 @@ func TestOIDCSettings(t *testing.T) {
 		"groups":         json.RawMessage(`"solo"`),
 		"realm_access":   json.RawMessage(`{"roles":["platform","offline"]}`),
 		"cognito.groups": json.RawMessage(`["dotted"]`),
+		"long":           json.RawMessage(`"` + strings.Repeat("g", 400) + `"`),
 	}
 	for _, test := range []struct {
 		name string
@@ -742,6 +747,7 @@ func TestOIDCSettings(t *testing.T) {
 		{"realm_access.roles", []string{"platform", "offline"}},
 		{"cognito.groups", []string{"dotted"}},
 		{"realm_access.missing", nil},
+		{"long", []string{strings.Repeat("g", 400)}},
 		{"missing", nil},
 	} {
 		if got := groupsClaim(claims, test.name); !slices.Equal(got, test.want) {

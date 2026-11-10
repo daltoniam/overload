@@ -161,7 +161,8 @@ func newOIDCAuth(settings *oidcSettings, store SessionStore) *oidcAuth {
 }
 
 func (auth *oidcAuth) secureCookies() bool {
-	return strings.HasPrefix(auth.settings.baseURL, "https://")
+	parsed, err := url.Parse(auth.settings.baseURL)
+	return err == nil && parsed.Scheme == "https"
 }
 
 func (auth *oidcAuth) loginCookieName() string {
@@ -462,7 +463,10 @@ func groupsClaim(claims map[string]json.RawMessage, name string) []string {
 	if json.Unmarshal(raw, &groups) == nil {
 		return groups
 	}
-	if single := stringClaim(raw); single != "" {
+	// Unlike display claims, a group is compared exactly, so it is never
+	// truncated.
+	var single string
+	if json.Unmarshal(raw, &single) == nil && single != "" {
 		return []string{single}
 	}
 	return nil
