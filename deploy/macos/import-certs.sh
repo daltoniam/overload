@@ -47,12 +47,13 @@ import_p12 "$MACOS_INSTALLER_P12_BASE64" installer
 security set-key-partition-list -S apple-tool:,apple: -s -k "$password" "$keychain" >/dev/null
 # Keep the runner's existing keychains, one argument each, since their paths
 # may contain spaces.
+existing=$(security list-keychains -d user)
 set -- "$keychain"
 while IFS= read -r line; do
 	line=$(printf '%s\n' "$line" | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//')
 	if [ -n "$line" ]; then set -- "$@" "$line"; fi
 done <<EOF
-$(security list-keychains -d user)
+$existing
 EOF
 security list-keychains -d user -s "$@"
 

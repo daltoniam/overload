@@ -28,15 +28,15 @@ grep -q 'install-location="/usr/local/overload"' "$work/flat/PackageInfo" ||
 	fail "package does not install into /usr/local/overload"
 grep -q 'overwrite-permissions="false"' "$work/flat/PackageInfo" ||
 	fail "package would reset the permissions of existing directories"
-listing=$(lsbom -s "$work/flat/Bom") || fail "bill of materials cannot be read"
+listing=$(lsbom -s "$work/flat/Bom") && [ -n "$listing" ] || fail "bill of materials cannot be read"
 entries=$(printf '%s\n' "$listing" | LC_ALL=C sort | tr '\n' ' ')
 want_entries=". ./LICENSE ./bin ./bin/overload "
 [ "$entries" = "$want_entries" ] || fail "bill of materials is [$entries], want [$want_entries]"
-listing=$(lsbom -p fm "$work/flat/Bom") || fail "bill of materials cannot be read"
+listing=$(lsbom -p fm "$work/flat/Bom") && [ -n "$listing" ] || fail "bill of materials cannot be read"
 modes=$(printf '%s\n' "$listing" | LC_ALL=C sort | tr '\t\n' '= ')
 want_modes=".=40755 ./LICENSE=100644 ./bin=40755 ./bin/overload=100755 "
 [ "$modes" = "$want_modes" ] || fail "payload modes are [$modes], want [$want_modes]"
-listing=$(lsbom -p U "$work/flat/Bom") || fail "bill of materials cannot be read"
+listing=$(lsbom -p U "$work/flat/Bom") && [ -n "$listing" ] || fail "bill of materials cannot be read"
 owners=$(printf '%s\n' "$listing" | sort -u | tr '\n' ' ')
 [ "$owners" = "root " ] || fail "payload owners are [$owners], want root"
 # Decompress once and check every step's status, since a pipeline's status
