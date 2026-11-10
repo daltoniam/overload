@@ -214,5 +214,5 @@ func startsWord(text, word string) bool {
 }
 
 func isWordRune(char rune) bool {
-	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char)
+	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char) || unicode.IsMark(char)
 }

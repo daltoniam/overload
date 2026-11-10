@@ -49,7 +49,9 @@ func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error)
 		command.Stderr = &stderr
 		out, err := command.Output()
 		if err != nil {
-			return "", fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
+			// Name the subcommand, not a leading global option.
+			name := args[max(slices.IndexFunc(args, func(arg string) bool { return !strings.HasPrefix(arg, "-") }), 0)]
+			return "", fmt.Errorf("git %s: %v: %s", name, err, strings.TrimSpace(stderr.String()))
 		}
 		return string(out), nil
 	}

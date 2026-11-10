@@ -106,6 +106,7 @@ func TestKeywordsMatch(t *testing.T) {
 		{[]string{"cache", "stale"}, "The \u201ccache\u201d is stale", true},
 		{[]string{"lock"}, "\u00e9lock is not a word start", false},
 		{[]string{"lock"}, "\u2014lock held", true},
+		{[]string{"lock"}, "e\u0301lock is not a word start either", false},
 	} {
 		if got := keywordsMatch(test.groups, test.text); got != test.want {
 			t.Errorf("keywordsMatch(%q, %q) = %v", test.groups, test.text, got)
