@@ -66,6 +66,7 @@ func TestChangedPaths(t *testing.T) {
 		{"crlf", "diff --git a/crlf.go b/crlf.go\r\n--- a/crlf.go\r\n+++ b/crlf.go\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n", []string{"crlf.go"}, false},
 		{"repeats once", "diff --git a/a.go b/a.go\nold mode 100644\nnew mode 100755\ndiff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-x\n+y\n", []string{"a.go"}, false},
 		{"unreadable section", "diff --git a/x b/y\nold mode 100644\nnew mode 100755\n", nil, true},
+		{"quoted names without prefixes", "diff --git \"tab\\tname\" \"tab\\tname\"\n--- \"tab\\tname\"\n+++ \"tab\\tname\"\n@@ -1 +1 @@\n-x\n+y\n", nil, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			got, err := ChangedPaths(test.patch)

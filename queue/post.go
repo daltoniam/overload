@@ -86,12 +86,14 @@ func (w *PostWorker) post(ctx context.Context, runID int64) error {
 	}
 	input := target.GateInput()
 	if !PostingEnabled() {
-		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
-			return err
-		}
 		input.NotPosted = true
 		gate := overload.GateOutcome(input)
+		// The verdict is recorded before the post is marked skipped: a
+		// skipped post is final, so a retry would not record it.
 		if err := w.Store.RecordGate(ctx, runID, gate); err != nil {
+			return err
+		}
+		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
 			return err
 		}
 		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)

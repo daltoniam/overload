@@ -35,8 +35,10 @@ func ChangedPaths(patch string) ([]string, error) {
 			}
 			section, inHeader, found = section+1, true, false
 			for _, path := range headerPaths(rest) {
-				add(path)
-				found = true
+				if path != "" {
+					add(path)
+					found = true
+				}
 			}
 			continue
 		}
