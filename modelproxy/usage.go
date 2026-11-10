@@ -96,6 +96,9 @@ type usageMeter struct {
 	dataSkip bool
 	total    wireUsage
 	found    bool
+	// afterCR is set when the last line ended with a CR, so a following
+	// LF is part of the same CRLF.
+	afterCR bool
 	// final is set by usage that comes with or after the answer (OpenAI's
 	// last chunk, Anthropic's message_delta), not Anthropic's
 	// message_start, which reports input but only a token or so of output.
@@ -114,11 +117,20 @@ func (meter *usageMeter) write(data []byte) {
 		}
 		return
 	}
+	// Lines end at LF, CR or CRLF; a LF right after a CR (even across
+	// writes) finishes the same line break.
 	for len(data) > 0 {
-		newline := bytes.IndexByte(data, '\n')
+		if meter.afterCR && data[0] == '\n' {
+			data = data[1:]
+			meter.afterCR = false
+			continue
+		}
+		meter.afterCR = false
+		newline := bytes.IndexAny(data, "\r\n")
 		chunk := data
 		if newline >= 0 {
 			chunk = data[:newline]
+			meter.afterCR = data[newline] == '\r'
 		}
 		if !meter.skipping {
 			if len(meter.line)+len(chunk) > maxEventLine {

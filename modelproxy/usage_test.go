@@ -211,3 +211,19 @@ func TestProxyChecksTheBudgetAfterTheUpload(t *testing.T) {
 		t.Fatalf("status %d", recorder.Code)
 	}
 }
+
+func TestUsageWithCarriageReturnLineEndings(t *testing.T) {
+	// Bare CR line endings.
+	usage, ok := parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\r\rdata: {\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":4}}\r\r"))
+	if !ok || usage.Input != 40 || usage.Output != 4 {
+		t.Fatalf("CR stream = %+v %v", usage, ok)
+	}
+	// CRLF, with a multi-line event and the CR and LF in separate writes.
+	meter := newUsageMeter(overload.ProviderOpenAICompat, "text/event-stream")
+	for _, part := range []string{"data: {\"usage\":\r", "\ndata: {\"prompt_tokens\":9,\"completion_tokens\":2}}\r", "\n\r", "\n"} {
+		meter.write([]byte(part))
+	}
+	if usage, exact := meter.usage(); !exact || usage.Input != 9 || usage.Output != 2 {
+		t.Fatalf("CRLF stream = %+v exact = %v", usage, exact)
+	}
+}
