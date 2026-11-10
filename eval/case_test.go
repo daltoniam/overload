@@ -250,8 +250,8 @@ func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
 	}
 }
 
-// TestNewFileDiffAppliesToTheSameFile checks that git, applying the diff,
-// writes exactly the case's content.
+// TestNewFileDiffQuotesUnusualNames checks that git applies the diff to
+// the same unusually named file.
 func TestNewFileDiffQuotesUnusualNames(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
@@ -273,6 +273,8 @@ func TestNewFileDiffQuotesUnusualNames(t *testing.T) {
 	}
 }
 
+// TestNewFileDiffAppliesToTheSameFile checks that git, applying the diff,
+// writes exactly the case's content.
 func TestNewFileDiffAppliesToTheSameFile(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")
