@@ -107,7 +107,9 @@ func TestWorkflowRoutesFilesByScope(t *testing.T) {
 	}}
 	lock := "diff --git a/go.lock b/go.lock\n+++ b/go.lock\n@@ -1 +1 @@\n-old\n+" + strings.Repeat("x", 40000) + "\n"
 	diff := "diff --git a/auth/a.go b/auth/a.go\n+++ b/auth/a.go\n@@ -1 +1,3 @@\n-old\n+bad1()\n+bad2()\n+bad3()\n" +
-		"diff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+ok()\n" + lock
+		"diff --git a/b.go b/b.go\n+++ b/b.go\n@@ -1 +1 @@\n-old\n+ok()\n" + lock +
+		"diff --git a/auth/old.go b/auth/old.go\ndeleted file mode 100644\n--- a/auth/old.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-x\n" +
+		"diff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n"
 	result, err := (Reviewer{}).Review(context.Background(), overload.ReviewSpec{Diff: diff, Workflow: workflow}, fstest.MapFS{})
 	if err != nil {
 		t.Fatal(err)
@@ -120,6 +122,9 @@ func TestWorkflowRoutesFilesByScope(t *testing.T) {
 		t.Fatalf("findings %+v", result.Findings)
 	}
 	routing := result.Metrics["routing"].(overload.Routing)
+	if strings.Join(routing.Uncommentable, ",") != "auth/old.go,logo.png" || !slices.Contains(routing.ChangedFiles(), "auth/old.go") {
+		t.Fatalf("deleted and binary files missing from the routing: %+v", routing)
+	}
 	if len(routing.Skipped) != 1 || routing.Agents[1].Capped != 2 || routing.Agents[1].Findings != 1 || routing.Agents[0].Reviewed != 1 || routing.Agents[1].InputTokens == 0 || result.Metrics["skipped_files"] != 1 {
 		t.Fatalf("routing %+v metrics %+v", routing, result.Metrics)
 	}

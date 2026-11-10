@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode"
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/github"
@@ -22,12 +23,15 @@ func PostingEnabled() bool {
 type ReviewPoster interface {
 	FindReview(ctx context.Context, installationID int64, repository string, number int, marker string) (int64, error)
 	PostReview(ctx context.Context, installationID int64, repository string, number int, sha, event, summary string, findings []overload.Finding) (int64, error)
-	ChangesRequested(ctx context.Context, installationID int64, repository string, number int) ([]int64, error)
+	StandingReviews(ctx context.Context, installationID int64, repository string, number int) ([]github.StandingReview, error)
 	DismissReview(ctx context.Context, installationID int64, repository string, number int, reviewID int64, message string) error
 }
 
-// dismissMessage explains why overload withdrew its own request for changes.
-const dismissMessage = "Overload's latest review of this pull request found nothing blocking."
+// Messages explaining why overload withdrew one of its own reviews.
+const (
+	dismissMessage          = "Overload's latest review of this pull request found nothing blocking."
+	withdrawApprovalMessage = "Overload's latest review of this pull request does not approve it."
+)
 
 type PostWorker struct {
 	river.WorkerDefaults[postgres.PostReviewArgs]
@@ -46,14 +50,20 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err != nil {
 		return err
 	}
-	gate := overload.GateOutcome(target.GateInput())
+	if target.RerunOfHead {
+		return w.Store.SkipPost(ctx, runID, "superseded_by_newer_run")
+	}
+	input := target.GateInput()
 	if !PostingEnabled() {
 		if err := w.Store.SkipPost(ctx, runID, "posting_disabled"); err != nil {
 			return err
 		}
-		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description+" (not posted: posting is off)")
+		input.NotPosted = true
+		gate := overload.GateOutcome(input)
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 		return nil
 	}
+	gate := overload.GateOutcome(input)
 	if target.RepositoryPaused {
 		return w.Store.SkipPost(ctx, runID, "repository_paused")
 	}
@@ -76,28 +86,21 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err != nil {
 		return fmt.Errorf("check existing review: %w", err)
 	}
-	if existing > 0 {
-		return w.Store.FinishPost(ctx, target, "posted", existing)
+	standing, err := poster.StandingReviews(ctx, target.InstallationID, target.Repository, target.PRNumber)
+	if err != nil {
+		return fmt.Errorf("check earlier reviews: %w", err)
 	}
 	event := gate.Event
-	decides := target.ReviewDecision == overload.ReviewDecisionRequestChanges || target.ReviewDecision == overload.ReviewDecisionApprove
-	var standing []int64
-	if decides {
-		if standing, err = poster.ChangesRequested(ctx, target.InstallationID, target.Repository, target.PRNumber); err != nil {
-			return fmt.Errorf("check earlier reviews: %w", err)
-		}
+	if existing > 0 {
+		// An earlier attempt posted the review and stopped before
+		// withdrawing stale reviews and setting the status.
+		return w.finish(ctx, poster, target, gate, standing, "posted", existing)
 	}
-	if len(target.Findings) == 0 && event != overload.ReviewApprove && (event != overload.ReviewRequestChanges || len(standing) > 0) {
-		if err := w.dismiss(ctx, poster, target, event, standing); err != nil {
-			return err
-		}
-		if err := w.Store.FinishPost(ctx, target, "nothing_new", 0); err != nil {
-			return err
-		}
-		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
-		return nil
+	notes := gateNotes(gate)
+	if len(target.Findings) == 0 && notes == "" && event != overload.ReviewApprove && (event != overload.ReviewRequestChanges || requestsChanges(standing)) {
+		return w.finish(ctx, poster, target, gate, standing, "nothing_new", 0)
 	}
-	summary := reviewSummary(event, target, len(target.DuplicateSeverities)) + gateNotes(gate) + "\n\n" + marker
+	summary := reviewSummary(event, target, len(target.DuplicateSeverities)) + notes + "\n\n" + marker
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, event, summary, target.Findings)
 	if errors.Is(err, github.ErrReviewRejected) {
 		if err := w.Store.RejectPost(ctx, runID, err.Error()); err != nil {
@@ -109,14 +112,29 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err != nil {
 		return fmt.Errorf("post review: %w", err)
 	}
-	if err := w.dismiss(ctx, poster, target, event, standing); err != nil {
+	return w.finish(ctx, poster, target, gate, standing, "posted", reviewID)
+}
+
+// finish withdraws stale reviews, records the post and sets the commit
+// status.
+func (w *PostWorker) finish(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, gate overload.Gate, standing []github.StandingReview, postStatus string, reviewID int64) error {
+	if err := w.dismiss(ctx, poster, target, gate.Event, standing, reviewID); err != nil {
 		return err
 	}
-	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
+	if err := w.Store.FinishPost(ctx, target, postStatus, reviewID); err != nil {
 		return err
 	}
-	reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
+	reportStatus(ctx, w.Store, w.Status, target.RunID, gate.State, gate.Description)
 	return nil
+}
+
+func requestsChanges(standing []github.StandingReview) bool {
+	for _, review := range standing {
+		if review.State == github.ReviewStateChangesRequested {
+			return true
+		}
+	}
+	return false
 }
 
 // gateNotes tells reviewers which files the review did not cover and which
@@ -124,7 +142,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 func gateNotes(gate overload.Gate) string {
 	var notes strings.Builder
 	if len(gate.Unreviewed) > 0 {
-		fmt.Fprintf(&notes, "\n\nNot reviewed, so the overload check fails until a person reviews them: %s.", codeList(gate.Unreviewed))
+		fmt.Fprintf(&notes, "\n\nNot reviewed, so the overload check fails for this commit: %s.", codeList(gate.Unreviewed))
 	}
 	if len(gate.HumanFiles) > 0 {
 		fmt.Fprintf(&notes, "\n\nThese files are on this workflow's human review paths, so overload does not approve this pull request: %s.", codeList(gate.HumanFiles))
@@ -132,7 +150,10 @@ func gateNotes(gate overload.Gate) string {
 	return notes.String()
 }
 
-// codeList formats up to ten paths for a review body.
+// codeList formats up to ten paths for a review body. Paths come from the
+// pull request, so control characters that could end the code span or
+// start new markdown are replaced, and mentions are broken up as in model
+// text.
 func codeList(paths []string) string {
 	shown := paths
 	if len(shown) > 10 {
@@ -140,7 +161,16 @@ func codeList(paths []string) string {
 	}
 	quoted := make([]string, len(shown))
 	for index, path := range shown {
-		quoted[index] = "`" + strings.ReplaceAll(path, "`", "'") + "`"
+		path = strings.Map(func(r rune) rune {
+			if r == '`' {
+				return '\''
+			}
+			if unicode.IsControl(r) {
+				return '?'
+			}
+			return r
+		}, overload.TruncateUTF8(path, 200))
+		quoted[index] = "`" + strings.ReplaceAll(path, "@", "@ ") + "`"
 	}
 	list := strings.Join(quoted, ", ")
 	if len(paths) > len(shown) {
@@ -149,15 +179,27 @@ func codeList(paths []string) string {
 	return list
 }
 
-// dismiss withdraws overload's earlier requests for changes once a review
-// no longer blocks. An approval would supersede them anyway; dismissing
-// also covers request-changes-only workflows, where nothing else would.
-func (w *PostWorker) dismiss(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, event string, standing []int64) error {
-	if event == overload.ReviewRequestChanges {
-		return nil
-	}
-	for _, id := range standing {
-		if err := poster.DismissReview(ctx, target.InstallationID, target.Repository, target.PRNumber, id, dismissMessage); err != nil {
+// dismiss withdraws overload's earlier reviews that the new one no longer
+// stands behind: an approval unless this review approves, and, when the
+// workflow decides, a request for changes unless this review requests
+// changes. GitHub counts each reviewer's latest approval or request and a
+// comment replaces neither, so a stale approval would otherwise keep
+// counting toward the merge.
+func (w *PostWorker) dismiss(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, event string, standing []github.StandingReview, posted int64) error {
+	decides := target.ReviewDecision == overload.ReviewDecisionRequestChanges || target.ReviewDecision == overload.ReviewDecisionApprove
+	for _, review := range standing {
+		var message string
+		switch {
+		case review.ID == posted:
+			continue
+		case review.State == github.ReviewStateApproved && event != overload.ReviewApprove:
+			message = withdrawApprovalMessage
+		case review.State == github.ReviewStateChangesRequested && decides && event != overload.ReviewRequestChanges:
+			message = dismissMessage
+		default:
+			continue
+		}
+		if err := poster.DismissReview(ctx, target.InstallationID, target.Repository, target.PRNumber, review.ID, message); err != nil {
 			return fmt.Errorf("dismiss earlier review: %w", err)
 		}
 	}

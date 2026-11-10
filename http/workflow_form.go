@@ -63,9 +63,13 @@ func workflowFromForm(values url.Values) (overload.Workflow, error) {
 		workflow.MaxFileChars = number(values.Get("max_file_chars"), "the largest file size must be a number")
 		workflow.ReviewDecision = values.Get("review_decision")
 		workflow.HumanReviewPaths = strings.Split(values.Get("human_review_paths"), "\n")
-		workflow.ApprovePaths = strings.Split(values.Get("approve_paths"), "\n")
 		if workflow.ReviewDecision != "" && workflow.ReviewDecision != overload.ReviewDecisionComment {
 			workflow.BlockSeverity = values.Get("block_severity")
+		}
+		// The approve paths field stays in the form, hidden, when another
+		// decision is picked; only approval uses it.
+		if workflow.ReviewDecision == overload.ReviewDecisionApprove {
+			workflow.ApprovePaths = strings.Split(values.Get("approve_paths"), "\n")
 		}
 	} else {
 		workflow.MaxSteps = number(values.Get("max_steps"), "the step limit must be a number")

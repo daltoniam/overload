@@ -20,13 +20,14 @@ type fakePoster struct {
 	posts     [][]overload.Finding
 	events    []string
 	summary   string
-	standing  []int64
+	standing  []github.StandingReview
 	dismissed []int64
 }
 
 type fakeStatus struct {
-	states []string
-	shas   []string
+	states       []string
+	shas         []string
+	descriptions []string
 }
 
 func (status *fakeStatus) SetStatus(_ context.Context, installationID int64, _ string, sha, state, description, _ string) error {
@@ -35,10 +36,11 @@ func (status *fakeStatus) SetStatus(_ context.Context, installationID int64, _ s
 	}
 	status.states = append(status.states, state)
 	status.shas = append(status.shas, sha)
+	status.descriptions = append(status.descriptions, description)
 	return nil
 }
 
-func (poster *fakePoster) ChangesRequested(context.Context, int64, string, int) ([]int64, error) {
+func (poster *fakePoster) StandingReviews(context.Context, int64, string, int) ([]github.StandingReview, error) {
 	return poster.standing, nil
 }
 
@@ -283,12 +285,20 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		}
 		return runID
 	}
+	// reviewedA is a complete review of a pull request changing only a.go.
+	const reviewedA = `{"routing":{"agents":[{"agent":"main","files":["a.go"]}]},"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`
 	newRun := func(decision string, findings ...overload.Finding) int64 {
 		t.Helper()
-		return newGatedRun(fmt.Sprintf(`{"review_decision":%q}`, decision), `{}`, findings...)
+		return newGatedRun(fmt.Sprintf(`{"review_decision":%q}`, decision), reviewedA, findings...)
 	}
 	finding := func(severity string) overload.Finding {
 		return overload.Finding{Path: "a.go", Line: 3, Side: "RIGHT", Severity: severity, Category: "bug", Title: severity + " bug", Body: "b", Confidence: 0.9, Evidence: "x()"}
+	}
+	requested := func(id int64) github.StandingReview {
+		return github.StandingReview{ID: id, State: github.ReviewStateChangesRequested}
+	}
+	approved := func(id int64) github.StandingReview {
+		return github.StandingReview{ID: id, State: github.ReviewStateApproved}
 	}
 	statuses := &fakeStatus{}
 	work := func(poster *fakePoster, runID int64) string {
@@ -306,19 +316,22 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		name          string
 		decision      string
 		findings      []overload.Finding
-		standing      []int64
+		standing      []github.StandingReview
 		wantStatus    string
 		wantEvent     string
 		wantDismissed []int64
 		wantState     string
 	}{
-		{"comment mode is unchanged", "", []overload.Finding{finding("critical")}, []int64{9}, "posted", overload.ReviewComment, nil, "success"},
-		{"blocking finding requests changes", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("high")}, []int64{9}, "posted", overload.ReviewRequestChanges, nil, "failure"},
-		{"minor finding comments and withdraws earlier request", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("low")}, []int64{9}, "posted", overload.ReviewComment, []int64{9}, "success"},
-		{"clean review withdraws earlier request", overload.ReviewDecisionRequestChanges, nil, []int64{9}, "nothing_new", "", []int64{9}, "success"},
+		{"comment mode is unchanged", "", []overload.Finding{finding("critical")}, []github.StandingReview{requested(9)}, "posted", overload.ReviewComment, nil, "success"},
+		{"comment mode withdraws a stale approval", "", []overload.Finding{finding("low")}, []github.StandingReview{requested(8), approved(9)}, "posted", overload.ReviewComment, []int64{9}, "success"},
+		{"blocking finding requests changes", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("high")}, []github.StandingReview{requested(9)}, "posted", overload.ReviewRequestChanges, nil, "failure"},
+		{"minor finding comments and withdraws earlier request", overload.ReviewDecisionRequestChanges, []overload.Finding{finding("low")}, []github.StandingReview{requested(9)}, "posted", overload.ReviewComment, []int64{9}, "success"},
+		{"clean review withdraws earlier request", overload.ReviewDecisionRequestChanges, nil, []github.StandingReview{requested(9)}, "nothing_new", "", []int64{9}, "success"},
 		{"clean review approves", overload.ReviewDecisionApprove, nil, nil, "posted", overload.ReviewApprove, nil, "success"},
-		{"approve with minor findings", overload.ReviewDecisionApprove, []overload.Finding{finding("medium")}, []int64{9}, "posted", overload.ReviewApprove, []int64{9}, "success"},
+		{"approval keeps the earlier approval", overload.ReviewDecisionApprove, nil, []github.StandingReview{approved(9)}, "posted", overload.ReviewApprove, nil, "success"},
+		{"approve with minor findings", overload.ReviewDecisionApprove, []overload.Finding{finding("medium")}, []github.StandingReview{requested(9)}, "posted", overload.ReviewApprove, []int64{9}, "success"},
 		{"approve mode still blocks", overload.ReviewDecisionApprove, []overload.Finding{finding("critical")}, nil, "posted", overload.ReviewRequestChanges, nil, "failure"},
+		{"blocking finding withdraws earlier approval", overload.ReviewDecisionApprove, []overload.Finding{finding("critical")}, []github.StandingReview{approved(9), requested(10)}, "posted", overload.ReviewRequestChanges, []int64{9}, "failure"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -342,18 +355,28 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 
 	gated := []struct {
 		name, snapshot, metrics string
+		standing                []github.StandingReview
 		wantEvent, wantState    string
 		wantSummary             string
+		wantDismissed           []int64
 	}{
-		{"files not reviewed fail the check", `{"review_decision":"approve"}`, `{"degraded":true,"routing":{"too_large":["big.go"],"agents":[{"agent":"main","files":["a.go"]}],"degraded":["1 files were too large to review: big.go"]}}`, overload.ReviewComment, "failure", "Not reviewed"},
-		{"a failed agent fails the check", `{"review_decision":"request_changes"}`, `{"degraded":true,"routing":{"agents":[{"agent":"main","files":["a.go","b.go"],"failed":"timeout","unreviewed":["b.go"]}],"degraded":["main agent failed"]}}`, overload.ReviewComment, "failure", "`b.go`"},
-		{"human review paths block approval", `{"review_decision":"approve","human_review_paths":["auth/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["auth/login.go"]}]}}`, overload.ReviewComment, "success", "human review paths"},
-		{"approve paths limit approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["docs/a.md","main.go"]}]}}`, overload.ReviewComment, "success", ""},
-		{"approve paths allow approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"skipped":["go.sum"],"agents":[{"agent":"main","files":["docs/a.md"]}]}}`, overload.ReviewApprove, "success", ""},
+		{"files not reviewed fail the check", `{"review_decision":"approve"}`, `{"degraded":true,"routing":{"too_large":["big.go"],"agents":[{"agent":"main","files":["a.go"]}],"degraded":["1 files were too large to review: big.go"]},"gate_files":{"changed":["a.go","big.go"],"commentable":["a.go","big.go"]}}`, nil, overload.ReviewComment, "failure", "Not reviewed", nil},
+		{"a partial review withdraws an earlier approval", `{"review_decision":"approve"}`, `{"degraded":true,"routing":{"too_large":["big.go"],"agents":[{"agent":"main","files":["a.go"]}]},"gate_files":{"changed":["a.go","big.go"],"commentable":["a.go","big.go"]}}`, []github.StandingReview{approved(4)}, overload.ReviewComment, "failure", "`big.go`", []int64{4}},
+		{"a failed agent fails the check", `{"review_decision":"request_changes"}`, `{"degraded":true,"routing":{"agents":[{"agent":"main","files":["a.go","b.go"],"failed":"timeout","unreviewed":["b.go"]}],"degraded":["main agent failed"]},"gate_files":{"changed":["a.go","b.go"],"commentable":["a.go","b.go"]}}`, nil, overload.ReviewComment, "failure", "`b.go`", nil},
+		{"missing routing fails the check", `{"review_decision":"approve"}`, `{"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`, nil, overload.ReviewComment, "failure", "`a.go`", nil},
+		{"a file missing from the routing fails the check", `{"review_decision":"approve"}`, `{"routing":{"agents":[{"agent":"main","files":["a.go"]}]},"gate_files":{"changed":["a.go","hidden.go"],"commentable":["a.go","hidden.go"]}}`, nil, overload.ReviewComment, "failure", "`hidden.go`", nil},
+		{"unknown changed files fail the check", `{"review_decision":"approve"}`, `{"routing":{"agents":[{"agent":"main","files":["a.go"]}]}}`, nil, overload.ReviewComment, "failure", "", nil},
+		{"human review paths block approval", `{"review_decision":"approve","human_review_paths":["auth/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["auth/login.go"]}]},"gate_files":{"changed":["auth/login.go"],"commentable":["auth/login.go"]}}`, nil, overload.ReviewComment, "success", "human review paths", nil},
+		{"a deleted file on a human path blocks approval", `{"review_decision":"approve","human_review_paths":["auth"]}`, `{"routing":{"uncommentable":["Auth/old.go"],"agents":[{"agent":"main","files":["a.go"]}]},"gate_files":{"changed":["a.go","Auth/old.go"],"commentable":["a.go"]}}`, nil, overload.ReviewComment, "success", "`Auth/old.go`", nil},
+		{"approve paths limit approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["docs/a.md","main.go"]}]},"gate_files":{"changed":["docs/a.md","main.go"],"commentable":["docs/a.md","main.go"]}}`, nil, overload.ReviewComment, "success", "", nil},
+		{"a binary file outside approve paths blocks approval", `{"review_decision":"approve","approve_paths":["docs/**"]}`, `{"routing":{"uncommentable":["logo.png"],"agents":[{"agent":"main","files":["docs/a.md"]}]},"gate_files":{"changed":["docs/a.md","logo.png"],"commentable":["docs/a.md"]}}`, nil, overload.ReviewComment, "success", "", nil},
+		{"skipped files must match approve paths", `{"review_decision":"approve","approve_paths":["docs/**"],"skip_paths":["go.sum"]}`, `{"routing":{"skipped":["go.sum"],"agents":[{"agent":"main","files":["docs/a.md"]}]},"gate_files":{"changed":["docs/a.md","go.sum"],"commentable":["docs/a.md","go.sum"]}}`, nil, overload.ReviewComment, "success", "", nil},
+		{"a review of only skipped files never approves", `{"review_decision":"approve","skip_paths":["go.sum"]}`, `{"routing":{"skipped":["go.sum"],"agents":[{"agent":"main","files":[]}]},"gate_files":{"changed":["go.sum"],"commentable":["go.sum"]}}`, nil, overload.ReviewComment, "success", "", nil},
+		{"approve paths allow approval", `{"review_decision":"approve","approve_paths":["docs/**","go.sum"],"skip_paths":["go.sum"]}`, `{"routing":{"skipped":["go.sum"],"agents":[{"agent":"main","files":["docs/a.md"]}]},"gate_files":{"changed":["docs/a.md","go.sum"],"commentable":["docs/a.md","go.sum"]}}`, nil, overload.ReviewApprove, "success", "", nil},
 	}
 	for _, tt := range gated {
 		t.Run(tt.name, func(t *testing.T) {
-			poster := &fakePoster{}
+			poster := &fakePoster{standing: tt.standing}
 			before := len(statuses.states)
 			work(poster, newGatedRun(tt.snapshot, tt.metrics, finding("low")))
 			if len(statuses.states) != before+1 || statuses.states[before] != tt.wantState {
@@ -365,8 +388,56 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			if !strings.Contains(poster.summary, tt.wantSummary) {
 				t.Fatalf("summary %q does not mention %q", poster.summary, tt.wantSummary)
 			}
+			if fmt.Sprint(poster.dismissed) != fmt.Sprint(tt.wantDismissed) && len(poster.dismissed)+len(tt.wantDismissed) > 0 {
+				t.Fatalf("dismissed %v, want %v", poster.dismissed, tt.wantDismissed)
+			}
 		})
 	}
+
+	t.Run("gate notes are posted even with nothing new", func(t *testing.T) {
+		poster := &fakePoster{}
+		status := work(poster, newGatedRun(`{"review_decision":"approve","human_review_paths":["auth/**"]}`, `{"routing":{"agents":[{"agent":"main","files":["auth/login.go"]}]},"gate_files":{"changed":["auth/login.go"],"commentable":["auth/login.go"]}}`))
+		if status != "posted" || len(poster.events) != 1 || poster.events[0] != overload.ReviewComment || !strings.Contains(poster.summary, "`auth/login.go`") {
+			t.Fatalf("status %q events %v summary %q", status, poster.events, poster.summary)
+		}
+	})
+
+	t.Run("a review posted before a crash still withdraws and sets the status", func(t *testing.T) {
+		poster := &fakePoster{existing: 777, standing: []github.StandingReview{approved(5), requested(777)}}
+		before := len(statuses.states)
+		status := work(poster, newRun(overload.ReviewDecisionApprove, finding("critical")))
+		if status != "posted" || len(poster.events) != 0 || fmt.Sprint(poster.dismissed) != "[5]" {
+			t.Fatalf("status %q events %v dismissed %v", status, poster.events, poster.dismissed)
+		}
+		if len(statuses.states) != before+1 || statuses.states[before] != "failure" {
+			t.Fatalf("commit statuses %v, want failure", statuses.states[before:])
+		}
+	})
+
+	t.Run("posting off still fails the check", func(t *testing.T) {
+		t.Setenv("OVERLOAD_ENABLE_POSTING", "")
+		before := len(statuses.states)
+		approvedRun := work(&fakePoster{}, newRun(overload.ReviewDecisionApprove))
+		unreviewed := work(&fakePoster{}, newGatedRun(`{"review_decision":"approve"}`, `{"routing":{"agents":[]},"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`))
+		if approvedRun != "posting_disabled" || unreviewed != "posting_disabled" || fmt.Sprint(statuses.states[before:]) != "[success failure]" {
+			t.Fatalf("post statuses %q %q, commit statuses %v", approvedRun, unreviewed, statuses.states[before:])
+		}
+		if description := statuses.descriptions[before]; !strings.HasPrefix(description, "Would approve") || !strings.Contains(description, "not posted") {
+			t.Fatalf("description %q claims an approval that was not posted", description)
+		}
+	})
+
+	t.Run("an older review of the same commit is not posted", func(t *testing.T) {
+		older := newRun(overload.ReviewDecisionApprove)
+		if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, installation_id) SELECT repository_id, pr_number, head_sha, base_sha, 'manual', 'running', false, installation_id FROM runs WHERE id=$1`, older); err != nil {
+			t.Fatal(err)
+		}
+		poster := &fakePoster{}
+		before := len(statuses.states)
+		if status := work(poster, older); status != "superseded_by_newer_run" || len(poster.events) != 0 || len(statuses.states) != before {
+			t.Fatalf("status %q events %v commit statuses %v", status, poster.events, statuses.states[before:])
+		}
+	})
 
 	t.Run("still-present blocking issue keeps the earlier request", func(t *testing.T) {
 		first := newRun(overload.ReviewDecisionRequestChanges, finding("critical"))
@@ -376,7 +447,7 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		}
 		pr--
 		again := newRun(overload.ReviewDecisionRequestChanges, finding("critical"))
-		poster = &fakePoster{standing: []int64{1001}}
+		poster = &fakePoster{standing: []github.StandingReview{requested(1001)}}
 		if status := work(poster, again); status != "nothing_new" || len(poster.events) != 0 || len(poster.dismissed) != 0 {
 			t.Fatalf("repeat review %q events=%v dismissed=%v", status, poster.events, poster.dismissed)
 		}
@@ -435,6 +506,51 @@ func TestStatusSkipsDryRunRepositories(t *testing.T) {
 	reportStatus(ctx, store, statuses, runID, statusPending, "Reviewing")
 	if len(statuses.states) != 1 || statuses.states[0] != statusPending {
 		t.Fatalf("statuses %v", statuses.states)
+	}
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, installation_id) VALUES ($1, 1, $2, $3, 'webhook', 'queued', false, $4)`, repoID, strings.Repeat("b", 40), strings.Repeat("a", 40), installationID); err != nil {
+		t.Fatal(err)
+	}
+	reportStatus(ctx, store, statuses, runID, "success", "Approved")
+	if len(statuses.states) != 1 {
+		t.Fatalf("an older review of the same commit replaced the newer one's status: %v", statuses.states)
+	}
+}
+
+func TestStatusDescriptionFitsGitHub(t *testing.T) {
+	for _, test := range []struct {
+		name, description, want string
+	}{
+		{"short", "No issues found", "No issues found"},
+		{"exactly the limit", strings.Repeat("a", 140), strings.Repeat("a", 140)},
+		{"too long", strings.Repeat("a", 141), strings.Repeat("a", 139) + "…"},
+		{"counts characters, not bytes", strings.Repeat("é", 141), strings.Repeat("é", 139) + "…"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := statusDescription(test.description)
+			if got != test.want || len([]rune(got)) > 140 {
+				t.Fatalf("statusDescription = %q (%d characters)", got, len([]rune(got)))
+			}
+		})
+	}
+}
+
+func TestCodeListKeepsPathsInert(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		paths []string
+		want  string
+	}{
+		{"plain", []string{"a.go", "b.go"}, "`a.go`, `b.go`"},
+		{"backtick", []string{"a`b.go"}, "`a'b.go`"},
+		{"newlines cannot start markdown", []string{"a\n\n# Approved\n.go"}, "`a??# Approved?.go`"},
+		{"mentions are broken up", []string{"docs/@octocat.md"}, "`docs/@ octocat.md`"},
+		{"long lists are cut", []string{"1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"}, "`1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10` and 2 more"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := codeList(test.paths); got != test.want {
+				t.Fatalf("codeList = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 

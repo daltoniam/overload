@@ -1474,9 +1474,13 @@ plan and deploy/README.md.
    models but cannot yet trigger agents or workflows (16.7 names agents
    too).
 7. **The review bot as a merge gate** (16.4 item 7, 16.7; done): the commit
-   status never passes a review that did not finish or skipped files;
-   protected paths that always need a human; bot approval limited to named
-   low-risk paths; a documented branch-protection recipe.
+   status never passes a review that did not finish or skipped files, with
+   the changed files read from the diff on the host rather than trusted
+   from the sandbox; protected paths that always need a human, matched
+   against every changed name (deleted, binary and both names of a
+   rename); bot approval limited to named low-risk paths and withdrawn
+   when a later review does not approve; a documented branch-protection
+   recipe that pins the status to the overload GitHub App.
 8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.

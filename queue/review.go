@@ -164,6 +164,7 @@ func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message s
 
 func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoName string, spec overload.ReviewSpec, result overload.ReviewResult, sha string) error {
 	runID := run.ID
+	files := recordGateFiles(spec.Diff, &result)
 	data, err := json.Marshal(spec)
 	if err != nil {
 		return err
@@ -217,19 +218,38 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	if !plan.enqueue {
-		gate := overload.GateOutcome(gateInput(spec.Workflow, result))
-		description := gate.Description
-		if plan.postStatus != "" {
-			description += " (not posted: posting is off)"
-		}
-		reportStatus(ctx, w.Store, w.Status, runID, gate.State, description)
+		input := gateInput(spec.Workflow, result, files)
+		input.NotPosted = true
+		gate := overload.GateOutcome(input)
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 	}
 	return nil
 }
 
+// gateFilesMetric is the run metric holding the changed files the host read
+// from the diff, which the post worker gates on.
+const gateFilesMetric = "gate_files"
+
+// recordGateFiles reads the changed files from the diff the host fetched,
+// rather than trusting the sandbox's report of them, and stores them on the
+// result's metrics. A diff that cannot be read leaves them unknown, which
+// fails the gate.
+func recordGateFiles(patch string, result *overload.ReviewResult) *overload.GateFiles {
+	if result.Metrics == nil {
+		result.Metrics = map[string]any{}
+	}
+	files, err := overload.GateFilesFromDiff(patch)
+	if err != nil {
+		delete(result.Metrics, gateFilesMetric)
+		return nil
+	}
+	result.Metrics[gateFilesMetric] = files
+	return &files
+}
+
 // gateInput reads a finished review's merge gate inputs from its pinned
-// workflow and result.
-func gateInput(workflow overload.ResolvedWorkflow, result overload.ReviewResult) overload.GateInput {
+// workflow and result, with the changed files read on the host.
+func gateInput(workflow overload.ResolvedWorkflow, result overload.ReviewResult, files *overload.GateFiles) overload.GateInput {
 	degraded, _ := result.Metrics["degraded"].(bool)
 	var routing overload.Routing
 	switch value := result.Metrics["routing"].(type) {
@@ -244,7 +264,7 @@ func gateInput(workflow overload.ResolvedWorkflow, result overload.ReviewResult)
 	for _, finding := range result.Findings {
 		severities = append(severities, finding.Severity)
 	}
-	return overload.GateInput{Decision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths, Routing: routing, Degraded: degraded, Severities: severities}
+	return overload.GateInput{Decision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths, SkipPaths: workflow.SkipPaths, Files: files, Routing: routing, Degraded: degraded, Severities: severities}
 }
 
 type postingPlan struct {

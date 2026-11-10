@@ -201,17 +201,31 @@ func (client *Client) SetWebhookURL(ctx context.Context, webhookURL string) erro
 	return err
 }
 
-// ChangesRequested returns overload's own reviews on the PR that still
-// request changes. Reviews by anyone else are never returned.
-func (client *Client) ChangesRequested(ctx context.Context, installationID int64, repository string, number int) ([]int64, error) {
-	var ids []int64
+// States of a review that still counts toward a pull request's merge
+// decision until it is dismissed.
+const (
+	ReviewStateApproved         = "APPROVED"
+	ReviewStateChangesRequested = "CHANGES_REQUESTED"
+)
+
+// StandingReview is one of overload's reviews that still approves or
+// requests changes.
+type StandingReview struct {
+	ID    int64
+	State string
+}
+
+// StandingReviews returns overload's own reviews on the PR that still
+// approve or request changes. Reviews by anyone else are never returned.
+func (client *Client) StandingReviews(ctx context.Context, installationID int64, repository string, number int) ([]StandingReview, error) {
+	var standing []StandingReview
 	err := client.ownReviews(ctx, installationID, repository, number, func(review *gh.PullRequestReview) bool {
-		if review.GetState() == "CHANGES_REQUESTED" {
-			ids = append(ids, review.GetID())
+		if state := review.GetState(); state == ReviewStateApproved || state == ReviewStateChangesRequested {
+			standing = append(standing, StandingReview{ID: review.GetID(), State: state})
 		}
 		return false
 	})
-	return ids, err
+	return standing, err
 }
 
 // DismissReview dismisses one of overload's reviews with message.

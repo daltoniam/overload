@@ -210,4 +210,9 @@ func TestWorkflowFormGatePaths(t *testing.T) {
 	if err != nil || strings.Join(workflow.HumanReviewPaths, ",") != "auth/**,.github/**" || strings.Join(workflow.ApprovePaths, ",") != "docs/**" || workflow.Validate() != nil {
 		t.Fatalf("workflow %+v err %v", workflow, err)
 	}
+	values.Set("review_decision", "request_changes")
+	workflow, err = workflowFromForm(values)
+	if err != nil || workflow.ApprovePaths != nil || workflow.Validate() != nil {
+		t.Fatalf("approve paths hidden with another decision must not block saving: %+v %v", workflow, err)
+	}
 }

@@ -533,31 +533,54 @@ decision of request changes or approve it posts `REQUEST_CHANGES` or
 `APPROVE` reviews. The status is built to be a required check:
 
 - It fails when the review requested changes, and when any changed file was
-  not reviewed: too large for the model's context, or assigned to an agent
-  that failed. A review that never finishes leaves the status pending or
-  sets an error; nothing that did not finish passes. Files on the
-  workflow's skip paths are excluded on purpose.
+  not reviewed: too large for the model's context, assigned to an agent
+  that failed, or missing from the review's routing. The changed files are
+  read from the pull request diff on the overload server, not taken from
+  the sandbox's report. A review that never finishes leaves the status
+  pending or sets an error; nothing that did not finish passes. Files on
+  the workflow's skip paths are excluded on purpose. Deleted, binary and
+  mode-only files, and the old names of renamed files, have no lines to
+  review, so they do not fail the check, but the path rules below still
+  apply to them.
 - It is computed the same way when posting is off, so it can gate merges
-  before comments are turned on.
+  before comments are turned on; the description then says "Would approve"
+  or "Would request changes" and "not posted".
+- When the same commit is reviewed again, only the newest review posts and
+  sets the status, so an older verdict that finishes later cannot replace
+  it.
 - **Human review paths** (workflow setting `human_review_paths`, globs such
   as `auth/**`, `**/migrations/**`, `.github/**`): a pull request touching
-  them is never approved by overload, and the review lists them.
-- **Approve only these paths** (`approve_paths`): with approval on,
-  overload approves only when every changed file (skip paths aside) matches
-  these low-risk globs, such as `docs/**`; other pull requests get
-  comments.
+  them, including deleting them or renaming files into or out of them, is
+  never approved by overload, and the review lists them. They match
+  without regard to case, and a bare name such as `auth` also covers every
+  file in an `auth` folder at any depth.
+- **Approve only these paths** (`approve_paths`, used only with
+  `review_decision` approve): overload approves only when every changed
+  file matches these low-risk globs, such as `docs/**`, including skipped,
+  deleted and binary files and both names of a rename; other pull requests
+  get comments. Matching here is case sensitive. Overload never approves a
+  review in which no file was reviewed, such as one whose files were all
+  skipped.
+- When a later review does not approve (it requests changes, comments, or
+  is partial), overload dismisses its own earlier approval, so a stale
+  approval never keeps counting.
 - Pull request text stays untrusted: models only produce findings, and the
   decision comes from finding severities and the rules above.
 
 Recipe for a protected branch (Settings, Branches or Rules):
 
-1. Require status checks to pass, select `overload`, and require branches to
-   be up to date, so the check is for the head being merged.
-2. Require a pull request review, and add a `CODEOWNERS` file naming people
-   for the same sensitive paths as `human_review_paths`, with "Require
-   review from Code Owners" on. Overload never approves those pull
-   requests, so a person always has to.
-3. Decide whether overload's approval may count. Check in a test repository
+1. Require status checks to pass, select `overload`, and set its expected
+   source to the overload GitHub App ("Any source" lets anyone who can
+   write commit statuses, such as a CI token with `statuses: write`, pass
+   the check). Require branches to be up to date, so the check is for the
+   head being merged.
+2. Require a pull request review, and turn on "Dismiss stale pull request
+   approvals when new commits are pushed", so no approval, overload's or a
+   person's, carries over to code it did not see.
+3. Add a `CODEOWNERS` file naming people for the same sensitive paths as
+   `human_review_paths`, with "Require review from Code Owners" on.
+   Overload never approves those pull requests, so a person always has to.
+4. Decide whether overload's approval may count. Check in a test repository
    whether your plan counts a GitHub App's approval toward the required
    reviews; if it does and you want bot-only merges, limit them with
    `approve_paths`, otherwise keep `review_decision` at request changes.

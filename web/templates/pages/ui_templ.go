@@ -842,20 +842,20 @@ func WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinitio
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "</textarea><small>Sensitive files that always need a person. A pull request touching them is never approved by overload, and the review lists them. Pair this with CODEOWNERS so GitHub requires those people.</small></label> <label class=\"field\"><span>Approve only these paths</span><textarea name=\"approve_paths\" rows=\"3\" class=\"short\" placeholder=\"docs/**&#10;**/*.md\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 85, "</textarea><small>Sensitive files that always need a person, matched without regard to case; a bare name such as auth also covers everything in an auth folder. A pull request touching them, including deleting or renaming them, is never approved by overload, and the review lists them. Pair this with CODEOWNERS so GitHub requires those people.</small></label> <label class=\"field approve-only\"><span>Approve only these paths</span><textarea name=\"approve_paths\" rows=\"3\" class=\"short\" placeholder=\"docs/**&#10;**/*.md\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var42 string
 			templ_7745c5c3_Var42, templ_7745c5c3_Err = templ.JoinStringErrs(strings.Join(workflow.ApprovePaths, "\n"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/ui.templ`, Line: 118, Col: 192}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/ui.templ`, Line: 118, Col: 205}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var42))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "</textarea><small>With approval on, overload approves only pull requests whose changed files all match these low-risk paths; others get comments. Empty allows approval for any files.</small></label><p class=\"muted\">The overload commit status never passes a review that left files unreviewed (too large, or an agent failed), so it is safe to make it a required check.</p></fieldset>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 86, "</textarea><small>Used only when the decision approves. Overload approves only pull requests whose changed files all match these low-risk paths, including skipped, deleted and binary files; others get comments. Empty allows approval for any files.</small></label><p class=\"muted\">The overload commit status never passes a review that left files unreviewed (too large, or an agent failed), so it is safe to make it a required check. When you require it, set the overload GitHub App as its expected source, so nobody else with access to commit statuses can pass it.</p></fieldset>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
