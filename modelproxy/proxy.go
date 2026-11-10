@@ -200,6 +200,21 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
+	if err != nil || len(body) > maxRequestBytes {
+		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	var request struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &request) != nil || request.Model != model.Model {
+		http.Error(w, "request must name the granted model", http.StatusForbidden)
+		return
+	}
+	// The budget is checked once the request is fully read, right before
+	// it goes upstream: a slow upload cannot start while there was room
+	// and finish after the budget ran out.
 	if proxy.Budget != nil {
 		reason, err := proxy.Budget(r.Context(), proxy.Pending())
 		if err != nil {
@@ -218,18 +233,6 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			_, _ = fmt.Fprintf(w, `{"error":{"type":"budget_exhausted","message":"overload's %s review budget is spent"}}`, reason)
 			return
 		}
-	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
-	if err != nil || len(body) > maxRequestBytes {
-		http.Error(w, "request too large", http.StatusRequestEntityTooLarge)
-		return
-	}
-	var request struct {
-		Model string `json:"model"`
-	}
-	if json.Unmarshal(body, &request) != nil || request.Model != model.Model {
-		http.Error(w, "request must name the granted model", http.StatusForbidden)
-		return
 	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(model.BaseURL, "/")+"/"+path, bytes.NewReader(body))
 	if err != nil {

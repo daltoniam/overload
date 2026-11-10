@@ -41,6 +41,12 @@ func planRereview(incremental *overload.Incremental, reviewable []string, links 
 			plan.carried[name] = true
 		}
 	}
+	// A file the pull request put back changed behavior the carried files
+	// were reviewed against, and the index cannot see what used it (its
+	// change is gone from the diff), so nothing is carried.
+	if len(incremental.Reverted) > 0 {
+		clear(plan.carried)
+	}
 	// Any changed file, reviewable or not, brings back the unchanged files
 	// that use what it changed.
 	for name := range inDiff {

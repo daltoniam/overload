@@ -129,5 +129,19 @@ func (rereview *Rereview) incremental(diff string) *overload.Incremental {
 	if rereview == nil {
 		return nil
 	}
-	return &overload.Incremental{SinceRunID: rereview.SinceRunID, Unchanged: UnchangedFiles(rereview.PreviousDiff, diff), Prior: rereview.Prior}
+	return &overload.Incremental{SinceRunID: rereview.SinceRunID, Unchanged: UnchangedFiles(rereview.PreviousDiff, diff), Reverted: RevertedFiles(rereview.PreviousDiff, diff), Prior: rereview.Prior}
+}
+
+// RevertedFiles lists the files the previous diff changes and the current
+// one does not.
+func RevertedFiles(previous, current string) []string {
+	before, after := FilePatchHashes(previous), FilePatchHashes(current)
+	var reverted []string
+	for name := range before {
+		if _, ok := after[name]; !ok {
+			reverted = append(reverted, name)
+		}
+	}
+	slices.Sort(reverted)
+	return reverted
 }

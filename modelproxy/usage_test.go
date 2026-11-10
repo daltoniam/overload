@@ -174,3 +174,40 @@ func TestUsageFromMultilineEvents(t *testing.T) {
 		t.Fatalf("long separator-free stream = %+v exact = %v", usage, exact)
 	}
 }
+
+type trackedBody struct {
+	reader io.Reader
+	done   *bool
+}
+
+func (body trackedBody) Read(buf []byte) (int, error) {
+	n, err := body.reader.Read(buf)
+	if err == io.EOF {
+		*body.done = true
+	}
+	return n, err
+}
+
+func TestProxyChecksTheBudgetAfterTheUpload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	uploaded := false
+	proxy.Budget = func(context.Context, float64) (string, error) {
+		if !uploaded {
+			t.Error("budget checked before the request was read")
+		}
+		// The budget ran out while the request was uploading.
+		return "monthly", nil
+	}
+	base, _ := proxy.Grant(overload.ModelProfile{BaseURL: upstream.URL + "/v1", Model: "sol"}, time.Minute)
+	request := httptest.NewRequest(http.MethodPost, strings.TrimPrefix(base, "http://overload:8083")+"/chat/completions", trackedBody{reader: strings.NewReader(`{"model":"sol"}`), done: &uploaded})
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d", recorder.Code)
+	}
+}

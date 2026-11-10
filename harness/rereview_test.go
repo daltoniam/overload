@@ -134,3 +134,18 @@ func TestNonReviewableChangesBringBackTheirUsers(t *testing.T) {
 		t.Fatal("a file using a changed, non-reviewable file was carried over")
 	}
 }
+
+func TestRevertedDependencyStopsCarryingFiles(t *testing.T) {
+	// svc/users.py was changed before and is now back to the base version;
+	// api/handlers.py did not change but was reviewed against it.
+	previous := usersBefore + handlerPatch
+	current := handlerPatch
+	incremental := &overload.Incremental{Unchanged: review.UnchangedFiles(previous, current), Reverted: review.RevertedFiles(previous, current)}
+	if fmt.Sprint(incremental.Reverted) != "[svc/users.py]" || fmt.Sprint(incremental.Unchanged) != "[api/handlers.py]" {
+		t.Fatalf("incremental = %+v", incremental)
+	}
+	plan := planRereview(incremental, []string{"api/handlers.py"}, nil, map[string]bool{"api/handlers.py": true})
+	if len(plan.carried) != 0 {
+		t.Fatalf("carried %v though a file it may use was reverted", plan.carried)
+	}
+}

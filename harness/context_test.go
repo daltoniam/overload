@@ -106,6 +106,26 @@ func TestContractsIndexBoundsUsesAndCountsBinaryReads(t *testing.T) {
 	}
 }
 
+func TestContractsIndexRenderStaysWithinItsLimit(t *testing.T) {
+	var index contractsIndex
+	for i := range 30 {
+		index.Changes = append(index.Changes, contractChange{Symbol: fmt.Sprintf("symbol_%02d", i), Kind: "removed", Path: "svc/a.py", Before: "def x():", Uses: []symbolUse{{Path: "api/b.py", Line: i + 1, Text: strings.Repeat("y", 100)}}})
+	}
+	index.Truncated = true
+	for _, limit := range []int{50, 300, 400, 600, 1000, 2500} {
+		rendered := index.render(limit)
+		if len(rendered) > limit {
+			t.Fatalf("limit %d: rendered %d characters", limit, len(rendered))
+		}
+		if rendered != "" && !strings.Contains(rendered, "- symbol_00") {
+			t.Fatalf("limit %d: header and notes without any entry:\n%s", limit, rendered)
+		}
+	}
+	if rendered := index.render(1000); !strings.Contains(rendered, "more changed symbols left out") || !strings.Contains(rendered, "stopped early") {
+		t.Fatalf("notes missing:\n%s", rendered)
+	}
+}
+
 func TestContractsIndexSignatureChangesAndLanguages(t *testing.T) {
 	for _, test := range []struct {
 		name, diff, file, symbol, kind string

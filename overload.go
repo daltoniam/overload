@@ -313,9 +313,12 @@ type ReviewSpec struct {
 // at the earlier review (they are not reviewed again unless linked to a
 // changed file), and the earlier review's open findings.
 type Incremental struct {
-	SinceRunID int64          `json:"since_run_id"`
-	Unchanged  []string       `json:"unchanged,omitempty"`
-	Prior      []PriorFinding `json:"prior,omitempty"`
+	SinceRunID int64    `json:"since_run_id"`
+	Unchanged  []string `json:"unchanged,omitempty"`
+	// Reverted lists files the earlier review's diff changed that the
+	// current diff no longer does: the pull request put them back.
+	Reverted []string       `json:"reverted,omitempty"`
+	Prior    []PriorFinding `json:"prior,omitempty"`
 }
 
 // PriorFinding is an open finding from an earlier review of the pull

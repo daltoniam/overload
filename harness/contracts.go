@@ -330,10 +330,21 @@ func (index contractsIndex) render(limit int) string {
 	if len(index.Changes) == 0 {
 		return ""
 	}
+	const header = "Contracts index: symbols this pull request removes or changes, and where the head still uses them. A use outside the diff that still expects the old form is likely a bug.\n"
+	const truncatedNote = "(the search for uses stopped early in a very large repository)\n"
+	omittedNote := func(count int) string { return fmt.Sprintf("(%d more changed symbols left out to fit)\n", count) }
+	// Room for the header and the longest footers is set aside before any
+	// entry is admitted, so the result never exceeds limit.
+	overhead := len(header) + len(omittedNote(len(index.Changes)))
+	if index.Truncated {
+		overhead += len(truncatedNote)
+	}
+	if overhead >= limit {
+		return ""
+	}
 	var out strings.Builder
-	out.WriteString("Contracts index: symbols this pull request removes or changes, and where the head still uses them. A use outside the diff that still expects the old form is likely a bug.\n")
-	header := out.Len()
-	omitted := 0
+	out.WriteString(header)
+	used, written, omitted := overhead, 0, 0
 	for _, change := range index.Changes {
 		var entry strings.Builder
 		fmt.Fprintf(&entry, "- %s %s in %s\n  before: %s\n", change.Symbol, change.Kind, change.Path, change.Before)
@@ -353,20 +364,22 @@ func (index contractsIndex) render(limit int) string {
 		if change.More > 0 {
 			fmt.Fprintf(&entry, "  and %d more uses\n", change.More)
 		}
-		if out.Len()+entry.Len() > limit-80 {
+		if used+entry.Len() > limit {
 			omitted++
 			continue
 		}
+		used += entry.Len()
+		written++
 		out.WriteString(entry.String())
 	}
+	if written == 0 {
+		return ""
+	}
 	if omitted > 0 {
-		fmt.Fprintf(&out, "(%d more changed symbols left out to fit)\n", omitted)
+		out.WriteString(omittedNote(omitted))
 	}
 	if index.Truncated {
-		out.WriteString("(the search for uses stopped early in a very large repository)\n")
-	}
-	if out.Len() == header {
-		return ""
+		out.WriteString(truncatedNote)
 	}
 	return out.String()
 }
