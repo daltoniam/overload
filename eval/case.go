@@ -100,10 +100,7 @@ func (item Case) Validate() error {
 	}
 	lines := map[string]int{}
 	for _, file := range item.Files {
-		lines[file.Path] = strings.Count(file.Content, "\n")
-		if file.Content != "" && !strings.HasSuffix(file.Content, "\n") {
-			lines[file.Path]++
-		}
+		lines[file.Path] = lineCount(file.Content)
 	}
 	for _, expected := range item.Expected {
 		if !paths[expected.Path] || expected.StartLine < 1 || expected.EndLine < expected.StartLine {
@@ -114,6 +111,16 @@ func (item Case) Validate() error {
 		}
 	}
 	return nil
+}
+
+// lineCount is how many lines content has; a last line without a newline
+// counts.
+func lineCount(content string) int {
+	count := strings.Count(content, "\n")
+	if content != "" && !strings.HasSuffix(content, "\n") {
+		count++
+	}
+	return count
 }
 
 // Repository returns the case's files as the repository a reviewer reads.

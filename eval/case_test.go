@@ -113,6 +113,7 @@ func TestCaseFromCommit(t *testing.T) {
 		{"changed line", sum, strings.Replace(sum, "i := 1", "i := 0", 1), [][2]int{{6, 6}}},
 		{"pure insertion", "a\nb\nc\nd\n", "a\nb\nguard\nc\nd\n", [][2]int{{2, 3}}},
 		{"insertion at the top", "a\nb\n", "check\na\nb\n", [][2]int{{1, 2}}},
+		{"insertion at the end", "a\nb\nc\nd\ne\n", "a\nb\nc\nd\ne\nf\ng\n", [][2]int{{5, 5}}},
 		{"pure deletion", "a\nb\nbad\nc\n", "a\nb\nc\n", [][2]int{{3, 3}}},
 		{"two hunks", "a\nbad\nc\nd\ne\nf\ng\nh\ni\nworse\n", "a\ngood\nc\nd\ne\nf\ng\nh\ni\nbetter\n", [][2]int{{2, 2}, {10, 10}}},
 	} {
@@ -187,6 +188,12 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 	git("update-index", "--cacheinfo", "160000,"+binary+",vendor/lib")
 	git("commit", "-q", "-m", "bump submodule")
 	submodule := git("rev-parse", "HEAD")
+	write("empty.go", "")
+	git("add", "empty.go")
+	git("commit", "-q", "-m", "add an empty file")
+	write("empty.go", "package a\n")
+	git("commit", "-q", "-am", "fill the empty file")
+	filled := git("rev-parse", "HEAD")
 	for _, test := range []struct{ commit, want string }{
 		{"", "as a hash"},
 		{"HEAD", "as a hash"},
@@ -196,6 +203,7 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 		{binary, "no existing text files"},
 		{merge, "is a merge"},
 		{submodule, "no existing text files"},
+		{filled, "only adds lines to empty files"},
 	} {
 		if _, err := CaseFromCommit(context.Background(), dir, test.commit, ""); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("%q: error %v, want %q", test.commit, err, test.want)

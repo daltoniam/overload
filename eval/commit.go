@@ -158,15 +158,23 @@ func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error)
 			end := start + count - 1
 			if count == 0 {
 				// The fix only added lines after start (0 for the top of
-				// the file); the bug is the code around that point.
-				start = max(start, 1)
-				end = start + 1
+				// the file); the bug is the code around that point, within
+				// the file. An empty file has no line to point at.
+				lines := lineCount(content)
+				if lines == 0 {
+					continue
+				}
+				start = min(max(start, 1), lines)
+				end = min(start+1, lines)
 			}
 			item.Expected = append(item.Expected, ExpectedFinding{Path: path, StartLine: start, EndLine: end, Description: item.Description, Bug: CommitBug})
 		}
 	}
 	if len(pathspecs) == 0 {
 		return Case{}, errors.New("the commit modifies no existing text files")
+	}
+	if len(item.Expected) == 0 {
+		return Case{}, errors.New("the fix only adds lines to empty files, so there is no buggy line to point at; pick a fix that changes existing code")
 	}
 	shown, err := diff(append([]string{"-U3", commit, parent, "--"}, pathspecs...)...)
 	if err != nil {
