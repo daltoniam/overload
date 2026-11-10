@@ -565,12 +565,17 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		t.Setenv("OVERLOAD_ENABLE_POSTING", "")
 		before := len(statuses.states)
 		approvedRun := work(&fakePoster{}, newRun(overload.ReviewDecisionApprove))
-		unreviewed := work(&fakePoster{}, newGatedRun(`{"review_decision":"approve"}`, `{"routing":{"agents":[]},"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`))
+		unreviewedRun := newGatedRun(`{"review_decision":"approve"}`, `{"routing":{"agents":[]},"gate_files":{"changed":["a.go"],"commentable":["a.go"]}}`)
+		unreviewed := work(&fakePoster{}, unreviewedRun)
 		if approvedRun != "posting_disabled" || unreviewed != "posting_disabled" || fmt.Sprint(statuses.states[before:]) != "[success failure]" {
 			t.Fatalf("post statuses %q %q, commit statuses %v", approvedRun, unreviewed, statuses.states[before:])
 		}
 		if description := statuses.descriptions[before]; !strings.HasPrefix(description, "Would approve") || !strings.Contains(description, "not posted") {
 			t.Fatalf("description %q claims an approval that was not posted", description)
+		}
+		var postStatus, gateState string
+		if err := store.Pool.QueryRow(ctx, `SELECT post_status, gate->>'state' FROM runs WHERE id=$1`, unreviewedRun).Scan(&postStatus, &gateState); err != nil || postStatus != "posting_disabled" || gateState != "failure" {
+			t.Fatalf("posting-off run: post %q gate %q, %v", postStatus, gateState, err)
 		}
 	})
 
