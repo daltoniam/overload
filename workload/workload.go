@@ -33,7 +33,10 @@ const (
 	// keys. A token signed by an unknown key triggers a fetch, so without
 	// this a stream of forged tokens would make overload hammer the issuer.
 	keyRefetchInterval = time.Minute
-	fetchTimeout       = 10 * time.Second
+	// rediscoverEvery is how often a working issuer's discovery document
+	// is read again, in case its jwks_uri moved.
+	rediscoverEvery = 24 * time.Hour
+	fetchTimeout    = 10 * time.Second
 )
 
 // RuleStore lists the workload rules.
@@ -140,9 +143,13 @@ func (verifier *Verifier) Verify(ctx context.Context, raw string) (Identity, err
 	if err != nil {
 		return Identity{}, ErrUnavailable
 	}
-	token, err := entry.verifier.Verify(ctx, raw)
+	checkCtx, keys := withKeyCheck(ctx)
+	token, err := entry.verifier.Verify(checkCtx, raw)
 	if err != nil {
-		if !entry.keys.loaded() {
+		// Malformed tokens and unadvertised algorithms fail before the keys
+		// are asked, and expired or not-yet-valid ones after the signature
+		// checks out, so only a failed key fetch is overload's problem.
+		if keys.unavailable {
 			return Identity{}, ErrUnavailable
 		}
 		return Identity{}, fmt.Errorf("%w: it is invalid or expired", ErrRejected)
@@ -212,6 +219,23 @@ type issuer struct {
 	keys       *keySet
 	err        error
 	finishedAt time.Time
+
+	// nextRefresh is when a successful discovery is read again, so a
+	// changed jwks_uri is picked up; refreshing marks one in progress.
+	// Both are guarded by Verifier.mu.
+	nextRefresh time.Time
+	refreshing  bool
+}
+
+// refreshDue reports whether a successful discovery should be read again.
+// The caller holds Verifier.mu.
+func (entry *issuer) refreshDue(now time.Time) bool {
+	select {
+	case <-entry.ready:
+		return entry.err == nil && !entry.refreshing && !now.Before(entry.nextRefresh)
+	default:
+		return false
+	}
 }
 
 // retryDue reports whether a finished discovery failed long enough ago to
@@ -231,10 +255,15 @@ func (entry *issuer) retryDue(now time.Time) bool {
 func (verifier *Verifier) issuer(ctx context.Context, issuerURL string) (*issuer, error) {
 	verifier.mu.Lock()
 	entry := verifier.issuers[issuerURL]
-	if entry == nil || entry.retryDue(verifier.now()) {
-		entry = &issuer{ready: make(chan struct{})}
+	now := verifier.now()
+	switch {
+	case entry == nil || entry.retryDue(now):
+		entry = &issuer{ready: make(chan struct{}), nextRefresh: now.Add(rediscoverEvery)}
 		verifier.issuers[issuerURL] = entry
 		go verifier.discover(entry, issuerURL)
+	case entry.refreshDue(now):
+		entry.refreshing = true
+		go verifier.rediscover(entry, issuerURL)
 	}
 	verifier.mu.Unlock()
 	select {
@@ -255,6 +284,25 @@ func (verifier *Verifier) discover(entry *issuer, issuerURL string) {
 	entry.finishedAt = verifier.now()
 	if entry.err != nil {
 		slog.Warn("workload token issuer unavailable", "issuer", issuerURL, "error", entry.err)
+	}
+}
+
+// rediscover reads a working issuer's discovery document again while
+// tokens keep being checked with the old one, which stays in use if the
+// issuer cannot be read right now.
+func (verifier *Verifier) rediscover(old *issuer, issuerURL string) {
+	fresh := &issuer{ready: make(chan struct{})}
+	verifier.discover(fresh, issuerURL)
+	verifier.mu.Lock()
+	defer verifier.mu.Unlock()
+	now := verifier.now()
+	if fresh.err != nil {
+		old.refreshing, old.nextRefresh = false, now.Add(discoveryRetry)
+		return
+	}
+	fresh.nextRefresh = now.Add(rediscoverEvery)
+	if verifier.issuers[issuerURL] == old {
+		verifier.issuers[issuerURL] = fresh
 	}
 }
 

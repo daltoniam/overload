@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -110,7 +111,11 @@ func reviewAPI(queuer ReviewQueuer, keys apiKeyAuthenticator, verifier *workload
 		var request reviewRequest
 		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10))
 		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&request); err != nil || !overload.ValidRepositoryName(request.Repository) || request.PullRequest < 1 {
+		err := decoder.Decode(&request)
+		if err == nil && decoder.Decode(&struct{}{}) != io.EOF {
+			err = errors.New("data after the JSON object")
+		}
+		if err != nil || !overload.ValidRepositoryName(request.Repository) || request.PullRequest < 1 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": `send {"repository": "owner/name", "pull_request": 123}`})
 			return
 		}
@@ -126,6 +131,10 @@ func reviewAPI(queuer ReviewQueuer, keys apiKeyAuthenticator, verifier *workload
 			}
 		}
 		runID, err := queuer.QueueReviewByName(r.Context(), request.Repository, request.PullRequest, request.Again)
+		if err != nil && request.Again {
+			// Nothing was reviewed, so the attempt does not count.
+			reruns.refund(caller.name)
+		}
 		if errors.Is(err, queue.ErrReviewNotQueued) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
@@ -236,6 +245,20 @@ func (limiter *rerunLimiter) allow(caller string) (time.Duration, bool) {
 	}
 	limiter.used[caller] = append(times, now)
 	return 0, true
+}
+
+// refund gives back caller's most recent event.
+func (limiter *rerunLimiter) refund(caller string) {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	times := limiter.used[caller]
+	switch len(times) {
+	case 0:
+	case 1:
+		delete(limiter.used, caller)
+	default:
+		limiter.used[caller] = times[:len(times)-1]
+	}
 }
 
 func baseURL() string {

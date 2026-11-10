@@ -1464,12 +1464,15 @@ plan and deploy/README.md.
 6. **Workload identity** (16.7 Workloads; done): GitHub Actions and Kubernetes
    service-account tokens accepted under a claim policy, so CI can request a
    review or call the gateway without a stored secret. GitHub rules must pin
-   one owner; issuers are discovered once, keys refetched at most once a
-   minute, and rules cached for a few seconds; gateway usage records the
-   matched rules and repository. Follow-ups: issuers with a private CA rely
+   one owner and other rules a condition without wildcards; issuers are
+   discovered once a day, keys refetched at most once a minute, and rules
+   cached for a few seconds; gateway usage records the matched rules and
+   repository. Follow-ups: issuers with a private CA rely
    on the system trust store (`SSL_CERT_FILE`) rather than a per-rule CA
-   bundle, and the limit on forced re-reviews is counted per server, not
-   across replicas.
+   bundle; the limit on forced re-reviews is counted per server, not
+   across replicas; and workload tokens can request reviews and call
+   models but cannot yet trigger agents or workflows (16.7 names agents
+   too).
 7. **The review bot as a merge gate** (16.4 item 7, 16.7): the commit
    status never passes a review that did not finish or skipped files;
    protected paths that always need a human; bot approval limited to named

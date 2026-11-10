@@ -60,6 +60,8 @@ type fakeIssuer struct {
 	discovery atomic.Int64
 	keys      atomic.Int64
 	broken    atomic.Bool
+	// keysBroken fails only the key set, not discovery.
+	keysBroken atomic.Bool
 }
 
 func newFakeIssuer(t *testing.T) *fakeIssuer {
@@ -72,7 +74,7 @@ func newFakeIssuer(t *testing.T) *fakeIssuer {
 		} else {
 			issuer.discovery.Add(1)
 		}
-		if issuer.broken.Load() {
+		if issuer.broken.Load() || r.URL.Path == "/keys" && issuer.keysBroken.Load() {
 			http.Error(w, "internal detail: upstream 10.0.0.7 refused", http.StatusInternalServerError)
 			return
 		}
@@ -293,5 +295,90 @@ func TestIssuerClient(t *testing.T) {
 		if (err == nil) != test.ok {
 			t.Errorf("%s: %v", test.path, err)
 		}
+	}
+}
+
+func TestVerifierTellsBadTokensFromUnreachableKeys(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	store := &countingRules{rules: []overload.WorkloadRule{{Name: "k8s", Issuer: issuer.URL, Audience: audience, Conditions: map[string]string{"sub": "system:serviceaccount:ci:*"}, Scopes: []string{overload.ScopeModels}, Enabled: true}}}
+	verifier, c := newTestVerifier(store, issuer.transport)
+	ctx := context.Background()
+	subject := "system:serviceaccount:ci:runner"
+
+	wrongAlgorithm := oidctest.SignIDToken(issuer.key, "k", "RS384", fmt.Sprintf(`{"iss":%q,"aud":%q,"sub":%q,"exp":%d}`, issuer.URL, audience, subject, c.Now().Add(time.Hour).Unix()))
+	if _, err := verifier.Verify(ctx, wrongAlgorithm); !errors.Is(err, ErrRejected) {
+		t.Fatalf("a first token with an algorithm the issuer does not use, before any keys were fetched: %v", err)
+	}
+	if issuer.keys.Load() != 0 {
+		t.Fatal("a token with the wrong algorithm fetched keys")
+	}
+	if _, err := verifier.Verify(ctx, issuer.token(audience, subject, "", c.Now(), -time.Minute)); !errors.Is(err, ErrRejected) {
+		t.Fatalf("an expired token: %v", err)
+	}
+	verifier.mu.Lock()
+	clear(verifier.issuers)
+	verifier.mu.Unlock()
+	issuer.keysBroken.Store(true)
+	if _, err := verifier.Verify(ctx, issuer.token(audience, subject, "", c.Now(), time.Hour)); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unreachable keys: %v", err)
+	}
+	if _, err := verifier.Verify(ctx, wrongAlgorithm); !errors.Is(err, ErrRejected) {
+		t.Fatalf("a token with the wrong algorithm while the keys are unreachable: %v", err)
+	}
+	issuer.keysBroken.Store(false)
+	c.advance(keyRefetchInterval)
+	if _, err := verifier.Verify(ctx, issuer.token(audience, subject, "", c.Now(), time.Hour)); err != nil {
+		t.Fatalf("after the keys came back: %v", err)
+	}
+}
+
+func TestVerifierRediscoversDaily(t *testing.T) {
+	issuer := newFakeIssuer(t)
+	store := &countingRules{rules: []overload.WorkloadRule{{Name: "k8s", Issuer: issuer.URL, Audience: audience, Conditions: map[string]string{"sub": "system:serviceaccount:ci:*"}, Scopes: []string{overload.ScopeModels}, Enabled: true}}}
+	verifier, c := newTestVerifier(store, issuer.transport)
+	ctx := context.Background()
+	token := func() string {
+		return issuer.token(audience, "system:serviceaccount:ci:runner", "", c.Now(), time.Hour)
+	}
+	if _, err := verifier.Verify(ctx, token()); err != nil {
+		t.Fatal(err)
+	}
+	issuer.broken.Store(true)
+	c.advance(rediscoverEvery)
+	if _, err := verifier.Verify(ctx, token()); err != nil {
+		t.Fatalf("a token while the issuer is being read again: %v", err)
+	}
+	waitFor(t, func() bool { return issuer.discovery.Load() == 2 })
+	waitFor(t, func() bool {
+		verifier.mu.Lock()
+		defer verifier.mu.Unlock()
+		return !verifier.issuers[issuer.URL].refreshing
+	})
+	if _, err := verifier.Verify(ctx, token()); err != nil {
+		t.Fatalf("a failed daily discovery dropped the working one: %v", err)
+	}
+	if issuer.discovery.Load() != 2 {
+		t.Fatalf("a failed daily discovery was retried at once: %d", issuer.discovery.Load())
+	}
+	issuer.broken.Store(false)
+	c.advance(discoveryRetry)
+	if _, err := verifier.Verify(ctx, token()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return issuer.discovery.Load() == 3 })
+	waitFor(t, func() bool {
+		verifier.mu.Lock()
+		defer verifier.mu.Unlock()
+		return !verifier.issuers[issuer.URL].refreshing && verifier.issuers[issuer.URL].nextRefresh.After(c.Now())
+	})
+}
+
+func waitFor(t *testing.T, done func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); !done(); {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

@@ -36,7 +36,8 @@ type WorkloadRule struct {
 
 // Validate checks a rule before it is saved. A rule must narrow the tokens
 // it trusts: GitHub rules must pin one owner, since every GitHub Actions
-// job anywhere can get a token from the same issuer.
+// job anywhere can get a token from the same issuer, and other rules need
+// a condition without wildcards.
 func (rule WorkloadRule) Validate() error {
 	if !settingName.MatchString(rule.Name) {
 		return errors.New("invalid rule name")
@@ -63,8 +64,12 @@ func (rule WorkloadRule) Validate() error {
 			return fmt.Errorf("condition %s: invalid pattern", claim)
 		}
 	}
-	if IsGitHubActionsIssuer(rule.Issuer) && !rule.pinsGitHubOwner() {
-		return errors.New("GitHub Actions rules must name one owner without wildcards: match repository_owner_id, repository_id, repository_owner or repository (owner/name)")
+	if IsGitHubActionsIssuer(rule.Issuer) {
+		if !rule.pinsGitHubOwner() {
+			return errors.New("GitHub Actions rules must name one owner without wildcards: match repository_owner_id, repository_id, repository_owner or repository (owner/name)")
+		}
+	} else if !rule.hasLiteralCondition() {
+		return errors.New("add at least one condition without wildcards, such as a project, organization or service account; a Kubernetes sub may end in a wildcard after a fixed namespace (system:serviceaccount:<namespace>:*)")
 	}
 	if len(rule.Scopes) == 0 {
 		return errors.New("choose at least one scope")
@@ -88,6 +93,22 @@ func (rule WorkloadRule) pinsGitHubOwner() bool {
 	}
 	owner, _, _ := strings.Cut(rule.Conditions["repository"], "/")
 	return owner != "" && literal(owner)
+}
+
+// hasLiteralCondition reports whether some condition pins one value.
+// Issuers such as gitlab.com or Buildkite serve every customer, and one
+// cluster serves every namespace, so wildcards alone could trust tokens
+// from anyone using the issuer. A Kubernetes sub with a fixed namespace
+// counts: the namespace is the trust boundary there.
+func (rule WorkloadRule) hasLiteralCondition() bool {
+	for _, pattern := range rule.Conditions {
+		if literal(pattern) {
+			return true
+		}
+	}
+	rest, ok := strings.CutPrefix(rule.Conditions["sub"], "system:serviceaccount:")
+	namespace, _, found := strings.Cut(rest, ":")
+	return ok && found && namespace != "" && literal(namespace)
 }
 
 // literal reports whether a pattern matches only itself.

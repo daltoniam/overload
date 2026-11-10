@@ -23,15 +23,15 @@ import (
 
 // fakeRules stores workload rules in memory.
 type fakeRules struct {
-	mu      sync.Mutex
-	rules   []overload.WorkloadRule
-	listErr error
+	mu       sync.Mutex
+	rules    []overload.WorkloadRule
+	rulesErr error
 }
 
 func (store *fakeRules) ListWorkloadRules(context.Context) ([]overload.WorkloadRule, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	return append([]overload.WorkloadRule(nil), store.rules...), store.listErr
+	return append([]overload.WorkloadRule(nil), store.rules...), store.rulesErr
 }
 func (store *fakeRules) CreateWorkloadRule(_ context.Context, rule overload.WorkloadRule) error {
 	store.mu.Lock()
@@ -84,10 +84,12 @@ type fakeWorkloadStore struct {
 }
 
 func (store *fakeWorkloadStore) QueueReviewByName(_ context.Context, repository string, number int, _ bool) (int64, error) {
-	switch repository {
-	case "acme/closed":
+	switch {
+	case number == 99:
+		return 0, fmt.Errorf("%w: #99 is a draft", queue.ErrReviewNotQueued)
+	case repository == "acme/closed":
 		return 0, fmt.Errorf("%w: pull request is closed", queue.ErrReviewNotQueued)
-	case "acme/broken":
+	case repository == "acme/broken":
 		return 0, errors.New("dial tcp 10.0.0.9:5432: connection refused")
 	}
 	store.queued = append(store.queued, fmt.Sprintf("%s#%d", repository, number))
@@ -114,7 +116,11 @@ func newTestIssuer(t *testing.T) *testIssuer {
 }
 
 func (issuer *testIssuer) token(subject, claims string) string {
-	return oidctest.SignIDToken(issuer.key, "k", "RS256", fmt.Sprintf(`{"iss":%q,"aud":"http://example.com","sub":%q,"exp":%d%s}`, issuer.server.URL, subject, time.Now().Add(time.Minute).Unix(), claims))
+	return issuer.tokenUntil(time.Now().Add(time.Minute), subject, claims)
+}
+
+func (issuer *testIssuer) tokenUntil(expiry time.Time, subject, claims string) string {
+	return oidctest.SignIDToken(issuer.key, "k", "RS256", fmt.Sprintf(`{"iss":%q,"aud":"http://example.com","sub":%q,"exp":%d%s}`, issuer.server.URL, subject, expiry.Unix(), claims))
 }
 
 func (issuer *testIssuer) repositoryToken(repository string) string {
@@ -174,6 +180,8 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 		"enterprise issuer, no owner":  {rule("ci", overload.GitHubActionsIssuer+"/acme", "repository=a?me/api"), http.StatusUnprocessableEntity, "must name one owner"},
 		"malformed condition":          {rule("ci", issuer.server.URL, "repository=acme/*\r\nnot-a-condition"), http.StatusUnprocessableEntity, "claim=pattern"},
 		"reserved name":                {rule("new", issuer.server.URL, "repository=acme/*"), http.StatusUnprocessableEntity, "reserved"},
+		"only wildcards":               {rule("ci", issuer.server.URL, "repository=acme/*"), http.StatusUnprocessableEntity, "without wildcards"},
+		"any service account":          {rule("ci", issuer.server.URL, "sub=system:serviceaccount:*:*"), http.StatusUnprocessableEntity, "without wildcards"},
 	} {
 		response := form("/configure/workloads", test.values)
 		body := response.Body.String()
@@ -181,7 +189,7 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 			t.Errorf("%s: %d, input not kept or error not shown: %s", name, response.Code, body)
 		}
 	}
-	if response := form("/configure/workloads", rule("ci", issuer.server.URL, "repository=acme/*\r\n")); response.Code != http.StatusSeeOther {
+	if response := form("/configure/workloads", rule("ci", issuer.server.URL, "repository=acme/*\r\nref=refs/pull/4/merge\r\n")); response.Code != http.StatusSeeOther {
 		t.Fatalf("save rule: %d %s", response.Code, response.Body.String())
 	}
 	if saved, _ := store.rule("ci"); saved.Conditions["repository"] != "acme/*" {
@@ -208,6 +216,7 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 		"no credentials, bad body":    {"", `nonsense`, http.StatusUnauthorized},
 		"unknown credential":          {"Bearer nonsense", `{"repository":"acme/api","pull_request":3}`, http.StatusUnauthorized},
 		"bad body":                    {"Bearer ovl_test_secret", `{"repository":"acme/api"}`, http.StatusBadRequest},
+		"trailing data":               {"Bearer ovl_test_secret", `{"repository":"acme/api","pull_request":3} {"again":true}`, http.StatusBadRequest},
 		"unknown field":               {"Bearer ovl_test_secret", `{"repository":"acme/api","pull_request":3,"approve":true}`, http.StatusBadRequest},
 		"API key":                     {"Bearer ovl_test_secret", `{"repository":"acme/api","pull_request":3}`, http.StatusAccepted},
 		"lowercase scheme":            {"bearer ovl_test_secret", `{"repository":"acme/api","pull_request":5}`, http.StatusAccepted},
@@ -217,6 +226,7 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 		"own repository":              {"Bearer " + issuer.repositoryToken("acme/api"), `{"repository":"acme/api","pull_request":4}`, http.StatusAccepted},
 		"other repository":            {"Bearer " + issuer.repositoryToken("acme/api"), `{"repository":"acme/web","pull_request":4}`, http.StatusForbidden},
 		"untrusted owner":             {"Bearer " + issuer.repositoryToken("evil/api"), `{"repository":"evil/api","pull_request":4}`, http.StatusUnauthorized},
+		"expired token":               {"Bearer " + issuer.tokenUntil(time.Now().Add(-time.Minute), "system:serviceaccount:ci:runner", ""), `{"repository":"acme/web","pull_request":6}`, http.StatusUnauthorized},
 		"no repository claim reviews": {"Bearer " + k8sToken, `{"repository":"acme/web","pull_request":6}`, http.StatusAccepted},
 	} {
 		response := call(http.MethodPost, "/api/reviews", test.authorization, test.body)
@@ -237,6 +247,11 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 		t.Fatalf("GET /api/reviews: %d", get.Code)
 	}
 
+	for range rerunsPerHour + 2 {
+		if response := call(http.MethodPost, "/api/reviews", "Bearer "+issuer.repositoryToken("acme/api"), `{"repository":"acme/api","pull_request":99,"again":true}`); response.Code != http.StatusConflict {
+			t.Fatalf("forced re-review that could not be queued: %d", response.Code)
+		}
+	}
 	again := `{"repository":"acme/api","pull_request":4,"again":true}`
 	for range rerunsPerHour {
 		if response := call(http.MethodPost, "/api/reviews", "Bearer "+issuer.repositoryToken("acme/api"), again); response.Code != http.StatusAccepted {
@@ -272,7 +287,7 @@ func TestReviewAPIAndWorkloadRules(t *testing.T) {
 	}
 
 	store.mu.Lock()
-	store.listErr = errors.New("dial tcp 10.0.0.9:5432: connection refused")
+	store.rulesErr = errors.New("dial tcp 10.0.0.9:5432: connection refused")
 	store.mu.Unlock()
 	form("/configure/workloads/ci/delete", url.Values{"confirmed": {"true"}})
 	for _, path := range []string{"/api/reviews", "/v1/models"} {
@@ -398,7 +413,23 @@ func TestWorkloadRuleValidate(t *testing.T) {
 		"other issuer, any": {func(rule *overload.WorkloadRule) {
 			rule.Issuer = "https://k8s.example.com"
 			rule.Conditions = map[string]string{"sub": "*"}
+		}, false},
+		"any namespace": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://k8s.example.com"
+			rule.Conditions = map[string]string{"sub": "system:serviceaccount:*:runner"}
+		}, false},
+		"one namespace": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://k8s.example.com"
+			rule.Conditions = map[string]string{"sub": "system:serviceaccount:ci:*"}
 		}, true},
+		"GitLab group": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://gitlab.com"
+			rule.Conditions = map[string]string{"namespace_path": "acme", "project_path": "acme/*"}
+		}, true},
+		"GitLab wildcards only": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://gitlab.com"
+			rule.Conditions = map[string]string{"project_path": "acme/*"}
+		}, false},
 		"enterprise, literal": {func(rule *overload.WorkloadRule) { rule.Issuer += "/acme" }, true},
 		"bad claim": {func(rule *overload.WorkloadRule) {
 			rule.Conditions = map[string]string{"repository": "a/b", "a b": "x"}
@@ -412,5 +443,12 @@ func TestWorkloadRuleValidate(t *testing.T) {
 	}
 	if !valid.Matches(map[string]any{"repository": "acme/api"}) || valid.Matches(map[string]any{"repository": "acme/api/extra"}) || valid.Matches(map[string]any{}) {
 		t.Fatal("Matches is wrong")
+	}
+}
+
+func TestWorkloadDeletePromptEscapesName(t *testing.T) {
+	prompt, ok := confirmPromptFor(`/configure/workloads/a"b?x/delete`)
+	if !ok || prompt.Cancel != "/configure/workloads/a%22b%3Fx" {
+		t.Fatalf("prompt = %+v", prompt)
 	}
 }

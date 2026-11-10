@@ -99,6 +99,23 @@ type keySet struct {
 	keys       oidc.StaticKeySet
 	generation int
 	fetchedAt  time.Time
+	// fetchErr is the last fetch's error, nil once a fetch succeeds.
+	fetchErr error
+}
+
+// errKeysUnavailable means a signature could not be checked because the
+// issuer's keys could not be fetched, not because the token is bad.
+var errKeysUnavailable = errors.New("the issuer's keys are unavailable")
+
+// keyCheck carries what happened to the keys during one Verify call back
+// out of go-oidc, which flattens the key set's errors into text.
+type keyCheck struct{ unavailable bool }
+
+type keyCheckKey struct{}
+
+func withKeyCheck(ctx context.Context) (context.Context, *keyCheck) {
+	check := &keyCheck{}
+	return context.WithValue(ctx, keyCheckKey{}, check), check
 }
 
 func (keys *keySet) snapshot() (oidc.StaticKeySet, int, time.Time) {
@@ -107,12 +124,15 @@ func (keys *keySet) snapshot() (oidc.StaticKeySet, int, time.Time) {
 	return keys.keys, keys.generation, keys.fetchedAt
 }
 
-// loaded reports whether the keys were ever fetched.
-func (keys *keySet) loaded() bool {
-	current, _, _ := keys.snapshot()
-	return len(current.PublicKeys) > 0
+func (keys *keySet) lastFetchFailed() bool {
+	keys.mu.Lock()
+	defer keys.mu.Unlock()
+	return keys.fetchErr != nil
 }
 
+// VerifySignature checks jwt with the known keys, fetching them again when
+// none verifies it. When the keys could not be fetched it returns
+// errKeysUnavailable and marks the call's keyCheck.
 func (keys *keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, error) {
 	current, generation, _ := keys.snapshot()
 	if len(current.PublicKeys) > 0 {
@@ -120,11 +140,19 @@ func (keys *keySet) VerifySignature(ctx context.Context, jwt string) ([]byte, er
 			return payload, nil
 		}
 	}
-	if !keys.refresh(ctx, generation) {
-		return nil, errors.New("no known key verifies the token")
+	if keys.refresh(ctx, generation) {
+		current, _, _ = keys.snapshot()
+		if payload, err := current.VerifySignature(ctx, jwt); err == nil {
+			return payload, nil
+		}
 	}
-	current, _, _ = keys.snapshot()
-	return current.VerifySignature(ctx, jwt)
+	if keys.lastFetchFailed() {
+		if check, ok := ctx.Value(keyCheckKey{}).(*keyCheck); ok {
+			check.unavailable = true
+		}
+		return nil, errKeysUnavailable
+	}
+	return nil, errors.New("no known key verifies the token")
 }
 
 // refresh fetches the keys unless another request already did since
@@ -145,7 +173,7 @@ func (keys *keySet) refresh(ctx context.Context, seen int) bool {
 	fetched, err := keys.fetch(ctx)
 	keys.mu.Lock()
 	defer keys.mu.Unlock()
-	keys.fetchedAt = keys.now()
+	keys.fetchedAt, keys.fetchErr = keys.now(), err
 	if err != nil {
 		slog.Warn("workload token issuer keys unavailable", "url", keys.url, "error", err)
 		return false

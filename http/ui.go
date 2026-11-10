@@ -63,7 +63,7 @@ var deleteWorkloadRulePath = regexp.MustCompile(`^/configure/workloads/([^/]+)/d
 // before it runs, if any.
 func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
 	if match := deleteWorkloadRulePath.FindStringSubmatch(path); match != nil {
-		return pages.ConfirmPrompt{Eyebrow: "Workloads / Delete", Title: "Delete workload rule " + match[1] + "?", Impact: "Automation this rule trusted can no longer request reviews or call models with its tokens. Jobs that rely on it start failing within seconds.", Button: "Delete rule", Cancel: "/configure/workloads/" + match[1]}, true
+		return pages.ConfirmPrompt{Eyebrow: "Workloads / Delete", Title: "Delete workload rule " + match[1] + "?", Impact: "Automation this rule trusted can no longer request reviews or call models with its tokens. Jobs that rely on it start failing within seconds.", Button: "Delete rule", Cancel: "/configure/workloads/" + url.PathEscape(match[1])}, true
 	}
 	switch {
 	case strings.HasSuffix(path, "/delete"):

@@ -661,9 +661,18 @@ OIDC token instead of a stored secret. Under Workloads, an admin adds rules
 naming the token issuer, the audience, claim conditions (all must match;
 `*` matches within one path segment, so it never crosses a `/`) and scopes
 (`reviews`, `models`). Tokens are verified against the issuer's published
-keys, and only issuers some enabled rule names are ever contacted. Rule
-changes apply at once on the replica that saved them and within a few
-seconds on others.
+keys, and only issuers some enabled rule names are ever contacted; each
+issuer's discovery document is read again daily, so moved keys are picked
+up. Rule changes apply at once on the replica that saved them and within a
+few seconds on others.
+
+Shared issuers (GitHub Actions, gitlab.com, Buildkite, a cluster serving
+many namespaces) issue tokens to everyone who uses them, so every rule
+must pin something only you control: at least one condition without
+wildcards, such as GitLab's `namespace_path` or Buildkite's
+`organization_slug`. A Kubernetes `sub` may end in a wildcard after a
+fixed namespace (`system:serviceaccount:ci:*`), but not
+`system:serviceaccount:*:*`. GitHub rules have a stricter check, below.
 
 GitHub Actions (issuer `https://token.actions.githubusercontent.com`, or
 an enterprise's own issuer under it): every job on GitHub can get a token
@@ -719,7 +728,8 @@ Their calls appear on the Usage page under the rule names and repository.
 Kubernetes service accounts work the same way with the cluster's
 service-account issuer as the rule's issuer (projected tokens with an
 audience of overload's address). Match `sub`
-(`system:serviceaccount:<namespace>:<name>`). overload must be able to
+(`system:serviceaccount:<namespace>:<name>`, or
+`system:serviceaccount:<namespace>:*` for a whole namespace). overload must be able to
 read the issuer's discovery document and keys over https:
 
 - Managed clusters (EKS, GKE, AKS) publish a public issuer URL with a
