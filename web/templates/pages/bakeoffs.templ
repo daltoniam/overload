@@ -1,0 +1,103 @@
+package pages
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/eval"
+	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Bakeoffs(bakeoffs []postgres.Bakeoff, models []overload.ReviewSettings, suites []postgres.SuiteSummary, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Bake-offs", CurrentPath: "/bakeoffs"}) {
+		<div class="page-header"><div><p class="eyebrow">Models / Bake-offs</p><h1>Model bake-offs</h1><p class="muted">Run the same reviews through several models and compare what each found, where it pointed and how long it took. Suites are overload's planted-bug files, or cases built from commits that fixed real bugs in your repositories with <code>overload bakeoff case</code>.</p></div></div>
+		<section class="panel"><h2>New bake-off</h2>
+			if len(models) == 0 {
+				<div class="empty">Add a <a href="/settings">model connection</a> first.</div>
+			} else {
+				<form method="post" action="/bakeoffs"><input type="hidden" name="csrf" value={ nonce }/>
+					<fieldset class="field"><legend>Models</legend>
+						for _, model := range models {
+							<label class="check"><input type="checkbox" name="models" value={ model.Name }/> { model.Name } <span class="muted mono">{ model.Model }</span></label>
+						}
+					</fieldset>
+					<fieldset class="field"><legend>Suites</legend>
+						for _, suite := range suites {
+							<label class="check"><input type="checkbox" name="suites" value={ suite.Name } checked?={ suite.Name == eval.BuiltinSuite }/> { suite.Name } <span class="muted">({ caseCount(suite.Cases) })</span></label>
+						}
+					</fieldset>
+					<label class="field"><span>Runs per model and case</span><input name="runs" type="number" min="1" max={ strconv.Itoa(postgres.MaxBakeoffRuns) } value="3" required/><small>Models vary from run to run; three or more runs make differences meaningful. Reviews run one at a time, so local models can take hours. A bake-off runs at most { strconv.Itoa(postgres.MaxBakeoffReviews) } reviews (models times cases times runs).</small></label>
+					<div class="actions"><button type="submit">Start bake-off</button></div>
+				</form>
+			}
+		</section>
+		<section class="panel"><h2>Recent bake-offs</h2>
+			if len(bakeoffs) == 0 {
+				<div class="empty">No bake-offs yet.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Bake-offs</caption><thead><tr><th>Bake-off</th><th>Models</th><th>Suites</th><th>Status</th></tr></thead><tbody>
+					for _, bakeoff := range bakeoffs {
+						<tr>
+							<td><a href={ templ.URL(fmt.Sprintf("/bakeoffs/%d", bakeoff.ID)) }>#{ strconv.FormatInt(bakeoff.ID, 10) }</a><span class="secondary-line mono">{ bakeoff.CreatedAt.UTC().Format("2006-01-02 15:04") }</span></td>
+							<td>{ modelNames(bakeoff) }</td>
+							<td>{ suiteNames(bakeoff) }</td>
+							<td><span class={ "badge " + bakeoff.Status }>{ bakeoff.Status }</span></td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ BakeoffDetail(bakeoff postgres.Bakeoff, summaries []ModelSummary) {
+	@layouts.Base(layouts.PageData{Title: "Bake-off", CurrentPath: "/bakeoffs"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/bakeoffs">Bake-offs</a> / #{ strconv.FormatInt(bakeoff.ID, 10) }</p><h1>Bake-off #{ strconv.FormatInt(bakeoff.ID, 10) }</h1><p class="muted">{ suiteNames(bakeoff) }, { strconv.Itoa(bakeoff.Runs) } run(s) per model and case. <span class={ "badge " + bakeoff.Status }>{ bakeoff.Status }</span></p></div><a href="/bakeoffs">All bake-offs</a></div>
+		if bakeoff.Error != "" {
+			<p class="notice error">{ bakeoff.Error }</p>
+		}
+		<section class="panel"><h2>By model</h2>
+			if len(bakeoff.Results) == 0 {
+				<div class="empty">No results yet. Reviews run one at a time; refresh to see progress.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Results by model</caption><thead><tr><th>Model</th><th>Bugs found</th><th>Misplaced</th><th>Other findings</th><th>Time per review</th><th>Total tokens in / out</th><th>Failed reviews</th></tr></thead><tbody>
+					for _, summary := range summaries {
+						<tr><td>{ summary.Model }</td><td>{ summary.Found() }</td><td>{ summary.MisplacedCount() }</td><td>{ summary.ExtraCount() }</td><td>{ summary.AverageTime() }</td><td class="mono">{ strconv.FormatInt(summary.InputTokens, 10) } / { strconv.FormatInt(summary.OutputTokens, 10) }</td><td>{ strconv.Itoa(summary.Failed) } of { strconv.Itoa(summary.Reviews) }</td></tr>
+					}
+				</tbody></table></div>
+				<p class="muted">Bugs found, misplaced, other findings, time and tokens cover completed reviews; a review that failed, was refused by the model policy or left files unreviewed counts only as failed. Misplaced counts bugs a model described in the right file but cited on lines outside the expected range (more than two lines off); overload drops such findings before posting, so they help nobody. It needs the words a bug is expected to be described with, so it is n/a for cases built from commits. Other findings matched no expected bug: some may be real bugs nobody planted or fixed, others false alarms; further findings on a bug already found are not counted there. Time per review includes waiting for a model server shared with pull request reviews running at the same time.</p>
+			}
+		</section>
+		if len(bakeoff.Results) > 0 {
+			<section class="panel"><h2>Every review</h2>
+				<div class="table-wrap"><table><caption class="sr-only">Every review</caption><thead><tr><th>Model</th><th>Case</th><th>Run</th><th>Found</th><th>Misplaced</th><th>Other</th><th>Time</th></tr></thead><tbody>
+					for _, result := range bakeoff.Results {
+						<tr>
+							<td>{ result.Model }</td><td>{ result.Suite } / { result.Case }</td><td>{ strconv.Itoa(result.Run) }</td>
+							if result.Error != "" {
+								<td colspan="4"><span class="badge failed">Failed</span><span class="secondary-line">{ result.Error }</span></td>
+							} else {
+								<td>{ strconv.Itoa(result.Score.Matched) } of { strconv.Itoa(result.Score.Expected) }</td><td>{ misplacedResult(result) }</td><td>{ strconv.Itoa(result.Score.Unmatched) }</td><td>{ result.Duration.Round(1e9).String() }</td>
+							}
+						</tr>
+					}
+				</tbody></table></div>
+			</section>
+		}
+	}
+}
+
+func modelNames(bakeoff postgres.Bakeoff) string {
+	names := make([]string, 0, len(bakeoff.Models))
+	for _, model := range bakeoff.Models {
+		names = append(names, model.Name)
+	}
+	return strings.Join(names, ", ")
+}
+
+func suiteNames(bakeoff postgres.Bakeoff) string {
+	return strings.Join(bakeoff.SuiteNames, ", ")
+}

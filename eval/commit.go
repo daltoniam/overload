@@ -1,0 +1,187 @@
+package eval
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"os/exec"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// MaxCommitFiles bounds the files a case built from a commit includes.
+const MaxCommitFiles = 20
+
+// CommitBug is the bug name every expected finding of a case built from a
+// commit shares, so a fix with several hunks counts as one bug.
+const CommitBug = "fix"
+
+var (
+	commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{7,64}$`)
+	hunkHeader    = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@`)
+)
+
+// stableDiff pins every diff option a user's git configuration could
+// change (colour, external diff and textconv drivers, path prefixes,
+// relative paths, rename detection, hunks merged across unchanged lines,
+// the diff algorithm and its heuristics), so a case is the same everywhere.
+var stableDiff = []string{"--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-relative", "--inter-hunk-context=0", "--diff-algorithm=myers", "--indent-heuristic", "--src-prefix=a/", "--dst-prefix=b/"}
+
+// CaseFromCommit builds a case from a commit that fixed a bug in the
+// repository at dir: the reviewer sees the change that undoes the fix
+// (from the fixed files back to the buggy parent), and the expected
+// findings are the lines the fix changed, grouped as one bug. Only text
+// files the commit modified are included; added, deleted, renamed and
+// binary files are skipped.
+func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error) {
+	if !commitPattern.MatchString(commit) {
+		return Case{}, errors.New("give the fixing commit as a hash")
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	git := func(args ...string) (string, error) {
+		command := exec.CommandContext(ctx, "git", append([]string{"-C", dir, "-c", "core.quotepath=off"}, args...)...)
+		var stderr bytes.Buffer
+		command.Stderr = &stderr
+		out, err := command.Output()
+		if err != nil {
+			// Name the subcommand, not a leading global option.
+			name := args[max(slices.IndexFunc(args, func(arg string) bool { return !strings.HasPrefix(arg, "-") }), 0)]
+			return "", fmt.Errorf("git %s: %v: %s", name, err, strings.TrimSpace(stderr.String()))
+		}
+		return string(out), nil
+	}
+	diff := func(args ...string) (string, error) {
+		return git(append(append([]string{"diff"}, stableDiff...), args...)...)
+	}
+	parents, err := git("rev-list", "--parents", "-n", "1", commit+"^{commit}", "--")
+	if err != nil {
+		return Case{}, err
+	}
+	ids := strings.Fields(parents)
+	switch {
+	case len(ids) < 2:
+		return Case{}, errors.New("the commit has no parent to compare with")
+	case len(ids) > 2:
+		return Case{}, errors.New("the commit is a merge; pick the commit on its branch that fixed the bug")
+	}
+	commit, parent := ids[0], ids[1]
+	subject, err := git("log", "-1", "--no-show-signature", "--format=%s", commit, "--")
+	if err != nil {
+		return Case{}, err
+	}
+	listing, err := diff("--numstat", "-z", "--diff-filter=M", parent, commit)
+	if err != nil {
+		return Case{}, err
+	}
+	var paths []string
+	for _, record := range strings.Split(listing, "\x00") {
+		fields := strings.SplitN(record, "\t", 3)
+		// Binary files have no line counts.
+		if len(fields) == 3 && fields[0] != "-" && fields[2] != "" {
+			paths = append(paths, fields[2])
+		}
+	}
+	// Checking each file below costs a git call, so very large commits are
+	// refused before that; submodule pointers rarely make up the difference.
+	if len(paths) > 5*MaxCommitFiles {
+		return Case{}, fmt.Errorf("the commit modifies %d files; pick one that changes at most %d", len(paths), MaxCommitFiles)
+	}
+	// Submodule pointers are listed like text files but are not files.
+	// Their tree entries say so (mode 160000) without needing the
+	// submodule's commit, which lives in the submodule's own repository.
+	tree, err := git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", parent, "--"}, paths...)...)
+	if err != nil {
+		return Case{}, err
+	}
+	submodules := map[string]bool{}
+	for entry := range strings.SplitSeq(tree, "\x00") {
+		if meta, path, ok := strings.Cut(entry, "\t"); ok && strings.HasPrefix(meta, "160000 ") {
+			submodules[path] = true
+		}
+	}
+	paths = slices.DeleteFunc(paths, func(path string) bool { return submodules[path] })
+	if len(paths) == 0 {
+		return Case{}, errors.New("the commit modifies no existing text files")
+	}
+	if len(paths) > MaxCommitFiles {
+		return Case{}, fmt.Errorf("the commit modifies %d files; pick one that changes at most %d", len(paths), MaxCommitFiles)
+	}
+	total := 0
+	for _, path := range paths {
+		size, err := git("cat-file", "-s", parent+":"+path)
+		if err != nil {
+			return Case{}, err
+		}
+		fileBytes, err := strconv.Atoi(strings.TrimSpace(size))
+		if err != nil {
+			return Case{}, fmt.Errorf("size of %s: %w", path, err)
+		}
+		if total += fileBytes; total > MaxCaseBytes {
+			return Case{}, fmt.Errorf("the commit's files are larger than %d KiB before the fix; pick a smaller fix", MaxCaseBytes>>10)
+		}
+	}
+	if name == "" {
+		name = "commit-" + commit[:12]
+	}
+	item := Case{Name: name, Description: strings.TrimSpace(subject)}
+	var pathspecs []string
+	for _, path := range paths {
+		content, err := git("cat-file", "blob", parent+":"+path)
+		if err != nil {
+			return Case{}, err
+		}
+		if strings.ContainsRune(content, 0) {
+			continue
+		}
+		// Paths are relative to the top of the repository, even when dir
+		// is a subdirectory, and may contain glob characters.
+		pathspec := ":(top,literal)" + path
+		pathspecs = append(pathspecs, pathspec)
+		item.Files = append(item.Files, CaseFile{Path: path, Content: content})
+		fix, err := diff("-U0", parent, commit, "--", pathspec)
+		if err != nil {
+			return Case{}, err
+		}
+		for _, line := range strings.Split(fix, "\n") {
+			match := hunkHeader.FindStringSubmatch(line)
+			if match == nil {
+				continue
+			}
+			start, _ := strconv.Atoi(match[1])
+			count := 1
+			if match[2] != "" {
+				count, _ = strconv.Atoi(match[2])
+			}
+			end := start + count - 1
+			if count == 0 {
+				// The fix only added lines after start (0 for the top of
+				// the file); the bug is the code around that point, within
+				// the file. An empty file has no line to point at.
+				lines := lineCount(content)
+				if lines == 0 {
+					continue
+				}
+				start = min(max(start, 1), lines)
+				end = min(start+1, lines)
+			}
+			item.Expected = append(item.Expected, ExpectedFinding{Path: path, StartLine: start, EndLine: end, Description: item.Description, Bug: CommitBug})
+		}
+	}
+	if len(pathspecs) == 0 {
+		return Case{}, errors.New("the commit modifies no existing text files")
+	}
+	if len(item.Expected) == 0 {
+		return Case{}, errors.New("the fix only adds lines to empty files, so there is no buggy line to point at; pick a fix that changes existing code")
+	}
+	shown, err := diff(append([]string{"-U3", commit, parent, "--"}, pathspecs...)...)
+	if err != nil {
+		return Case{}, err
+	}
+	item.Diff = shown
+	return item, item.Validate()
+}

@@ -313,6 +313,9 @@ func Handler(reader RunReader, opts ...Option) http.Handler {
 	if keys, ok := reader.(KeyStore); ok {
 		registerKeys(mux, keys, csrf)
 	}
+	if bakeoffs, ok := reader.(BakeoffStore); ok {
+		registerBakeoffs(mux, bakeoffs, csrf)
+	}
 	var verifier *workload.Verifier
 	if rules, ok := reader.(WorkloadRuleStore); ok {
 		verifier = workload.NewVerifier(rules, options.workloadTransport)
