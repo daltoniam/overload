@@ -73,6 +73,12 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 	if len(UnchangedFiles(rename, rename)) != 1 {
 		t.Fatal("the same rename counted as changed")
 	}
+	// A rebase can change the similarity of an edited rename without
+	// changing the edit.
+	edited := "diff --git a/old-a b/target\nsimilarity index 90%\nrename from old-a\nrename to target\n--- a/old-a\n+++ b/target\n@@ -1 +1 @@\n-x\n+y\n"
+	if len(UnchangedFiles(edited, strings.Replace(edited, "90%", "93%", 1))) != 1 {
+		t.Fatal("a rename's similarity percentage counted as a change")
+	}
 }
 
 func TestCacheWriteFailureDoesNotFailTheDownload(t *testing.T) {

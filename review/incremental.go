@@ -45,7 +45,7 @@ func FilePatchHashes(patch string) map[string]string {
 			// different change.
 			body.WriteString("from " + oldPath + "\n")
 		case !inHunk && (strings.HasPrefix(line, "new file mode ") || strings.HasPrefix(line, "deleted file mode ") || strings.HasPrefix(line, "old mode ") || strings.HasPrefix(line, "new mode ") ||
-			strings.HasPrefix(line, "rename from ") || strings.HasPrefix(line, "copy from ") || strings.HasPrefix(line, "similarity index ")):
+			strings.HasPrefix(line, "rename from ") || strings.HasPrefix(line, "copy from ")):
 			body.WriteString(strings.TrimSuffix(line, "\r"))
 			body.WriteByte('\n')
 		case !inHunk && strings.HasPrefix(line, "index "):
