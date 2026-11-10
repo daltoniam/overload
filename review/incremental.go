@@ -20,10 +20,20 @@ func FilePatchHashes(patch string) map[string]string {
 	var name string
 	var body strings.Builder
 	inHunk := false
+	// Git can emit several sections for one path (a file that becomes a
+	// symlink is a deletion plus an addition); they are hashed together.
+	bodies := map[string]*strings.Builder{}
+	var order []string
 	flush := func() {
 		if name != "" {
-			sum := sha256.Sum256([]byte(body.String()))
-			hashes[name] = hex.EncodeToString(sum[:])
+			combined, ok := bodies[name]
+			if !ok {
+				combined = &strings.Builder{}
+				bodies[name] = combined
+				order = append(order, name)
+			}
+			combined.WriteString(body.String())
+			combined.WriteString("\x00")
 		}
 		name, inHunk = "", false
 		body.Reset()
@@ -80,6 +90,10 @@ func FilePatchHashes(patch string) map[string]string {
 		}
 	}
 	flush()
+	for _, path := range order {
+		sum := sha256.Sum256([]byte(bodies[path].String()))
+		hashes[path] = hex.EncodeToString(sum[:])
+	}
 	return hashes
 }
 

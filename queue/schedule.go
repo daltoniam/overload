@@ -60,11 +60,18 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 	worker.event(ctx, runID, postgres.RunEvent{Level: "info", Step: "running", Message: "Scheduled job started"})
 	maxSteps, timeoutMinutes := workflow.RunLimits()
 	var outputs []postgres.AgentOutput
+	var spent overload.Spend
 	for _, agent := range workflow.Agents {
 		output, err := worker.runAgent(ctx, runID, agent, input, maxSteps, time.Duration(timeoutMinutes)*time.Minute)
+		spent = spent.Add(overload.Spend{USD: output.CostUSD, Unpriced: output.UnpricedCalls})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// Agents add their spend as they finish; the total also covers
+			// an addition that failed to save before the run is closed.
+			if err := worker.Store.SetRunCost(context.WithoutCancel(ctx), runID, spent); err != nil {
+				slog.Warn("run cost not recorded", "run_id", runID, "error", err)
 			}
 			return worker.fail(ctx, runID, fmt.Sprintf("Agent %s failed: %s", agent.Name, err))
 		}

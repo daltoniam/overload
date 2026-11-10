@@ -27,6 +27,9 @@ type Budget struct {
 	// FromEnvironment marks caps set by OVERLOAD_BUDGET_MONTHLY_USD or
 	// OVERLOAD_BUDGET_DAILY_USD, which take precedence over the database.
 	FromEnvironment bool `json:"from_environment,omitempty"`
+	// repositoryID is the repository a budget applies to (0: global);
+	// budgets are matched to repositories by it, not by name.
+	repositoryID int64
 }
 
 // Budget skip statuses.
@@ -99,7 +102,7 @@ type rowsQuerier interface {
 }
 
 func listBudgets(ctx context.Context, q rowsQuerier) ([]Budget, error) {
-	rows, err := q.Query(ctx, `SELECT COALESCE(r.full_name, ''), b.monthly_usd, b.daily_usd, b.skip_status FROM budgets b LEFT JOIN repositories r ON r.id=b.repository_id ORDER BY b.repository_id IS NOT NULL, r.full_name`)
+	rows, err := q.Query(ctx, `SELECT COALESCE(b.repository_id, 0), COALESCE(r.full_name, ''), b.monthly_usd, b.daily_usd, b.skip_status FROM budgets b LEFT JOIN repositories r ON r.id=b.repository_id ORDER BY b.repository_id IS NOT NULL, r.full_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -108,10 +111,10 @@ func listBudgets(ctx context.Context, q rowsQuerier) ([]Budget, error) {
 	hasGlobal := false
 	for rows.Next() {
 		var budget Budget
-		if err := rows.Scan(&budget.Repository, &budget.MonthlyUSD, &budget.DailyUSD, &budget.SkipStatus); err != nil {
+		if err := rows.Scan(&budget.repositoryID, &budget.Repository, &budget.MonthlyUSD, &budget.DailyUSD, &budget.SkipStatus); err != nil {
 			return nil, err
 		}
-		hasGlobal = hasGlobal || budget.Repository == ""
+		hasGlobal = hasGlobal || budget.repositoryID == 0
 		budgets = append(budgets, budget)
 	}
 	if err := rows.Err(); err != nil {
@@ -168,15 +171,9 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 	if err != nil {
 		return BudgetCheck{}, err
 	}
-	var repoName string
-	if repoID != 0 {
-		if err := q.QueryRow(ctx, `SELECT full_name FROM repositories WHERE id=$1`, repoID).Scan(&repoName); err != nil {
-			return BudgetCheck{}, err
-		}
-	}
 	now := s.now()
 	for _, budget := range budgets {
-		if budget.Repository != "" && budget.Repository != repoName {
+		if budget.repositoryID != 0 && budget.repositoryID != repoID {
 			continue
 		}
 		for _, period := range []struct {
@@ -188,7 +185,7 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 				continue
 			}
 			check := BudgetCheck{Period: period.name, Scope: budget.Repository, Cap: *period.cap, Expected: expected, SkipStatus: budget.SkipStatus}
-			scoped := budget.Repository != ""
+			scoped := budget.repositoryID != 0
 			// Spent and pending come from one statement, so they share a
 			// snapshot: a run that records its cost and finishes is counted
 			// in exactly one of them. Spend recorded up to the moment the

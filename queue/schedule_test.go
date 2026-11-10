@@ -326,6 +326,23 @@ func TestScheduleWorkerKeepsSpendWhenALaterAgentFails(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT id FROM runs WHERE schedule_id=(SELECT id FROM schedules WHERE name=$1)`, name).Scan(&runID); err != nil {
 		t.Fatal(err)
 	}
+	// The first agent's own spend write fails (the database refuses its
+	// first ledger row); closing the failed run still records the spend.
+	suffix := fmt.Sprint(runID)
+	for _, statement := range []string{
+		`CREATE SEQUENCE test_fail_once_` + suffix,
+		`CREATE FUNCTION test_fail_once_` + suffix + `() RETURNS trigger AS $$ BEGIN IF NEW.run_id = ` + suffix + ` AND nextval('test_fail_once_` + suffix + `') = 1 THEN RAISE EXCEPTION 'cost write failed'; END IF; RETURN NEW; END $$ LANGUAGE plpgsql`,
+		`CREATE TRIGGER test_fail_once_` + suffix + ` BEFORE INSERT ON run_costs FOR EACH ROW EXECUTE FUNCTION test_fail_once_` + suffix + `()`,
+	} {
+		if _, err := store.Pool.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DROP TRIGGER IF EXISTS test_fail_once_`+suffix+` ON run_costs`)
+		_, _ = store.Pool.Exec(ctx, `DROP FUNCTION IF EXISTS test_fail_once_`+suffix+`()`)
+		_, _ = store.Pool.Exec(ctx, `DROP SEQUENCE IF EXISTS test_fail_once_`+suffix)
+	})
 	worker := &ScheduleWorker{Store: store}
 	if err := worker.Work(ctx, &river.Job[postgres.ScheduleArgs]{Args: postgres.ScheduleArgs{RunID: runID}}); err != nil {
 		t.Fatal(err)
@@ -333,6 +350,10 @@ func TestScheduleWorkerKeepsSpendWhenALaterAgentFails(t *testing.T) {
 	run, err := store.GetRun(ctx, runID)
 	if err != nil || run.Status != "failed" || calls < 2 {
 		t.Fatalf("run=%+v calls=%d err=%v", run, calls, err)
+	}
+	var recorded float64
+	if err := store.Pool.QueryRow(ctx, `SELECT COALESCE(sum(usd), 0) FROM run_costs WHERE run_id=$1`, runID).Scan(&recorded); err != nil || math.Abs(recorded-0.003) > 1e-9 {
+		t.Fatalf("spend recorded for budgets = %v %v", recorded, err)
 	}
 	// The first agent's 1,000 input x $2 + 100 output x $10 per million.
 	if run.Cost == nil || math.Abs(run.Cost.USD-0.003) > 1e-9 {

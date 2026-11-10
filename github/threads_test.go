@@ -126,6 +126,12 @@ func TestFindingsFollowTheirOwnComment(t *testing.T) {
 	if count, err := client.ResolveThreads(context.Background(), 0, "acme/api", 7, []overload.Finding{{Path: "a.go", Line: 3, Title: "Nil map"}}); err != nil || count != 0 || len(resolved) != 0 {
 		t.Fatalf("ambiguous match resolved %d %v: %v", count, resolved, err)
 	}
+	// One finding knows its comment (21); two older ones share the other
+	// comment's coordinates, so neither gets its replies.
+	shared, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map", CommentID: 21}, {ID: 8, Path: "a.go", Line: 3, Title: "Nil map"}, {ID: 9, Path: "a.go", Line: 3, Title: "Nil map"}})
+	if err != nil || len(shared[8]) != 0 || len(shared[9]) != 0 || len(shared[5]) != 1 {
+		t.Fatalf("replies with two possible owners = %+v %v", shared, err)
+	}
 	replies, err := client.PriorReplies(context.Background(), 0, "acme/api", 7, []overload.PriorFinding{{ID: 5, Path: "a.go", Line: 3, Title: "Nil map", CommentID: 21}})
 	if err != nil || len(replies[5]) != 1 || replies[5][0] != "dev: about the new one" {
 		t.Fatalf("replies = %+v %v", replies, err)

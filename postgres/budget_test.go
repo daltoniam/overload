@@ -143,6 +143,19 @@ func TestBudgetSkipsDeliveriesWhenSpent(t *testing.T) {
 	if outcome, reason := deliver(4); outcome != "queued" {
 		t.Fatalf("after clearing the cap: %s %s", outcome, reason)
 	}
+	// A newer head that the budget skips still retires the queued review
+	// of the older head.
+	tight := 3.0
+	if err := store.SaveBudget(ctx, Budget{Repository: repo, MonthlyUSD: &tight}); err != nil {
+		t.Fatal(err)
+	}
+	if outcome, reason := deliverHead(1, strings.Repeat("d", 40)); outcome != "skipped" {
+		t.Fatalf("newer head over budget: %s %s", outcome, reason)
+	}
+	var queuedOld int
+	if err := store.Pool.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id=$1 AND pr_number=1 AND status='queued'`, repoID).Scan(&queuedOld); err != nil || queuedOld != 0 {
+		t.Fatalf("older head still queued: %d %v", queuedOld, err)
+	}
 }
 
 func TestBudgetCountsSpendWhenItHappened(t *testing.T) {
@@ -252,6 +265,32 @@ func TestBudgetCountsSpendRecordedAfterItsClockReading(t *testing.T) {
 	check, err := store.CheckBudget(ctx, repoID, 1)
 	if err != nil || !check.Exceeded || math.Abs(check.Spent-4.5) > 1e-9 {
 		t.Fatalf("check = %+v %v", check, err)
+	}
+}
+
+func TestRepositoryBudgetsApplyByRepositoryID(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	stamp := time.Now().UnixNano()
+	var capped, other int64
+	for index, target := range []*int64{&capped, &other} {
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name) VALUES ($1) RETURNING id`, fmt.Sprintf("test-budget-scope-%d/r%d", stamp, index)).Scan(target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM budgets WHERE repository_id = ANY($1)`, []int64{capped, other})
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id = ANY($1)`, []int64{capped, other})
+	})
+	zero := 0.0
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO budgets (repository_id, daily_usd, skip_status) VALUES ($1, $2, 'success')`, capped, zero); err != nil {
+		t.Fatal(err)
+	}
+	if check, err := store.CheckBudget(ctx, capped, 1); err != nil || !check.Exceeded || check.Scope == "" {
+		t.Fatalf("capped repository = %+v %v", check, err)
+	}
+	if check, err := store.CheckBudget(ctx, other, 1); err != nil || check.Exceeded {
+		t.Fatalf("another repository = %+v %v", check, err)
 	}
 }
 

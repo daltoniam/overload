@@ -110,8 +110,17 @@ func TestDebounceAndReviewLimit(t *testing.T) {
 	if outcome != "skipped" || !strings.HasPrefix(reason, SkipReviewLimit) {
 		t.Fatalf("fourth review: %s %s", outcome, reason)
 	}
-	if outcome, reason, _ := push("opened", 'e', true); outcome != "queued" {
+	outcome, reason, byHand := push("opened", 'e', true)
+	if outcome != "queued" {
 		t.Fatalf("a review asked for by hand skips the limit: %s %s", outcome, reason)
+	}
+	// A newer push past the limit is not reviewed, but the queued review
+	// of the older head is retired all the same.
+	if outcome, reason, _ := push("synchronize", 'f', false); outcome != "skipped" || !strings.HasPrefix(reason, SkipReviewLimit) {
+		t.Fatalf("push past the limit: %s %s", outcome, reason)
+	}
+	if err := store.Pool.QueryRow(ctx, `SELECT status FROM runs WHERE id=$1`, byHand).Scan(&status); err != nil || status != overload.RunSuperseded {
+		t.Fatalf("older head's queued review: %s %v", status, err)
 	}
 }
 

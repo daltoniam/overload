@@ -84,11 +84,14 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 	// comments fits, so replies about another issue are never attached.
 	// With comments left unread past the page limit, uniqueness cannot be
 	// known, so they get none.
+	// Candidates are worked out for every older finding before any is
+	// assigned: a comment two findings could own goes to neither.
+	candidates := map[int64][]int64{}
+	claimants := map[int64]int{}
 	for _, finding := range prior {
 		if finding.CommentID != 0 || !complete {
 			continue
 		}
-		var candidates []int64
 		for _, comment := range comments {
 			if !strings.EqualFold(comment.GetUser().GetLogin(), login) || comment.GetInReplyTo() != 0 {
 				continue
@@ -97,11 +100,14 @@ func (client *Client) PriorReplies(ctx context.Context, installationID int64, re
 				continue
 			}
 			if comment.GetPath() == finding.Path && comment.GetOriginalLine() == finding.Line && strings.HasPrefix(comment.GetBody(), commentTitle(finding.Title)) {
-				candidates = append(candidates, comment.GetID())
+				candidates[finding.ID] = append(candidates[finding.ID], comment.GetID())
+				claimants[comment.GetID()]++
 			}
 		}
-		if len(candidates) == 1 {
-			findingOf[candidates[0]] = finding.ID
+	}
+	for findingID, owned := range candidates {
+		if len(owned) == 1 && claimants[owned[0]] == 1 {
+			findingOf[owned[0]] = findingID
 		}
 	}
 	replies := map[int64][]string{}

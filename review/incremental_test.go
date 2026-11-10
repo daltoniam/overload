@@ -73,6 +73,18 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 	if len(UnchangedFiles(rename, rename)) != 1 {
 		t.Fatal("the same rename counted as changed")
 	}
+	// A file that becomes a symlink is a deletion section plus an addition
+	// section; a different deleted body is a different change.
+	typeChange := func(removed string) string {
+		return "diff --git a/link b/link\ndeleted file mode 100644\n--- a/link\n+++ /dev/null\n@@ -1 +0,0 @@\n-" + removed + "\n" +
+			"diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n"
+	}
+	if len(UnchangedFiles(typeChange("one"), typeChange("two"))) != 0 {
+		t.Error("a type change with different removed content counted as unchanged")
+	}
+	if len(UnchangedFiles(typeChange("one"), typeChange("one"))) != 1 {
+		t.Error("the same type change counted as changed")
+	}
 	// A rebase can change the similarity of an edited rename without
 	// changing the edit.
 	edited := "diff --git a/old-a b/target\nsimilarity index 90%\nrename from old-a\nrename to target\n--- a/old-a\n+++ b/target\n@@ -1 +1 @@\n-x\n+y\n"

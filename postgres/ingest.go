@@ -199,7 +199,12 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if err != nil {
 		return false, err
 	}
+	// A newer head makes queued reviews of older heads obsolete even when
+	// this head is not reviewed (budget or re-review limit reached).
 	if budget.Exceeded {
+		if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
+			return false, err
+		}
 		if repo.installation != 0 {
 			if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: delivery.RepoName, InstallationID: repo.installation, SHA: delivery.HeadSHA, State: budget.SkipStatus, Description: budget.Description()}, nil); err != nil {
 				return false, err
@@ -209,6 +214,9 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	}
 	if reason, err := reviewLimit(ctx, tx, client, resolved, delivery, repo); err != nil || reason != "" {
 		if err != nil {
+			return false, err
+		}
+		if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
 			return false, err
 		}
 		return skip(reason, nil)
