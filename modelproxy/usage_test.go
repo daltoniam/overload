@@ -2,6 +2,7 @@ package modelproxy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -225,5 +226,22 @@ func TestUsageWithCarriageReturnLineEndings(t *testing.T) {
 	}
 	if usage, exact := meter.usage(); !exact || usage.Input != 9 || usage.Output != 2 {
 		t.Fatalf("CRLF stream = %+v exact = %v", usage, exact)
+	}
+}
+
+func TestBudgetRefusalIsValidJSON(t *testing.T) {
+	proxy := New("http://overload:8083")
+	proxy.Budget = func(context.Context, float64) (string, error) { return "odd \"reason\"\n\\", nil }
+	base, _ := proxy.Grant(overload.ModelProfile{BaseURL: "http://127.0.0.1:1/v1", Model: "sol"}, time.Minute)
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, strings.TrimPrefix(base, "http://overload:8083")+"/chat/completions", strings.NewReader(`{"model":"sol"}`)))
+	var body struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if recorder.Code != http.StatusTooManyRequests || json.Unmarshal(recorder.Body.Bytes(), &body) != nil || body.Error.Type != "budget_exhausted" || !strings.Contains(body.Error.Message, `odd "reason"`) {
+		t.Fatalf("status %d body %q", recorder.Code, recorder.Body.String())
 	}
 }

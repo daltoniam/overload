@@ -9,7 +9,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -230,7 +229,7 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if reason != "" {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			_, _ = fmt.Fprintf(w, `{"error":{"type":"budget_exhausted","message":"overload's %s review budget is spent"}}`, reason)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": "budget_exhausted", "message": "overload's " + reason + " review budget is spent"}})
 			return
 		}
 	}
