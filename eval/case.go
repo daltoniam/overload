@@ -98,9 +98,19 @@ func (item Case) Validate() error {
 	if size > MaxCaseBytes {
 		return fmt.Errorf("a case may hold at most %d KiB of files and diff", MaxCaseBytes>>10)
 	}
+	lines := map[string]int{}
+	for _, file := range item.Files {
+		lines[file.Path] = strings.Count(file.Content, "\n")
+		if file.Content != "" && !strings.HasSuffix(file.Content, "\n") {
+			lines[file.Path]++
+		}
+	}
 	for _, expected := range item.Expected {
 		if !paths[expected.Path] || expected.StartLine < 1 || expected.EndLine < expected.StartLine {
 			return fmt.Errorf("expected finding %q must name a case file and a line range", expected.Description)
+		}
+		if expected.EndLine > lines[expected.Path] {
+			return fmt.Errorf("expected finding %q ends at line %d, but %s has %d lines", expected.Description, expected.EndLine, expected.Path, lines[expected.Path])
 		}
 	}
 	return nil

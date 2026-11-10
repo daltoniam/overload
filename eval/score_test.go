@@ -66,6 +66,12 @@ func TestScoreFindings(t *testing.T) {
 			want:     Score{Expected: 2, Matched: 1, Reported: 2, Misplaced: 1, Recall: 0.5, PlacementChecked: 2},
 		},
 		{
+			name:     "a finding on a found bug's lines stays a repeat",
+			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Keywords: []string{"alpha"}}, {Path: "a.go", StartLine: 20, EndLine: 20, Keywords: []string{"beta"}}},
+			findings: []overload.Finding{{Path: "a.go", Line: 10, Title: "alpha"}, {Path: "a.go", Line: 10, Title: "alpha beta"}, {Path: "a.go", Line: 30, Title: "beta"}},
+			want:     Score{Expected: 2, Matched: 1, Reported: 3, Misplaced: 1, Repeats: 1, Recall: 0.5, PlacementChecked: 2},
+		},
+		{
 			name:     "the same findings in the other order",
 			expected: []ExpectedFinding{{Path: "a.go", StartLine: 10, EndLine: 10, Keywords: []string{"alpha"}}, {Path: "a.go", StartLine: 20, EndLine: 20, Keywords: []string{"beta"}}},
 			findings: []overload.Finding{{Path: "a.go", Line: 10, Title: "alpha"}, {Path: "a.go", Line: 10, Title: "alpha beta"}},
@@ -133,7 +139,7 @@ func TestScoreFindingsIgnoresOrder(t *testing.T) {
 		for range 5 {
 			shuffled := slices.Clone(findings)
 			random.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
-			if got := ScoreFindings(expected, shuffled, 1); got.Matched != want.Matched || got.Misplaced != want.Misplaced {
+			if got := ScoreFindings(expected, shuffled, 1); got.Matched != want.Matched || got.Misplaced != want.Misplaced || got.Unmatched != want.Unmatched {
 				t.Fatalf("trial %d: %+v then %+v for %+v and %+v", trial, want, got, expected, shuffled)
 			}
 		}

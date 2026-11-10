@@ -67,7 +67,19 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 	// Without keywords any finding in the file would look like a misplaced
 	// report of the bug, so only described bugs can be misplaced.
 	hasKeywords := func(item ExpectedFinding) bool { return len(item.Keywords) > 0 }
-	onLines := len(bugs) + 1
+	// A misplaced pair weighs less when its finding sits on another bug's
+	// lines with that bug's words: left unpaired, it may still count as a
+	// repeat of that bug rather than as another finding.
+	onLineAnywhere := make([]bool, len(actual))
+	for findingIndex, finding := range actual {
+		for _, bug := range bugs {
+			if slices.ContainsFunc(bug, func(item ExpectedFinding) bool { return describes(item, finding) && withinLines(item, finding) }) {
+				onLineAnywhere[findingIndex] = true
+			}
+		}
+	}
+	misplacedWeight := len(actual) + 1
+	onLines := (len(bugs) + 1) * misplacedWeight
 	weights := make([][]int, len(bugs))
 	for index, bug := range bugs {
 		if slices.ContainsFunc(bug, hasKeywords) {
@@ -79,7 +91,10 @@ func ScoreFindings(expected []ExpectedFinding, actual []overload.Finding, tolera
 			case slices.ContainsFunc(bug, func(item ExpectedFinding) bool { return describes(item, finding) && withinLines(item, finding) }):
 				weights[index][findingIndex] = onLines
 			case slices.ContainsFunc(bug, func(item ExpectedFinding) bool { return hasKeywords(item) && describes(item, finding) }):
-				weights[index][findingIndex] = 1
+				weights[index][findingIndex] = misplacedWeight
+				if onLineAnywhere[findingIndex] {
+					weights[index][findingIndex]--
+				}
 			}
 		}
 	}

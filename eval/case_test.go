@@ -46,6 +46,7 @@ func TestSuiteValidate(t *testing.T) {
 		"missing diff":    {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Expected: good.Expected}}},
 		"root as a file":  {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "."}, good.Files[0]}, Diff: good.Diff, Expected: good.Expected}}},
 		"file and folder": {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util"}, {Path: "util/textutil.go"}}, Diff: good.Diff, Expected: good.Expected}}},
+		"past the end":    {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: "package util\n"}}, Diff: good.Diff, Expected: []ExpectedFinding{{Path: "util/textutil.go", StartLine: 100, EndLine: 100}}}}},
 		"NUL in a file":   {Name: "s", Cases: []Case{{Name: "c", Files: []CaseFile{{Path: "util/textutil.go", Content: "a\x00b"}}, Diff: good.Diff, Expected: good.Expected}}},
 		"NUL in diff":     {Name: "s", Cases: []Case{{Name: "c", Files: good.Files, Diff: good.Diff + "\x00", Expected: good.Expected}}},
 	} {
