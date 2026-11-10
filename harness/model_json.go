@@ -47,6 +47,37 @@ func cleanModelJSON(text string) string {
 	return strings.TrimSpace(text[newline+1 : len(text)-3])
 }
 
+// escapeControlCharacters escapes raw control characters inside JSON
+// strings, leaving the rest of the text alone.
+func escapeControlCharacters(text string) string {
+	var out strings.Builder
+	inString, escaped := false, false
+	for _, char := range text {
+		switch {
+		case escaped:
+			escaped = false
+		case inString && char == '\\':
+			escaped = true
+		case char == '"':
+			inString = !inString
+		case inString && char < 0x20:
+			switch char {
+			case '\t':
+				out.WriteString(`\t`)
+			case '\n':
+				out.WriteString(`\n`)
+			case '\r':
+				out.WriteString(`\r`)
+			default:
+				fmt.Fprintf(&out, `\u%04x`, char)
+			}
+			continue
+		}
+		out.WriteRune(char)
+	}
+	return out.String()
+}
+
 // decodeModelReview parses a model's review reply. Models sometimes quote
 // numbers ("line": "12", "confidence": "0.9" or "85%") or describe
 // confidence in words ("high"); those are accepted rather than discarding
@@ -61,8 +92,14 @@ func decodeModelReview(text string) (overload.ReviewResult, error) {
 			Status string          `json:"status"`
 		} `json:"prior"`
 	}
-	if err := json.Unmarshal([]byte(cleanModelJSON(text)), &raw); err != nil {
-		return overload.ReviewResult{}, err
+	cleaned := cleanModelJSON(text)
+	if err := json.Unmarshal([]byte(cleaned), &raw); err != nil {
+		// Models often copy a tab or newline from the code into a string
+		// unescaped; escaping them is safer than asking for a repair, which
+		// can lose parts of the answer.
+		if json.Unmarshal([]byte(escapeControlCharacters(cleaned)), &raw) != nil {
+			return overload.ReviewResult{}, err
+		}
 	}
 	result := overload.ReviewResult{Summary: raw.Summary, Findings: make([]overload.Finding, 0, len(raw.Findings))}
 	for index, item := range raw.Findings {

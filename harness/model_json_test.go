@@ -68,3 +68,19 @@ func TestDecodeModelReviewReadsEvidenceSpelledFromThePrompt(t *testing.T) {
 		t.Fatalf("findings = %+v", result.Findings)
 	}
 }
+
+func TestDecodeModelReviewEscapesRawControlCharacters(t *testing.T) {
+	// A raw tab copied from the code into evidence, and a raw newline in a
+	// body; the prior verdicts must survive.
+	text := "{\"summary\":\"s\",\"findings\":[{\"path\":\"a.go\",\"line\":16,\"evidence\":\"\treturn total > 50\",\"body\":\"line one\nline two \\\"quoted\\\"\"}],\"prior\":[{\"id\":2,\"status\":\"resolved\"},{\"id\":1,\"status\":\"resolved\"}]}"
+	result, err := decodeModelReview(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Evidence != "\treturn total > 50" || result.Findings[0].Body != "line one\nline two \"quoted\"" || len(result.Prior) != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := decodeModelReview(`{"summary": "unterminated`); err == nil {
+		t.Fatal("broken JSON accepted")
+	}
+}
