@@ -58,3 +58,29 @@ func TestDecodeModelReviewToleratesQuotedNumbers(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeModelReviewReadsEvidenceSpelledFromThePrompt(t *testing.T) {
+	result, err := decodeModelReview(`{"summary":"s","findings":[{"path":"a.go","line":9,"side":"RIGHT","severity":"high","category":"bug","title":"t","body":"b","confidence":1,"exact evidence":"total * 100 / percent"},{"path":"a.go","line":2,"exact_evidence":"x := y"},{"path":"a.go","line":3,"evidence":"kept","exact evidence":"ignored"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 3 || result.Findings[0].Evidence != "total * 100 / percent" || result.Findings[1].Evidence != "x := y" || result.Findings[2].Evidence != "kept" {
+		t.Fatalf("findings = %+v", result.Findings)
+	}
+}
+
+func TestDecodeModelReviewEscapesRawControlCharacters(t *testing.T) {
+	// A raw tab copied from the code into evidence, and a raw newline in a
+	// body; the prior verdicts must survive.
+	text := "{\"summary\":\"s\",\"findings\":[{\"path\":\"a.go\",\"line\":16,\"evidence\":\"\treturn total > 50\",\"body\":\"line one\nline two \\\"quoted\\\"\"}],\"prior\":[{\"id\":2,\"status\":\"resolved\"},{\"id\":1,\"status\":\"resolved\"}]}"
+	result, err := decodeModelReview(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Evidence != "\treturn total > 50" || result.Findings[0].Body != "line one\nline two \"quoted\"" || len(result.Prior) != 2 {
+		t.Fatalf("result = %+v", result)
+	}
+	if _, err := decodeModelReview(`{"summary": "unterminated`); err == nil {
+		t.Fatal("broken JSON accepted")
+	}
+}
