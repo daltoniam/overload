@@ -735,3 +735,89 @@ func TestDirtySubmoduleFiltersNeverRun(t *testing.T) {
 		t.Fatal("plain git status did not run the submodule's filter; the test proves nothing")
 	}
 }
+
+func TestGlobalOptions(t *testing.T) {
+	for _, test := range []struct {
+		args       []string
+		global     int
+		subcommand string
+	}{
+		{[]string{"status"}, 0, "status"},
+		{[]string{"--git-dir", "/repo/.git", "--work-tree", "/repo", "diff", "HEAD"}, 4, "diff"},
+		{[]string{"--git-dir=/repo/.git", "--work-tree=/repo", "--literal-pathspecs", "add", "--", "a"}, 3, "add"},
+		{[]string{"-c", "user.name=x", "-C", "/repo", "commit", "-m", "m"}, 4, "commit"},
+		{[]string{"--namespace", "team", "--config-env", "core.editor=EDITOR", "--attr-source", "HEAD", "log"}, 6, "log"},
+		{[]string{"--namespace=team", "--attr-source=HEAD", "--super-prefix", "sub/", "status"}, 4, "status"},
+		{[]string{"status", "-c", "x"}, 0, "status"},
+	} {
+		global := globalOptions(test.args)
+		if len(global) != test.global || !slices.Equal(global, test.args[:test.global]) || subcommand(test.args) != test.subcommand {
+			t.Errorf("globalOptions(%q) = %q, subcommand %q", test.args, global, subcommand(test.args))
+		}
+	}
+}
+
+func TestGitWithSeparateRepositoryOptions(t *testing.T) {
+	dir := gitRepo(t)
+	marker := filepath.Join(t.TempDir(), "filter-ran")
+	gitConfig(t, dir, "filter.evil.clean", "touch "+marker+"; cat")
+	commitAttributes(t, dir, "feature", "*.go filter=evil\n")
+	if err := os.WriteFile(filepath.Join(dir, "app.go"), []byte("package app\n\nfunc changed() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	diff, err := Git(context.Background(), t.TempDir(), "--git-dir", filepath.Join(dir, ".git"), "--work-tree", dir, "diff", "--no-color", "HEAD", "--")
+	if err != nil || !strings.Contains(diff, "+func changed() {}") {
+		t.Fatalf("diff = %q, %v", diff, err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("a filter ran when the repository was named with separate options")
+	}
+}
+
+func TestFixKeepsTheBranchWhenACommitErrorFollowsTheCommit(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		commit func(context.Context, repository, string) error
+		kept   bool
+	}{
+		{"committed then interrupted", func(ctx context.Context, worktree repository, message string) error {
+			if err := commitRound(ctx, worktree, message); err != nil {
+				return err
+			}
+			return context.Canceled
+		}, true},
+		{"failed before committing", func(context.Context, repository, string) error {
+			return errors.New("disk full")
+		}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := gitRepo(t)
+			var fixes atomic.Int64
+			server := fakeModels(t, &fixes)
+			defer server.Close()
+			fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+			var out bytes.Buffer
+			result, err := Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, Rounds: 1, Until: "high", Out: &out, commit: test.commit})
+			if err == nil {
+				t.Fatalf("a failed commit was not reported\n%s", out.String())
+			}
+			if !test.kept {
+				if result.Branch != "" {
+					t.Fatalf("result = %+v", result)
+				}
+				assertNoFixBranches(t, dir)
+				return
+			}
+			if result.Branch == "" || !strings.Contains(out.String(), "Kept branch") {
+				t.Fatalf("result = %+v\n%s", result, out.String())
+			}
+			log, err := Git(context.Background(), dir, "log", "--format=%s", result.Branch)
+			if err != nil || !strings.Contains(log, "overload: fix review findings (round 1)") {
+				t.Fatalf("branch log: %q %v", log, err)
+			}
+			if _, err := os.Stat(result.Worktree); err != nil {
+				t.Fatalf("worktree removed: %v", err)
+			}
+		})
+	}
+}

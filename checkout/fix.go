@@ -38,6 +38,8 @@ type FixOptions struct {
 	MaxSteps int
 	Out      io.Writer
 	now      func() time.Time
+	// commit commits the staged round; tests replace it.
+	commit func(ctx context.Context, worktree repository, message string) error
 }
 
 // FixResult is how a fix loop ended.
@@ -73,6 +75,9 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 	}
 	if options.Out == nil {
 		options.Out = io.Discard
+	}
+	if options.commit == nil {
+		options.commit = commitRound
 	}
 	threshold, err := overload.SeverityRank(options.Until)
 	if err != nil {
@@ -170,7 +175,14 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 			_, _ = fmt.Fprintln(options.Out, "The fixer made no changes; stopping.")
 			break
 		}
-		if _, err := worktree.git(ctx, "-c", "user.name=overload", "-c", "user.email=overload@localhost", "commit", "-q", "--no-verify", "-m", fmt.Sprintf("overload: fix review findings (round %d)", round)); err != nil {
+		tip, err := worktree.git(ctx, "rev-parse", "--verify", "HEAD")
+		if err != nil {
+			return result, err
+		}
+		if err := options.commit(ctx, worktree, fmt.Sprintf("overload: fix review findings (round %d)", round)); err != nil {
+			// git can move the branch and still fail, for example when
+			// interrupted just after; the branch must not be deleted then.
+			result.committed = result.committed || branchMoved(worktree, result.Branch, tip)
 			return result, err
 		}
 		result.committed = true
@@ -187,6 +199,22 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 		result.TestsPassed = &passed
 	}
 	return result, nil
+}
+
+func commitRound(ctx context.Context, worktree repository, message string) error {
+	_, err := worktree.git(ctx, "-c", "user.name=overload", "-c", "user.email=overload@localhost", "commit", "-q", "--no-verify", "-m", message)
+	return err
+}
+
+// branchMoved reports whether branch now points somewhere other than tip,
+// the commit it held before a commit attempt. It uses a fresh context so
+// it still answers after an interrupt, and assumes a move when it cannot
+// tell, since keeping a branch is safer than deleting work.
+func branchMoved(worktree repository, branch, tip string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	current, err := worktree.git(ctx, "rev-parse", "--verify", "refs/heads/"+branch)
+	return err != nil || strings.TrimSpace(current) != strings.TrimSpace(tip)
 }
 
 // gitFileSnapshot is a fixer worktree's .git file as git wrote it. The

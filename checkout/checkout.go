@@ -95,12 +95,18 @@ func filterDrivers(output string) []string {
 	return names
 }
 
+// separateValueOptions are git's global options that may take their value
+// as the next argument, as in --git-dir PATH; each also accepts
+// --option=value. --super-prefix is gone from recent git but accepted a
+// separate value in older releases.
+var separateValueOptions = []string{"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--attr-source", "--super-prefix"}
+
 // globalOptions are the options before the subcommand, such as --git-dir,
 // so listing filters reads the same configuration the command will.
 func globalOptions(args []string) []string {
 	for index := 0; index < len(args); index++ {
 		switch {
-		case args[index] == "-c" || args[index] == "-C":
+		case slices.Contains(separateValueOptions, args[index]):
 			index++
 		case !strings.HasPrefix(args[index], "-"):
 			return slices.Clone(args[:index])
