@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"charm.land/fantasy"
 	"github.com/daltoniam/overload"
@@ -103,6 +104,29 @@ func TestContractsIndexBoundsUsesAndCountsBinaryReads(t *testing.T) {
 	binary := fstest.MapFS{"a/blob1.py": {Data: []byte{0, 1, 2}}, "a/blob2.py": {Data: []byte{0, 1, 2}}, "z/caller.py": {Data: []byte("fetch_user(1)\n")}}
 	if index := buildContractsIndex(context.Background(), parsed, binary, 3); !index.Truncated || len(index.Changes[0].Uses) != 0 {
 		t.Fatalf("binary reads did not count: truncated=%v uses=%+v", index.Truncated, index.Changes[0].Uses)
+	}
+}
+
+func TestContractsIndexReadsLongLinesOnce(t *testing.T) {
+	diff := "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export function formatPrice(cents: number): string {\n+export function formatAmount(cents: number): string {\n"
+	parsed, err := parseReviewDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One method declaration whose default parameters use the changed
+	// symbol 20,000 times.
+	var params []string
+	for i := range 20000 {
+		params = append(params, fmt.Sprintf("p%d = formatPrice", i))
+	}
+	repo := fstest.MapFS{"web/b.js": {Data: []byte("  render(" + strings.Join(params, ", ") + ") {\n")}}
+	start := time.Now()
+	index := buildContractsIndex(context.Background(), parsed, repo, 8)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("one long line took %s", elapsed)
+	}
+	if len(index.Changes) != 1 || len(index.Changes[0].Uses) != 1 {
+		t.Fatalf("changes = %+v", index.Changes)
 	}
 }
 

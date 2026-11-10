@@ -245,9 +245,18 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 			return nil
 		}
 		for number, line := range strings.Split(string(data), "\n") {
+			if number%1024 == 0 && ctx.Err() != nil {
+				return fs.SkipAll
+			}
+			symbols := identifiersIn(line, position)
+			if len(symbols) == 0 {
+				continue
+			}
+			// The line's definitions are read once, however many uses it has.
+			defined := definedNames(line, name)
 			seen := map[int]bool{}
-			for _, symbol := range identifiersIn(line, position) {
-				if isDefinitionOf(line, name, symbol) {
+			for _, symbol := range symbols {
+				if slices.Contains(defined, symbol) {
 					continue
 				}
 				for _, i := range position[symbol] {
@@ -306,14 +315,16 @@ func keepFirstUses(uses []symbolUse, use symbolUse, limit int, line string) []sy
 	return uses
 }
 
-// isDefinitionOf reports whether line defines symbol rather than using it.
-func isDefinitionOf(line, filePath, symbol string) bool {
+// definedNames returns the symbols line defines, by any rule of its
+// language. Each rule runs once per line.
+func definedNames(line, filePath string) []string {
+	var names []string
 	for _, rule := range symbolDefinitions[languageOf(filePath)] {
-		if match := rule.FindStringSubmatch(line); match != nil && match[1] == symbol {
-			return true
+		if match := rule.FindStringSubmatch(line); match != nil {
+			names = append(names, match[1])
 		}
 	}
-	return false
+	return names
 }
 
 func truncateUse(line string) string {
