@@ -28,31 +28,41 @@ grep -q 'install-location="/usr/local/overload"' "$work/flat/PackageInfo" ||
 	fail "package does not install into /usr/local/overload"
 grep -q 'overwrite-permissions="false"' "$work/flat/PackageInfo" ||
 	fail "package would reset the permissions of existing directories"
-entries=$(lsbom -s "$work/flat/Bom" | LC_ALL=C sort | tr '\n' ' ')
+listing=$(lsbom -s "$work/flat/Bom") || fail "bill of materials cannot be read"
+entries=$(printf '%s\n' "$listing" | LC_ALL=C sort | tr '\n' ' ')
 want_entries=". ./LICENSE ./bin ./bin/overload "
 [ "$entries" = "$want_entries" ] || fail "bill of materials is [$entries], want [$want_entries]"
-modes=$(lsbom -p fm "$work/flat/Bom" | LC_ALL=C sort | tr '\t\n' '= ')
+listing=$(lsbom -p fm "$work/flat/Bom") || fail "bill of materials cannot be read"
+modes=$(printf '%s\n' "$listing" | LC_ALL=C sort | tr '\t\n' '= ')
 want_modes=".=40755 ./LICENSE=100644 ./bin=40755 ./bin/overload=100755 "
 [ "$modes" = "$want_modes" ] || fail "payload modes are [$modes], want [$want_modes]"
-owners=$(lsbom -p U "$work/flat/Bom" | sort -u | tr '\n' ' ')
+listing=$(lsbom -p U "$work/flat/Bom") || fail "bill of materials cannot be read"
+owners=$(printf '%s\n' "$listing" | sort -u | tr '\n' ' ')
 [ "$owners" = "root " ] || fail "payload owners are [$owners], want root"
-archived=$(gzip -dc "$work/flat/Payload" | cpio -it --quiet | LC_ALL=C sort | tr '\n' ' ')
+# Decompress once and check every step's status, since a pipeline's status
+# is only its last command's and a damaged payload can list fully before
+# gzip reports the error.
+gzip -dc "$work/flat/Payload" >"$work/payload.cpio" || fail "payload does not decompress"
+listing=$(cpio -it --quiet <"$work/payload.cpio") || fail "payload archive cannot be listed"
+archived=$(printf '%s\n' "$listing" | LC_ALL=C sort | tr '\n' ' ')
 [ "$archived" = "$want_entries" ] || fail "payload is [$archived], want [$want_entries]"
 # The installer writes files with the archive's modes, so check them there
 # too, not only in the bill of materials.
-archive_modes=$(gzip -dc "$work/flat/Payload" | cpio -itv --quiet 2>/dev/null | awk '{print $1 "=" $NF}' | LC_ALL=C sort -t= -k2 | tr '\n' ' ')
+listing=$(cpio -itv --quiet <"$work/payload.cpio" 2>/dev/null) || fail "payload archive cannot be listed"
+archive_modes=$(printf '%s\n' "$listing" | awk '{print $1 "=" $NF}' | LC_ALL=C sort -t= -k2 | tr '\n' ' ')
 want_archive_modes="drwxr-xr-x=. -rw-r--r--=./LICENSE drwxr-xr-x=./bin -rwxr-xr-x=./bin/overload "
 [ "$archive_modes" = "$want_archive_modes" ] || fail "payload archive modes are [$archive_modes], want [$want_archive_modes]"
 # The installer also takes ownership from the archive, not the bill of
 # materials.
-archive_owners=$(gzip -dc "$work/flat/Payload" | cpio -itvn --quiet 2>/dev/null | awk '{print $3}' | sort -u | tr '\n' ' ')
+listing=$(cpio -itvn --quiet <"$work/payload.cpio" 2>/dev/null) || fail "payload archive cannot be listed"
+archive_owners=$(printf '%s\n' "$listing" | awk '{print $3}' | sort -u | tr '\n' ' ')
 [ "$archive_owners" = "0 " ] || fail "payload archive owners are [$archive_owners], want 0"
 scripts=$(cd "$work/flat/Scripts" && find . -type f | LC_ALL=C sort | tr '\n' ' ')
 [ "$scripts" = "./postinstall " ] || fail "scripts are [$scripts], want [./postinstall ]"
 [ -x "$work/flat/Scripts/postinstall" ] || fail "postinstall is not executable"
 
 mkdir "$work/payload"
-(cd "$work/payload" && gzip -dc "$work/flat/Payload" | cpio -id --quiet)
+(cd "$work/payload" && cpio -id --quiet <"$work/payload.cpio") || fail "payload does not extract"
 binary=$work/payload/bin/overload
 archs=$(lipo -archs "$binary")
 for arch in arm64 x86_64; do
