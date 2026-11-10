@@ -214,11 +214,21 @@ the configured token.
 Tested with fakes for GitHub (manifest exchange, signatures, installation
 sync, installation tokens); not yet run against a real App.
 
+### GitLab and Forgejo
+
+GitLab merge requests and Forgejo (or Gitea) pull requests are reviewed
+through a git host connection with an access token instead of an App. Add
+one under **Git hosts** (`/setup/forges`) or with `overload forges apply`;
+[docs/git-hosts.md](../docs/git-hosts.md) covers tokens, webhooks and what
+each host supports. Their webhooks arrive at `/webhooks/gitlab/N` and
+`/webhooks/forgejo/N`, so expose those paths next to `/webhooks/github`.
+
 ### Posting reviews
 
 Posting needs all three: `OVERLOAD_ENABLE_POSTING=1`, **Post reviews as
-GitHub comments** checked on the repository, and the repository covered by
-the App. Otherwise findings stay dry-run and the run records why
+comments on the pull request** checked on the repository, and the repository
+covered by the App (or on a GitLab or Forgejo connection). Otherwise
+findings stay dry-run and the run records why
 (`posting_disabled`, `no_github_app_installation`).
 
 Posting is a separate job queued in the same transaction that completes the

@@ -1,4 +1,4 @@
-# Only the GitHub webhook is public. The UI stays inside the cluster; reach
+# Only the webhooks are public (GitHub, and GitLab or Forgejo connections). The UI stays inside the cluster; reach
 # it with `kubectl -n overload port-forward svc/overload 8082`.
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -17,6 +17,20 @@ spec:
         paths:
           - path: /webhooks/github
             pathType: Exact
+            backend:
+              service:
+                name: overload
+                port:
+                  name: http
+          - path: /webhooks/gitlab/
+            pathType: Prefix
+            backend:
+              service:
+                name: overload
+                port:
+                  name: http
+          - path: /webhooks/forgejo/
+            pathType: Prefix
             backend:
               service:
                 name: overload

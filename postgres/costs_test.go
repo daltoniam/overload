@@ -68,6 +68,37 @@ func TestRunCostsAndSpend(t *testing.T) {
 	if err != nil || other.Runs != 0 {
 		t.Fatalf("filter by repository: %+v %v", other, err)
 	}
+	// The same path on a GitLab connection is another repository, named
+	// connection:path.
+	var forgeID, forgeRepo int64
+	connection := fmt.Sprintf("costs-%d", time.Now().UnixNano())
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO forge_connections (name, kind, base_url, token, webhook_secret) VALUES ($1, 'gitlab', 'https://gitlab.example.com', 't', 's') RETURNING id`, connection).Scan(&forgeID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO repositories (full_name, forge_id) VALUES ($1, $2) RETURNING id`, repo, forgeID).Scan(&forgeRepo); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM runs WHERE repository_id=$1`, forgeRepo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id=$1`, forgeRepo)
+		_, _ = store.Pool.Exec(ctx, `DELETE FROM forge_connections WHERE id=$1`, forgeID)
+	})
+	var forgeRun int64
+	if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, created_at) VALUES ($1, 1, '', '', 'webhook', 'completed', $2) RETURNING id`, forgeRepo, month.Add(3*time.Hour)).Scan(&forgeRun); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetRunCost(ctx, forgeRun, overload.Spend{USD: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if github, err := store.RunCosts(ctx, CostFilter{Since: month, Until: now, Repository: repo}); err != nil || github.Runs != 4 {
+		t.Fatalf("GitHub repository = %+v %v", github, err)
+	}
+	if gitlab, err := store.RunCosts(ctx, CostFilter{Since: month, Until: now, Repository: connection + ":" + repo}); err != nil || gitlab.Runs != 1 || gitlab.TotalUSD != 9 {
+		t.Fatalf("GitLab repository = %+v %v", gitlab, err)
+	}
+	if _, err := store.Pool.Exec(ctx, `DELETE FROM runs WHERE id=$1`, forgeRun); err != nil {
+		t.Fatal(err)
+	}
 	spend, err := store.Spend(ctx, now)
 	if err != nil {
 		t.Fatal(err)

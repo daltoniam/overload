@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/forge"
 	"github.com/daltoniam/overload/github"
 	httpapi "github.com/daltoniam/overload/http"
 	"github.com/daltoniam/overload/postgres"
@@ -81,6 +83,8 @@ func run(args []string) error {
 		return manageBudget(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
+	case "forges":
+		return manageForges(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -215,20 +219,36 @@ func (store serverStore) RequestReview(ctx context.Context, repositoryID int64, 
 	if err != nil {
 		return 0, err
 	}
-	repository := ""
 	for _, repo := range repos {
-		if repo.ID == repositoryID {
-			repository = repo.FullName
+		if repo.ID != repositoryID {
+			continue
 		}
+		if repo.ForgeID == 0 {
+			if _, err := queue.AppClient(ctx, store.Store); err != nil {
+				return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
+			}
+		}
+		return queue.QueueManualReviewOn(ctx, store.Store, store.jobs, queue.HostReader(store.Store), repo.Forge, repo.FullName, number, again)
 	}
-	if repository == "" {
-		return 0, fmt.Errorf("%w: unknown repository", queue.ErrReviewNotQueued)
-	}
-	reader, err := queue.AppClient(ctx, store.Store)
-	if err != nil {
-		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
-	}
-	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again)
+	return 0, fmt.Errorf("%w: unknown repository", queue.ErrReviewNotQueued)
+}
+
+// IngestForgePR records a verified GitLab or Forgejo pull request webhook
+// and queues a review on this server's job queue.
+func (store serverStore) IngestForgePR(ctx context.Context, connection overload.ForgeConnection, deliveryID string, payload []byte, event forge.Event) (bool, error) {
+	return store.IngestPR(ctx, store.jobs, postgres.PullRequestDelivery{
+		DeliveryID: deliveryID,
+		Action:     event.Action,
+		RepoName:   event.Repository,
+		RepoID:     event.RepositoryID,
+		ForgeID:    connection.ID,
+		Forge:      connection.Kind,
+		PR:         event.Number,
+		HeadSHA:    event.HeadSHA,
+		BaseSHA:    event.BaseSHA,
+		Eligible:   event.Eligible,
+		Payload:    payload,
+	})
 }
 
 // ReviewCommand queues a review of a pull request's current head for an
@@ -246,7 +266,7 @@ func (store serverStore) ReviewCommand(ctx context.Context, event github.Comment
 	if !allowed {
 		return 0, fmt.Errorf("%w: %s cannot write to %s", queue.ErrReviewNotQueued, event.Comment.User.Login, event.Repository.FullName)
 	}
-	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, event.Repository.FullName, event.Issue.Number, true)
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, queue.HostReader(store.Store), event.Repository.FullName, event.Issue.Number, true)
 }
 
 // RunScheduleNow queues a schedule's workflow on this server's job queue.

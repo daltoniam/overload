@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/daltoniam/overload"
 	gh "github.com/google/go-github/v75/github"
 )
 
@@ -181,9 +182,9 @@ type InstallationSource struct {
 	InstallationID int64
 }
 
-func (source InstallationSource) PullRequestWithDiff(ctx context.Context, repository string, number int) (*gh.PullRequest, string, error) {
+func (source InstallationSource) PullRequestWithDiff(ctx context.Context, repository string, number int) (overload.PullRequest, string, error) {
 	if source.InstallationID < 1 {
-		return nil, "", errors.New("installation ID required")
+		return overload.PullRequest{}, "", errors.New("installation ID required")
 	}
 	return source.Client.PullRequest(ctx, source.InstallationID, repository, number)
 }

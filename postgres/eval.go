@@ -29,46 +29,45 @@ type EvalRequest struct {
 	Batch        string
 }
 
-// RepositoryGitHubID returns a repository's GitHub ID, or 0 when overload
-// has not learned it from the GitHub App.
-func (s *Store) RepositoryGitHubID(ctx context.Context, repoID int64) (int64, error) {
-	var githubID *int64
-	if err := s.Pool.QueryRow(ctx, `SELECT github_id FROM repositories WHERE id=$1`, repoID).Scan(&githubID); err != nil {
-		return 0, err
-	}
-	if githubID == nil {
-		return 0, nil
-	}
-	return *githubID, nil
+// RepositoryHostID returns the host's ID for a repository: its GitHub ID,
+// or its GitLab or Forgejo repository ID. It is 0 until overload has
+// learned it from the host.
+func (s *Store) RepositoryHostID(ctx context.Context, repoID int64) (int64, error) {
+	var hostID int64
+	err := s.Pool.QueryRow(ctx, `SELECT CASE WHEN forge_id IS NULL THEN COALESCE(github_id, 0) ELSE COALESCE(forge_repo_id, 0) END FROM repositories WHERE id=$1`, repoID).Scan(&hostID)
+	return hostID, err
 }
 
-// evalRepository finds the evaluated repository and its App installation.
-// A name that matches more than one repository (the same owner/name on
-// different hosts) is refused rather than guessed.
-func evalRepository(ctx context.Context, tx pgx.Tx, request EvalRequest) (int64, *int64, error) {
-	rows, err := tx.Query(ctx, `SELECT id, installation_id FROM repositories WHERE full_name=$1 AND ($2::bigint = 0 OR id = $2) ORDER BY id LIMIT 2`, request.Repository, request.RepositoryID)
+// evalRepository finds the evaluated repository, its App installation and
+// its GitLab or Forgejo connection. A name that matches more than one
+// repository (the same path on different hosts) is refused rather than
+// guessed.
+func evalRepository(ctx context.Context, tx pgx.Tx, request EvalRequest) (evalRepo, error) {
+	rows, err := tx.Query(ctx, `SELECT id, installation_id, forge_id FROM repositories WHERE full_name=$1 AND ($2::bigint = 0 OR id = $2) ORDER BY id LIMIT 2`, request.Repository, request.RepositoryID)
 	if err != nil {
-		return 0, nil, err
+		return evalRepo{}, err
 	}
-	type match struct {
-		id           int64
-		installation *int64
-	}
-	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (match, error) {
-		var found match
-		err := row.Scan(&found.id, &found.installation)
+	matches, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (evalRepo, error) {
+		var found evalRepo
+		err := row.Scan(&found.id, &found.installation, &found.forge)
 		return found, err
 	})
 	if err != nil {
-		return 0, nil, err
+		return evalRepo{}, err
 	}
 	switch len(matches) {
 	case 0:
-		return 0, nil, fmt.Errorf("%s is not a repository overload knows; add it first", request.Repository)
+		return evalRepo{}, fmt.Errorf("%s is not a repository overload knows; add it first", request.Repository)
 	case 1:
-		return matches[0].id, matches[0].installation, nil
+		return matches[0], nil
 	}
-	return 0, nil, fmt.Errorf("%s matches more than one repository overload knows; name it by repository ID", request.Repository)
+	return evalRepo{}, fmt.Errorf("%s matches more than one repository overload knows; name it by repository ID", request.Repository)
+}
+
+type evalRepo struct {
+	id           int64
+	installation *int64
+	forge        *int64
 }
 
 // QueueEvalRun pins the workflow and queues a dry-run review the same way
@@ -83,7 +82,7 @@ func (s *Store) QueueEvalRun(ctx context.Context, client *river.Client[pgx.Tx], 
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	repoID, installation, err := evalRepository(ctx, tx, request)
+	repo, err := evalRepository(ctx, tx, request)
 	if err != nil {
 		return 0, err
 	}
@@ -109,7 +108,7 @@ func (s *Store) QueueEvalRun(ctx context.Context, client *river.Client[pgx.Tx], 
 		return 0, err
 	}
 	var runID int64
-	if err := tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, config_snapshot, installation_id, metrics) VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8) RETURNING id`, repoID, request.PR, request.HeadSHA, request.BaseSHA, EvalTrigger, snapshot, installation, metrics).Scan(&runID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, config_snapshot, installation_id, forge_id, metrics) VALUES ($1, $2, $3, $4, $5, true, $6, $7, $8, $9) RETURNING id`, repo.id, request.PR, request.HeadSHA, request.BaseSHA, EvalTrigger, snapshot, repo.installation, repo.forge, metrics).Scan(&runID); err != nil {
 		return 0, err
 	}
 	job, err := client.InsertTx(ctx, tx, ReviewArgs{RunID: runID}, nil)

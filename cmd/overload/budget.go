@@ -14,7 +14,7 @@ import (
 	"github.com/daltoniam/overload/postgres"
 )
 
-const budgetUsage = "usage: overload budget show | overload budget set [--repo owner/name] [--monthly USD|none] [--daily USD|none] [--skip-status success|error]"
+const budgetUsage = "usage: overload budget show | overload budget set [--repo owner/name|connection:path] [--monthly USD|none] [--daily USD|none] [--skip-status success|error]"
 
 // manageBudget shows and sets spending caps.
 func manageBudget(args []string) error {
@@ -64,7 +64,7 @@ func manageBudget(args []string) error {
 // chosen scope; flags left out keep their values, and "none" clears a cap.
 func parseBudgetFlags(args []string, current []postgres.Budget) (postgres.Budget, error) {
 	flags := flag.NewFlagSet("budget set", flag.ContinueOnError)
-	repo := flags.String("repo", "", "set this repository's budget instead of the global one")
+	repo := flags.String("repo", "", "set this repository's budget instead of the global one: owner/name on GitHub, connection:path on GitLab or Forgejo")
 	monthly := flags.String("monthly", "", "monthly cap in US dollars, or none")
 	daily := flags.String("daily", "", "daily cap in US dollars, or none")
 	skipStatus := flags.String("skip-status", "", "commit status for reviews skipped for budget: success (default; does not block merges) or error")

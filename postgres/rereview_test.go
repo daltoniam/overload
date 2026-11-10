@@ -47,7 +47,7 @@ func TestDebounceAndReviewLimit(t *testing.T) {
 	if err := store.SaveWorkflow(ctx, overload.Workflow{Name: name, Kind: "pr_review", Agents: []string{name}, Enabled: true, ReviewPolicy: overload.ReviewPolicy{Rereview: &overload.RereviewSettings{MaxReviewsPerPR: &limit}}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveRepository(ctx, repo, true, true); err != nil {
+	if err := store.SaveRepository(ctx, "", repo, true, true); err != nil {
 		t.Fatal(err)
 	}
 	for _, action := range []string{"opened", "synchronize"} {

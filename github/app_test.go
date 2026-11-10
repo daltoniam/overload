@@ -127,7 +127,7 @@ func TestInstallationSourceUsesInstallationToken(t *testing.T) {
 	}
 	client.baseURL = server.URL
 	pr, diff, err := InstallationSource{Client: client, InstallationID: 7}.PullRequestWithDiff(context.Background(), "acme/api", 5)
-	if err != nil || pr.GetNumber() != 5 || !strings.HasPrefix(diff, "diff --git") || minted == 0 {
+	if err != nil || pr.Number != 5 || !strings.HasPrefix(diff, "diff --git") || minted == 0 {
 		t.Fatalf("pr=%v diff=%q minted=%d err=%v", pr, diff, minted, err)
 	}
 	if _, _, err := (InstallationSource{Client: client}).PullRequestWithDiff(context.Background(), "acme/api", 5); err == nil {

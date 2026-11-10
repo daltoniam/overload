@@ -9,33 +9,28 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/eval"
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 )
-
-// HeadReader reads a pull request's current head and base commits.
-type HeadReader interface {
-	PullRequest(ctx context.Context, installationID int64, repository string, number int) (*gh.PullRequest, string, error)
-}
 
 // EvalPlan runs every workflow on the current head of every pull request
 // as dry runs. Concurrency limits how many of the batch's runs are queued
 // or running at once (the server's own worker limit still applies).
 type EvalPlan struct {
-	Repository   string
-	RepositoryID int64
-	// GitHubID, when known, is the repository's GitHub ID: every pull
-	// request read must belong to it, so a same-named repository
-	// elsewhere is never evaluated by mistake.
-	GitHubID       int64
-	InstallationID int64
-	PRs            []int
-	Workflows      []string
-	Concurrency    int
-	Batch          string
-	Poll           time.Duration
-	Progress       func(string)
+	// Repository is the evaluated repository; its pull requests are read
+	// from the host it is on.
+	Repository overload.Repository
+	// HostRepoID, when known, is the host's ID for the repository (its
+	// GitHub ID or GitLab/Forgejo repository ID): every pull request read
+	// must target it, so a renamed or same-named repository is never
+	// evaluated by mistake.
+	HostRepoID  int64
+	PRs         []int
+	Workflows   []string
+	Concurrency int
+	Batch       string
+	Poll        time.Duration
+	Progress    func(string)
 }
 
 type evalJob struct {
@@ -48,7 +43,7 @@ type evalJob struct {
 // RunEval queues the plan's runs a few at a time, waits for all of them,
 // and returns their results in plan order. A pull request that cannot be
 // read stops the evaluation before anything is queued.
-func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader HeadReader, plan EvalPlan) ([]eval.RunResult, error) {
+func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pgx.Tx], reader PullRequestReader, plan EvalPlan) ([]eval.RunResult, error) {
 	if len(plan.PRs) == 0 || len(plan.Workflows) == 0 {
 		return nil, errors.New("evaluation needs pull requests and workflows")
 	}
@@ -62,14 +57,14 @@ func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pg
 	}
 	var jobs []evalJob
 	for _, number := range plan.PRs {
-		pr, _, err := reader.PullRequest(ctx, plan.InstallationID, plan.Repository, number)
+		pr, err := reader.PullRequest(ctx, plan.Repository, number)
 		if err != nil {
 			return nil, fmt.Errorf("read #%d: %w", number, err)
 		}
-		if plan.GitHubID != 0 && pr.GetBase().GetRepo().GetID() != plan.GitHubID {
-			return nil, fmt.Errorf("#%d is not a pull request of the repository overload knows as %s", number, plan.Repository)
+		if plan.HostRepoID != 0 && pr.RepositoryID != plan.HostRepoID {
+			return nil, fmt.Errorf("#%d is not a pull request of the repository overload knows as %s", number, plan.Repository.Ref())
 		}
-		head, base := pr.GetHead().GetSHA(), pr.GetBase().GetSHA()
+		head, base := pr.HeadSHA, pr.BaseSHA
 		if head == "" || base == "" {
 			return nil, fmt.Errorf("#%d has no head or base commit", number)
 		}
@@ -85,7 +80,7 @@ func RunEval(ctx context.Context, store *postgres.Store, client *river.Client[pg
 	for {
 		for next < len(jobs) && len(active) < limit {
 			job := jobs[next]
-			id, err := store.QueueEvalRun(ctx, client, postgres.EvalRequest{Repository: plan.Repository, RepositoryID: plan.RepositoryID, PR: job.pr, HeadSHA: job.head, BaseSHA: job.base, Workflow: job.workflow, Batch: plan.Batch})
+			id, err := store.QueueEvalRun(ctx, client, postgres.EvalRequest{Repository: plan.Repository.FullName, RepositoryID: plan.Repository.ID, PR: job.pr, HeadSHA: job.head, BaseSHA: job.base, Workflow: job.workflow, Batch: plan.Batch})
 			if err != nil {
 				return nil, fmt.Errorf("queue %s on #%d: %w", job.workflow, job.pr, err)
 			}

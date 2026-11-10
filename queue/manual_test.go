@@ -11,22 +11,21 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
 type fakePRReader struct {
-	pr    *gh.PullRequest
+	pr    overload.PullRequest
 	calls int
 }
 
-func (reader *fakePRReader) PullRequest(_ context.Context, installationID int64, _ string, _ int) (*gh.PullRequest, string, error) {
+func (reader *fakePRReader) PullRequest(_ context.Context, repository overload.Repository, _ int) (overload.PullRequest, error) {
 	reader.calls++
-	if installationID < 1 {
-		return nil, "", fmt.Errorf("no installation")
+	if repository.InstallationID < 1 && repository.ForgeID < 1 {
+		return overload.PullRequest{}, fmt.Errorf("no installation")
 	}
-	return reader.pr, "", nil
+	return reader.pr, nil
 }
 
 func TestQueueManualReview(t *testing.T) {
@@ -79,7 +78,7 @@ func TestQueueManualReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	head := strings.Repeat("c", 40)
-	reader := &fakePRReader{pr: &gh.PullRequest{Number: gh.Ptr(296), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(head)}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40)), Repo: &gh.Repository{ID: gh.Ptr(id % 1_000_000_000)}}}}
+	reader := &fakePRReader{pr: overload.PullRequest{Number: 296, State: "open", HeadSHA: head, BaseSHA: strings.Repeat("a", 40), RepositoryID: id % 1_000_000_000}}
 	queue := func() (int64, error) { return QueueManualReview(ctx, store, client, reader, repo, 296, false) }
 
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "not enabled") {
@@ -116,11 +115,11 @@ func TestQueueManualReview(t *testing.T) {
 	if err != nil || second == runID || second == 0 {
 		t.Fatalf("review again after completion: %d %v", second, err)
 	}
-	reader.pr.Draft = gh.Ptr(true)
+	reader.pr.Draft = true
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("draft: %v", err)
 	}
-	reader.pr.Draft, reader.pr.State = nil, gh.Ptr("closed")
+	reader.pr.Draft, reader.pr.State = false, "closed"
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("closed: %v", err)
 	}

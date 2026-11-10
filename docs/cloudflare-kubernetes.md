@@ -10,8 +10,9 @@ public IP and no Ingress:
   identity provider. Overload checks Cloudflare's signed token on every
   request, so the dashboard cannot be reached around Access, even from
   inside the cluster.
-- **Webhooks**: `/webhooks/github` skips Access. GitHub signs every
-  delivery, and overload rejects unsigned ones.
+- **Webhooks**: `/webhooks/*` skips Access. GitHub and Forgejo sign every
+  delivery and GitLab sends the connection's secret; overload rejects
+  deliveries without them.
 
 ```
 GitHub ──webhook──┐
@@ -78,7 +79,7 @@ first.
 | Application | Domain and path | Policy |
 | --- | --- | --- |
 | `overload` | `overload.example.com` (no path) | **Allow**: the emails or groups that may use overload |
-| `overload webhooks` | `overload.example.com` / `webhooks/github` | **Bypass**: Everyone |
+| `overload webhooks` | `overload.example.com` / `webhooks/*` | **Bypass**: Everyone |
 
 Then copy two values for overload:
 

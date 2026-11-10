@@ -23,7 +23,7 @@ func TestTokenPRFetch(t *testing.T) {
 				_, _ = w.Write([]byte("diff --git a/file b/file\n"))
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "open", "head": map[string]string{"sha": sha}, "base": map[string]string{"sha": strings.Repeat("a", 40)}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "open", "title": "Fix login", "body": "Closes a race.", "head": map[string]string{"sha": sha}, "base": map[string]string{"sha": strings.Repeat("a", 40)}})
 		case "/repos/owner/repo/tarball/" + sha:
 			_, _ = w.Write([]byte("archive"))
 		default:
@@ -41,7 +41,7 @@ func TestTokenPRFetch(t *testing.T) {
 	}
 	client.api.BaseURL = baseURL
 	pr, diff, err := client.PullRequestWithDiff(context.Background(), "owner/repo", 42)
-	if err != nil || pr.GetHead().GetSHA() != sha || !strings.Contains(diff, "diff --git") {
+	if err != nil || pr.HeadSHA != sha || pr.Title != "Fix login" || pr.Body != "Closes a race." || !strings.Contains(diff, "diff --git") {
 		t.Fatalf("pull request: %+v %q %v", pr, diff, err)
 	}
 	var archive bytes.Buffer

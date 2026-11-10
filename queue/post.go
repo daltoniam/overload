@@ -13,7 +13,7 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// PostingEnabled is the global switch for writing to GitHub. A run is posted
+// PostingEnabled is the global switch for writing to git hosts. A run is posted
 // only when this is on and neither its repository nor its binding is dry-run.
 func PostingEnabled() bool {
 	return os.Getenv("OVERLOAD_ENABLE_POSTING") == "1"
@@ -59,10 +59,17 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if target.Superseded {
 		return w.Store.SkipPost(ctx, runID, "superseded_by_newer_commit")
 	}
-	if target.InstallationID == 0 {
+	if target.InstallationID == 0 && target.ForgeID == 0 {
 		return w.Store.SkipPost(ctx, runID, "no_github_app_installation")
 	}
 	poster := w.Poster
+	if poster == nil && target.ForgeID > 0 {
+		client, err := ForgeClient(ctx, w.Store, target.ForgeID)
+		if err != nil {
+			return w.Store.SkipPost(ctx, runID, "missing_forge_connection")
+		}
+		poster = forgePoster{client: client}
+	}
 	if poster == nil {
 		client, err := appClient(ctx, w.Store)
 		if err != nil {
@@ -111,11 +118,15 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	}
 	summary := reviewSummary(event, target, len(severities)-len(target.Findings)) + "\n\n" + marker
 	reviewID, err := poster.PostReview(ctx, target.InstallationID, target.Repository, target.PRNumber, target.HeadSHA, event, summary, target.Findings)
-	if errors.Is(err, github.ErrReviewRejected) {
+	if errors.Is(err, overload.ErrReviewRejected) {
 		if err := w.Store.RejectPost(ctx, runID, err.Error()); err != nil {
 			return err
 		}
-		reportStatus(ctx, w.Store, w.Status, runID, statusError, "GitHub rejected the review")
+		description := "GitHub rejected the review"
+		if target.ForgeID > 0 {
+			description = "The git host rejected the review"
+		}
+		reportStatus(ctx, w.Store, w.Status, runID, statusError, description)
 		return nil
 	}
 	if err != nil {

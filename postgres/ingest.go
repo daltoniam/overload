@@ -22,11 +22,15 @@ type PullRequestDelivery struct {
 	RepoName       string
 	RepoID         int64
 	InstallationID int64
-	PR             int
-	HeadSHA        string
-	BaseSHA        string
-	Eligible       bool
-	Payload        []byte
+	// ForgeID and Forge (its kind) name the GitLab or Forgejo connection
+	// the delivery came from; 0 and "" are GitHub.
+	ForgeID  int64
+	Forge    string
+	PR       int
+	HeadSHA  string
+	BaseSHA  string
+	Eligible bool
+	Payload  []byte
 	// Manual marks a review someone asked for (the UI's "Review now" or
 	// the CLI) instead of a GitHub webhook. It matches the repository's
 	// "opened" binding and is recorded with the manual trigger.
@@ -49,6 +53,8 @@ type repoFacts struct {
 	dryRun       bool
 	installation int64
 	suspended    bool
+	name         string
+	hostID       int64
 }
 
 const (
@@ -90,10 +96,10 @@ func skipReason(delivery PullRequestDelivery, repo repoFacts) string {
 }
 
 func lookupRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDelivery) (repoFacts, error) {
-	const columns = `SELECT r.id, r.enabled, r.dry_run, COALESCE(r.installation_id, 0), COALESCE(i.suspended_at IS NOT NULL, false) FROM repositories r LEFT JOIN github_installations i ON i.id = r.installation_id `
+	const columns = `SELECT r.id, r.enabled, r.dry_run, COALESCE(r.installation_id, 0), COALESCE(i.suspended_at IS NOT NULL, false), r.full_name, COALESCE(r.forge_repo_id, 0) FROM repositories r LEFT JOIN github_installations i ON i.id = r.installation_id `
 	var facts repoFacts
 	scan := func(row pgx.Row) error {
-		err := row.Scan(&facts.id, &facts.enabled, &facts.dryRun, &facts.installation, &facts.suspended)
+		err := row.Scan(&facts.id, &facts.enabled, &facts.dryRun, &facts.installation, &facts.suspended, &facts.name, &facts.hostID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -102,6 +108,9 @@ func lookupRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDelivery) (r
 		}
 		return err
 	}
+	if delivery.ForgeID > 0 {
+		return lookupForgeRepo(ctx, tx, delivery, columns, &facts, scan)
+	}
 	if delivery.RepoID > 0 {
 		if err := scan(tx.QueryRow(ctx, columns+`WHERE r.github_id = $1`, delivery.RepoID)); err != nil || facts.found {
 			return facts, err
@@ -109,7 +118,44 @@ func lookupRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDelivery) (r
 	}
 	// A repository added by hand has no GitHub ID yet; match it by name, but
 	// never take over a row that belongs to a different GitHub repository.
-	return facts, scan(tx.QueryRow(ctx, columns+`WHERE r.full_name = $1 AND r.github_id IS NULL`, delivery.RepoName))
+	return facts, scan(tx.QueryRow(ctx, columns+`WHERE r.full_name = $1 AND r.github_id IS NULL AND r.forge_id IS NULL`, delivery.RepoName))
+}
+
+// lookupForgeRepo finds a GitLab or Forgejo repository by the host's
+// repository ID, then by name. The first delivery links a repository
+// added by name to its host ID, and a later rename on the host renames
+// the row (unless another row already has the new name).
+func lookupForgeRepo(ctx context.Context, tx pgx.Tx, delivery PullRequestDelivery, columns string, facts *repoFacts, scan func(pgx.Row) error) (repoFacts, error) {
+	if delivery.RepoID > 0 {
+		if err := scan(tx.QueryRow(ctx, columns+`WHERE r.forge_id = $1 AND r.forge_repo_id = $2`, delivery.ForgeID, delivery.RepoID)); err != nil {
+			return *facts, err
+		}
+		if facts.found && facts.name != delivery.RepoName && delivery.RepoName != "" {
+			// The name changes only when no other row holds the new one;
+			// facts keep whichever name the row ends up with, so bindings
+			// are matched against it.
+			err := tx.QueryRow(ctx, `UPDATE repositories SET full_name = $1, updated_at = now() WHERE id = $2 AND NOT EXISTS (SELECT 1 FROM repositories WHERE forge_id = $3 AND full_name = $1) RETURNING full_name`, delivery.RepoName, facts.id, delivery.ForgeID).Scan(&facts.name)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return *facts, err
+			}
+		}
+		if facts.found {
+			return *facts, nil
+		}
+	}
+	if err := scan(tx.QueryRow(ctx, columns+`WHERE r.forge_id = $1 AND r.full_name = $2`, delivery.ForgeID, delivery.RepoName)); err != nil || !facts.found {
+		return *facts, err
+	}
+	if facts.hostID != 0 && delivery.RepoID > 0 && facts.hostID != delivery.RepoID {
+		// The name now belongs to a different repository on the host.
+		return repoFacts{}, nil
+	}
+	if facts.hostID == 0 && delivery.RepoID > 0 {
+		if _, err := tx.Exec(ctx, `UPDATE repositories SET forge_repo_id = $1, updated_at = now() WHERE id = $2`, delivery.RepoID, facts.id); err != nil {
+			return *facts, err
+		}
+	}
+	return *facts, nil
 }
 
 // IngestPR records a pull_request delivery once and, when a repository and
@@ -128,6 +174,13 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	var deliveryRow int64
 	digest := sha256.Sum256(delivery.Payload)
 	source, trigger := "github", "webhook"
+	if delivery.ForgeID > 0 {
+		if delivery.Forge != overload.ForgeGitLab && delivery.Forge != overload.ForgeForgejo {
+			return false, errors.New("invalid git host kind")
+		}
+		source = delivery.Forge
+	}
+	bindingSource := source
 	if delivery.Manual {
 		source, trigger = "manual", "manual"
 	}
@@ -151,7 +204,9 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if reason := skipReason(delivery, repo); reason != "" {
 		return skip(reason, nil)
 	}
-	if delivery.HeadSHA == "" || delivery.BaseSHA == "" {
+	// GitLab merge request webhooks carry no base commit; the review reads
+	// it from the merge request.
+	if delivery.HeadSHA == "" || (delivery.BaseSHA == "" && delivery.ForgeID == 0) {
 		return false, errors.New(errMissingSHAs)
 	}
 	// Deliveries for one pull request are ingested one at a time, so two
@@ -161,7 +216,7 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	}
 	var bindingID int64
 	var workflowName string
-	err = tx.QueryRow(ctx, `SELECT b.id, w.name FROM trigger_bindings b JOIN workflows w ON w.id = b.workflow_id WHERE b.source = 'github' AND b.event = 'pull_request' AND b.action = $1 AND b.repository_full_name IN ('', $2) AND b.enabled AND w.enabled AND w.kind = 'pr_review' ORDER BY length(b.repository_full_name) DESC LIMIT 1`, delivery.Action, delivery.RepoName).Scan(&bindingID, &workflowName)
+	err = tx.QueryRow(ctx, `SELECT b.id, w.name FROM trigger_bindings b JOIN workflows w ON w.id = b.workflow_id WHERE b.source = $3 AND b.event = 'pull_request' AND b.action = $1 AND b.repository_full_name IN ('', $2) AND b.enabled AND w.enabled AND w.kind = 'pr_review' ORDER BY length(b.repository_full_name) DESC LIMIT 1`, delivery.Action, repo.name, bindingSource).Scan(&bindingID, &workflowName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return skip(skipNoBinding, nil)
 	}
@@ -205,8 +260,8 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 		if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
 			return false, err
 		}
-		if repo.installation != 0 {
-			if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: delivery.RepoName, InstallationID: repo.installation, SHA: delivery.HeadSHA, State: budget.SkipStatus, Description: budget.Description()}, nil); err != nil {
+		if repo.installation != 0 || delivery.ForgeID > 0 {
+			if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: repo.name, InstallationID: repo.installation, ForgeID: delivery.ForgeID, SHA: delivery.HeadSHA, State: budget.SkipStatus, Description: budget.Description()}, nil); err != nil {
 				return false, err
 			}
 		}
@@ -228,8 +283,12 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if repo.installation != 0 {
 		installation = &repo.installation
 	}
+	var forgeID *int64
+	if delivery.ForgeID > 0 {
+		forgeID = &delivery.ForgeID
+	}
 	var runID int64
-	err = tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, binding_id, config_snapshot, installation_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`, repo.id, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, trigger, repo.dryRun, bindingID, snapshot, installation).Scan(&runID)
+	err = tx.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, dry_run, binding_id, config_snapshot, installation_id, forge_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`, repo.id, delivery.PR, delivery.HeadSHA, delivery.BaseSHA, trigger, repo.dryRun, bindingID, snapshot, installation, forgeID).Scan(&runID)
 	if err != nil {
 		return false, err
 	}
@@ -326,9 +385,14 @@ func reviewLimit(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], w
 	if reviews < limit {
 		return "", nil
 	}
-	if repo.installation != 0 {
+	if repo.installation != 0 || delivery.ForgeID > 0 {
+		// The comment command is read from GitHub; on other hosts a review
+		// is asked for from overload's UI or CLI.
 		description := fmt.Sprintf("Overload: review limit reached (%d); comment /overload review to review again", limit)
-		if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: delivery.RepoName, InstallationID: repo.installation, SHA: delivery.HeadSHA, State: BudgetSkipSuccess, Description: description}, nil); err != nil {
+		if delivery.ForgeID > 0 {
+			description = fmt.Sprintf("Overload: review limit reached (%d); use Review now in overload to review again", limit)
+		}
+		if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: repo.name, InstallationID: repo.installation, ForgeID: delivery.ForgeID, SHA: delivery.HeadSHA, State: BudgetSkipSuccess, Description: description}, nil); err != nil {
 			return "", err
 		}
 	}

@@ -24,7 +24,7 @@ func TestLocalReviewPersistence(t *testing.T) {
 	}
 	entry := "Review."
 	workflow := overload.ResolvedWorkflow{Name: "context-v1", Kind: "pr_review", Agents: []overload.ResolvedAgent{{Name: "reviewer", Model: overload.ModelProfile{Provider: "openaicompat", Model: "test-model", BaseURL: "http://localhost:1234/v1"}, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}}}}
-	id, err := store.StartLocalReview(ctx, "test/local-review", 12, workflow)
+	id, err := store.StartLocalReview(ctx, "", "test/local-review", 12, workflow)
 	if err != nil {
 		t.Fatal(err)
 	}

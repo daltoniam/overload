@@ -14,7 +14,6 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/riverqueue/river"
 )
 
@@ -23,9 +22,8 @@ type diffSource struct {
 	archive []byte
 }
 
-func (source diffSource) PullRequestWithDiff(_ context.Context, _ string, number int) (*gh.PullRequest, string, error) {
-	pr := &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("d", 40))}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}
-	return pr, source.diff, nil
+func (source diffSource) PullRequestWithDiff(_ context.Context, _ string, number int) (overload.PullRequest, string, error) {
+	return overload.PullRequest{Number: number, State: "open", HeadSHA: strings.Repeat("d", 40), BaseSHA: strings.Repeat("a", 40)}, source.diff, nil
 }
 
 func (source diffSource) DownloadHead(_ context.Context, _, _ string, writer io.Writer) error {

@@ -34,12 +34,15 @@ type Run struct {
 	// InstallationID is the GitHub App installation pinned when the run
 	// was queued; 0 means the configured token.
 	InstallationID int64
-	CreatedAt      time.Time
-	Summary        string
-	ErrorCode      string
-	ErrorMessage   string
-	StartedAt      *time.Time
-	FinishedAt     *time.Time
+	// ForgeID is the GitLab or Forgejo connection the run's repository is
+	// on; 0 means GitHub.
+	ForgeID      int64
+	CreatedAt    time.Time
+	Summary      string
+	ErrorCode    string
+	ErrorMessage string
+	StartedAt    *time.Time
+	FinishedAt   *time.Time
 	// Cost is what the run's model calls cost; nil when not recorded.
 	Cost *Spend
 }
@@ -69,9 +72,33 @@ type Finding struct {
 type Repository struct {
 	ID             int64
 	InstallationID int64
-	FullName       string
-	Enabled        bool
-	DryRun         bool
+	// ForgeID is the GitLab or Forgejo connection the repository is on;
+	// 0 means GitHub. Forge is that connection's name and ForgeKind its
+	// kind.
+	ForgeID   int64  `json:",omitempty"`
+	Forge     string `json:",omitempty"`
+	ForgeKind string `json:",omitempty"`
+	FullName  string
+	Enabled   bool
+	DryRun    bool
+}
+
+// Ref names the repository unambiguously across hosts: owner/name on
+// GitHub, connection:path on a GitLab or Forgejo connection. Repository
+// paths never contain a colon.
+func (repo Repository) Ref() string {
+	if repo.Forge == "" {
+		return repo.FullName
+	}
+	return repo.Forge + ":" + repo.FullName
+}
+
+// Host is the kind of git host the repository is on.
+func (repo Repository) Host() string {
+	if repo.ForgeKind == "" {
+		return ForgeGitHub
+	}
+	return repo.ForgeKind
 }
 
 type ModelProfile struct {

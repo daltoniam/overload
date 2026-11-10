@@ -95,7 +95,9 @@ and cost per agent, planner and verifier. The run page, the dashboard
 overload runs cost --since 2026-11-01 [--repo owner/name] [--json]
 ```
 
-report spend, with the average and p90 per run.
+report spend, with the average and p90 per run. Repositories on a GitLab
+or Forgejo connection are named `connection:path` here and wherever a
+command takes `--repo` (for example `work:group/api`).
 
 Budgets cap spend per calendar month and per day (UTC), globally and per
 repository:
@@ -103,6 +105,7 @@ repository:
 ```sh
 overload budget set --monthly 3000 --daily 200
 overload budget set --repo owner/name --monthly 500
+overload budget set --repo work:group/api --monthly 200
 overload budget show
 ```
 
@@ -186,6 +189,12 @@ overload already reviewed are handled:
 | `max_reviews_per_pr` | `3` | Webhook reviews per pull request (0 for no limit). Later pushes get a `success` status saying so. |
 | `resolve_threads` | `false` | Resolve overload's GitHub review thread when a re-review finds its finding fixed. |
 
+On GitLab and Forgejo, re-reviews, debounce and the review limit work the
+same, but replies to earlier findings are not read and their discussions
+are not resolved yet; a push past the limit is reviewed again with
+**Review now** or `overload review --queue`, since the `/overload review`
+comment is read from GitHub only.
+
 "Review now", `overload review --queue` and a comment of
 `/overload review` from someone with write access to the repository
 always review, whatever the limit. Organization membership alone is not
@@ -206,10 +215,12 @@ the overload server (the same worker and sandbox as a webhook review;
 nothing is posted) and writes JSON plus a CSV summary: findings per pull
 request, cost and time at p50 and p90, degraded runs, and, with a labels
 file of known bugs (`[{"pr": 101, "path": "a.py", "line": 12, "window":
-3, "keywords": ["null"]}]`), the share each workflow caught. Evaluation
-works on GitHub repositories overload already knows; heads are read
-through the GitHub App, or a `GITHUB_TOKEN`/`gh` token for repositories
-without an installation.
+3, "keywords": ["null"]}]`), the share each workflow caught. `--repo`
+names a repository overload already knows: `owner/name` on GitHub or
+`connection:path` on a GitLab or Forgejo connection. Pull requests are
+read from that host: the GitLab or Forgejo connection, the GitHub App
+installation, or a `GITHUB_TOKEN`/`gh` token for GitHub repositories
+without one.
 
 Each review also records how long fetching, uploading and extracting the
 head took; `overload runs transfer` reports p50 and p90.

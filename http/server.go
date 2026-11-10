@@ -56,6 +56,10 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	if hasAppStore {
 		registerGitHubSetup(mux, appStore, csrf)
 	}
+	if forges, ok := reader.(ForgeStore); ok {
+		ingester, _ := reader.(ForgeIngester)
+		registerForges(mux, forges, ingester, csrf)
+	}
 	if tools, ok := reader.(ToolServerStore); ok {
 		registerTools(mux, tools, csrf)
 	}
@@ -285,7 +289,7 @@ func secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' "+themePolicy+"; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.URL.Path == "/healthz" || r.URL.Path == "/webhooks/github" {
+		if r.URL.Path == "/healthz" || r.URL.Path == "/webhooks/github" || isForgeWebhook(r.URL.Path) {
 			next.ServeHTTP(w, r)
 			return
 		}

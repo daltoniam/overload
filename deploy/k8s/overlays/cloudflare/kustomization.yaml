@@ -1,6 +1,6 @@
 # Overload behind a Cloudflare Tunnel: no load balancer, no public IP and no
 # Ingress. cloudflared connects out to Cloudflare, Cloudflare Access protects
-# the dashboard, and only /webhooks/github is reachable without signing in.
+# the dashboard, and only the /webhooks/ paths are reachable without signing in.
 # See docs/cloudflare-kubernetes.md.
 #
 # Before applying, create the "overload", "overload-postgres" and

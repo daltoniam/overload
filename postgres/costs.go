@@ -63,8 +63,9 @@ func checkSpend(spend overload.Spend) error {
 	return nil
 }
 
-// CostFilter selects runs for a cost report. Repository is owner/name;
-// empty means all.
+// CostFilter selects runs for a cost report. Repository is a repository's
+// ref (owner/name on GitHub, connection:path on GitLab or Forgejo); empty
+// means all.
 type CostFilter struct {
 	Since, Until time.Time
 	Repository   string
@@ -93,7 +94,7 @@ func (s *Store) RunCosts(ctx context.Context, filter CostFilter) (CostReport, er
 	if filter.Until.IsZero() {
 		report.Until = time.Now().UTC()
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT r.cost_usd, r.cost_unpriced_calls FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.cost_usd IS NOT NULL AND r.created_at >= $1 AND r.created_at < $2 AND ($3='' OR repo.full_name=$3)`, report.Since, report.Until, filter.Repository)
+	rows, err := s.Pool.Query(ctx, `SELECT r.cost_usd, r.cost_unpriced_calls FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id LEFT JOIN forge_connections f ON f.id=repo.forge_id WHERE r.cost_usd IS NOT NULL AND r.created_at >= $1 AND r.created_at < $2 AND ($3='' OR CASE WHEN f.name IS NULL THEN repo.full_name ELSE f.name || ':' || repo.full_name END=$3)`, report.Since, report.Until, filter.Repository)
 	if err != nil {
 		return report, err
 	}
@@ -183,7 +184,7 @@ func (s *Store) TransferTimes(ctx context.Context, filter CostFilter) ([]Transfe
 	var steps []TransferStep
 	for _, step := range transferSteps {
 		summary := TransferStep{Step: step}
-		err := s.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY value), 0), COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY value), 0), COALESCE(max(value), 0) FROM (SELECT (r.metrics->'transfer'->>$4)::float8 AS value FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id WHERE r.created_at >= $1 AND r.created_at < COALESCE($2::timestamptz, now()) AND ($3='' OR repo.full_name=$3) AND jsonb_typeof(r.metrics->'transfer'->$4) = 'number') timings`, filter.Since, until, filter.Repository, step).Scan(&summary.Runs, &summary.P50, &summary.P90, &summary.Max)
+		err := s.Pool.QueryRow(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY value), 0), COALESCE(percentile_cont(0.9) WITHIN GROUP (ORDER BY value), 0), COALESCE(max(value), 0) FROM (SELECT (r.metrics->'transfer'->>$4)::float8 AS value FROM runs r LEFT JOIN repositories repo ON repo.id=r.repository_id LEFT JOIN forge_connections f ON f.id=repo.forge_id WHERE r.created_at >= $1 AND r.created_at < COALESCE($2::timestamptz, now()) AND ($3='' OR CASE WHEN f.name IS NULL THEN repo.full_name ELSE f.name || ':' || repo.full_name END=$3) AND jsonb_typeof(r.metrics->'transfer'->$4) = 'number') timings`, filter.Since, until, filter.Repository, step).Scan(&summary.Runs, &summary.P50, &summary.P90, &summary.Max)
 		if err != nil {
 			return nil, err
 		}

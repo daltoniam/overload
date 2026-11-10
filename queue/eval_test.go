@@ -18,15 +18,16 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/eval"
 	"github.com/daltoniam/overload/postgres"
-	gh "github.com/google/go-github/v75/github"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
-type fixedHeads struct{}
+// fixedHeads answers every pull request of any repository with the same
+// head and base, targeting host repository hostID.
+type fixedHeads struct{ hostID int64 }
 
-func (fixedHeads) PullRequest(_ context.Context, _ int64, _ string, number int) (*gh.PullRequest, string, error) {
-	return &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("b", 40))}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}, "", nil
+func (heads fixedHeads) PullRequest(_ context.Context, _ overload.Repository, number int) (overload.PullRequest, error) {
+	return overload.PullRequest{Number: number, State: "open", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40), RepositoryID: heads.hostID}, nil
 }
 
 func headArchive(t *testing.T, files map[string]string) []byte {
@@ -113,8 +114,18 @@ func TestRunEvalReportsCostAndRecall(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := store.SaveRepository(ctx, repo, false, true); err != nil {
+	if err := store.SaveRepository(ctx, "", repo, false, true); err != nil {
 		t.Fatal(err)
+	}
+	var known overload.Repository
+	repos, err := store.ListRepositories(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range repos {
+		if candidate.Ref() == repo {
+			known = candidate
+		}
 	}
 	client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
 	if err != nil {
@@ -141,7 +152,7 @@ func TestRunEvalReportsCostAndRecall(t *testing.T) {
 			time.Sleep(20 * time.Millisecond)
 		}
 	}()
-	results, err := RunEval(ctx, store, client, fixedHeads{}, EvalPlan{Repository: repo, PRs: []int{7, 8}, Workflows: agents, Concurrency: 3, Batch: batch, Poll: 20 * time.Millisecond})
+	results, err := RunEval(ctx, store, client, fixedHeads{}, EvalPlan{Repository: known, PRs: []int{7, 8}, Workflows: agents, Concurrency: 3, Batch: batch, Poll: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,10 +175,12 @@ func TestRunEvalReportsCostAndRecall(t *testing.T) {
 }
 
 func TestRunEvalRefusesPullRequestsOfAnotherRepository(t *testing.T) {
-	// fixedHeads answers for any repository; its pull requests carry no
-	// base repository ID, so they do not belong to GitHub repository 42.
-	_, err := RunEval(context.Background(), nil, nil, fixedHeads{}, EvalPlan{Repository: "acme/api", GitHubID: 42, PRs: []int{7}, Workflows: []string{"sol"}})
-	if err == nil || !strings.Contains(err.Error(), "not a pull request of the repository") {
-		t.Fatalf("err = %v", err)
+	// The pull requests target host repository 7, not the 42 overload
+	// knows (on GitHub or on a GitLab connection alike).
+	for _, repo := range []overload.Repository{{FullName: "acme/api"}, {FullName: "group/api", ForgeID: 3, Forge: "work", ForgeKind: overload.ForgeGitLab}} {
+		_, err := RunEval(context.Background(), nil, nil, fixedHeads{hostID: 7}, EvalPlan{Repository: repo, HostRepoID: 42, PRs: []int{7}, Workflows: []string{"sol"}})
+		if err == nil || !strings.Contains(err.Error(), "not a pull request of the repository overload knows as "+repo.Ref()) {
+			t.Fatalf("%s: err = %v", repo.Ref(), err)
+		}
 	}
 }

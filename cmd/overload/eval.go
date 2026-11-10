@@ -21,7 +21,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
 
-const evalUsage = "usage: overload eval prs --repo owner/name --prs 101,102,110-115 --workflows a,b --out results.json [--labels labels.json] [--csv summary.csv] [--concurrency N] [--timeout 6h]"
+const evalUsage = "usage: overload eval prs --repo owner/name|connection:path --prs 101,102,110-115 --workflows a,b --out results.json [--labels labels.json] [--csv summary.csv] [--concurrency N] [--timeout 6h]"
 
 type evalOptions struct {
 	repo        string
@@ -40,7 +40,7 @@ func parseEvalOptions(args []string) (evalOptions, error) {
 		return options, errors.New(evalUsage)
 	}
 	flags := flag.NewFlagSet("eval prs", flag.ContinueOnError)
-	repo := flags.String("repo", "", "repository (owner/name) overload already knows")
+	repo := flags.String("repo", "", "repository overload already knows: owner/name on GitHub, connection:path on GitLab or Forgejo")
 	prs := flags.String("prs", "", "pull request numbers: 101,102 or ranges such as 110-115")
 	workflows := flags.String("workflows", "", "PR workflows to compare, comma separated")
 	flags.StringVar(&options.labels, "labels", "", "optional JSON file of known bugs: [{\"pr\":101,\"path\":\"a.go\",\"line\":12,\"window\":3,\"keywords\":[\"nil\"]}]")
@@ -186,33 +186,29 @@ func evaluate(args []string) error {
 	if err != nil {
 		return err
 	}
-	var installation, repositoryID int64 = -1, 0
-	for _, repo := range repos {
-		if repo.FullName != options.repo {
-			continue
+	// --repo is a repository's Ref: owner/name on GitHub, connection:path
+	// on a GitLab or Forgejo connection.
+	var selected *overload.Repository
+	for index := range repos {
+		if repos[index].Ref() == options.repo {
+			selected = &repos[index]
+			break
 		}
-		if repositoryID != 0 {
-			return fmt.Errorf("%s matches more than one repository overload knows", options.repo)
-		}
-		installation, repositoryID = repo.InstallationID, repo.ID
 	}
-	if installation < 0 {
-		return fmt.Errorf("%s is not a repository overload knows; add it first", options.repo)
+	if selected == nil {
+		return fmt.Errorf("%s is not a repository overload knows; add it first (GitLab and Forgejo repositories are named connection:path)", options.repo)
 	}
-	// Evaluation reads pull requests from GitHub. When overload knows the
-	// repository's GitHub ID, every pull request read must belong to it.
-	githubID, err := store.RepositoryGitHubID(ctx, repositoryID)
+	// Every pull request read must target the repository overload knows,
+	// when it knows the host's ID for it.
+	hostRepoID, err := store.RepositoryHostID(ctx, selected.ID)
 	if err != nil {
 		return err
 	}
-	var reader queue.HeadReader
-	if installation > 0 {
-		client, err := queue.AppClient(ctx, store)
-		if err != nil {
-			return fmt.Errorf("GitHub App unavailable: %w", err)
-		}
-		reader = client
-	} else {
+	// Pull requests are read from the repository's own host: its GitLab
+	// or Forgejo connection or GitHub App installation, or a GitHub token
+	// for a GitHub repository without one.
+	reader := queue.HostReader(store)
+	if selected.ForgeID == 0 && selected.InstallationID == 0 {
 		token := github.TokenFromEnvironment()
 		if token == "" {
 			if token, err = github.TokenFromGH(ctx); err != nil {
@@ -223,7 +219,7 @@ func evaluate(args []string) error {
 		if err != nil {
 			return err
 		}
-		reader = client
+		reader = tokenReader{client: client}
 	}
 	jobs, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
 	if err != nil {
@@ -231,7 +227,7 @@ func evaluate(args []string) error {
 	}
 	batch := fmt.Sprintf("eval-%s", time.Now().UTC().Format("20060102T150405Z"))
 	fmt.Fprintf(os.Stderr, "Evaluating %s on %s; the overload server runs the reviews as dry runs (batch %s)\n", strings.Join(options.workflows, ", "), overload.Plural(len(options.prs), "pull request"), batch)
-	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: options.repo, RepositoryID: repositoryID, GitHubID: githubID, InstallationID: installation, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
+	results, err := queue.RunEval(ctx, store, jobs, reader, queue.EvalPlan{Repository: *selected, HostRepoID: hostRepoID, PRs: options.prs, Workflows: options.workflows, Concurrency: options.concurrency, Batch: batch, Progress: func(line string) { fmt.Fprintln(os.Stderr, line) }})
 	if err != nil {
 		return err
 	}
@@ -240,6 +236,17 @@ func evaluate(args []string) error {
 		return err
 	}
 	return printEvalSummary(os.Stdout, report)
+}
+
+// tokenReader reads GitHub pull requests with a token, for repositories
+// without an App installation.
+type tokenReader struct {
+	client *github.Client
+}
+
+func (reader tokenReader) PullRequest(ctx context.Context, repository overload.Repository, number int) (overload.PullRequest, error) {
+	pr, _, err := reader.client.PullRequest(ctx, 0, repository.FullName, number)
+	return pr, err
 }
 
 func writeEvalReport(report eval.Report, jsonPath, csvPath string) error {

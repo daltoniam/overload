@@ -12,17 +12,17 @@ import (
 	"testing"
 
 	"github.com/daltoniam/overload"
-	gh "github.com/google/go-github/v75/github"
 )
 
 type fakePRSource struct {
-	archive []byte
-	patch   string
-	sha     string
+	archive     []byte
+	patch       string
+	sha         string
+	title, body string
 }
 
-func (source fakePRSource) PullRequestWithDiff(_ context.Context, _ string, number int) (*gh.PullRequest, string, error) {
-	return &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(source.sha)}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}, source.patch, nil
+func (source fakePRSource) PullRequestWithDiff(_ context.Context, _ string, number int) (overload.PullRequest, string, error) {
+	return overload.PullRequest{Number: number, State: "open", HeadSHA: source.sha, BaseSHA: strings.Repeat("a", 40), Title: source.title, Body: source.body}, source.patch, nil
 }
 
 func (source fakePRSource) DownloadHead(_ context.Context, _ string, sha string, writer io.Writer) error {
@@ -61,10 +61,14 @@ func TestLocalRunner(t *testing.T) {
 	if err := zip.Close(); err != nil {
 		t.Fatal(err)
 	}
-	source := fakePRSource{archive: archive.Bytes(), sha: strings.Repeat("b", 40), patch: "diff --git a/file.go b/file.go\n--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old()\n+dangerous()\n"}
+	source := fakePRSource{archive: archive.Bytes(), sha: strings.Repeat("b", 40), patch: "diff --git a/file.go b/file.go\n--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old()\n+dangerous()\n", title: "Make it dangerous", body: "Why: see <b>notes</b>"}
 	reviewer := &fakeReviewer{}
 	spec, result, sha, err := (LocalRunner{Source: source, Reviewer: reviewer}).Review(context.Background(), "owner/repo", 42)
 	if err != nil || !reviewer.seen || len(result.Findings) != 1 || sha != source.sha || spec.PRNumber != 42 {
 		t.Fatalf("local review: spec=%+v result=%+v sha=%s err=%v", spec, result, sha, err)
+	}
+	// The host's title and description reach the review, sanitized.
+	if spec.PullRequest == nil || spec.PullRequest.Title != "Make it dangerous" || strings.Contains(spec.PullRequest.Body, "<b>") || !strings.Contains(spec.PullRequest.Body, "notes") {
+		t.Fatalf("pull request info = %+v", spec.PullRequest)
 	}
 }

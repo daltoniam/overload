@@ -19,13 +19,12 @@ import (
 	"github.com/daltoniam/overload/modelproxy"
 	"github.com/daltoniam/overload/review"
 	"github.com/daltoniam/overload/sandbox"
-	gh "github.com/google/go-github/v75/github"
 )
 
 type archiveSource struct{ archive []byte }
 
-func (source archiveSource) PullRequestWithDiff(_ context.Context, _ string, number int) (*gh.PullRequest, string, error) {
-	pr := &gh.PullRequest{Number: gh.Ptr(number), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("b", 40))}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40))}}
+func (source archiveSource) PullRequestWithDiff(_ context.Context, _ string, number int) (overload.PullRequest, string, error) {
+	pr := overload.PullRequest{Number: number, State: "open", HeadSHA: strings.Repeat("b", 40), BaseSHA: strings.Repeat("a", 40)}
 	return pr, "diff --git a/file.go b/file.go\n--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old()\n+dangerous()\n", nil
 }
 

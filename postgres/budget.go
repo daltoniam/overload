@@ -20,6 +20,8 @@ import (
 // a review skipped for budget gets: success (the default) so a required
 // overload check does not block merges, or error.
 type Budget struct {
+	// Repository is the repository's Ref: owner/name on GitHub,
+	// connection:path on a GitLab or Forgejo connection.
 	Repository string   `json:"repository,omitempty"`
 	MonthlyUSD *float64 `json:"monthly_usd,omitempty"`
 	DailyUSD   *float64 `json:"daily_usd,omitempty"`
@@ -55,7 +57,13 @@ func (budget Budget) validate() error {
 	return nil
 }
 
+// repositoryRefSQL is a repository's Ref (owner/name on GitHub,
+// connection:path on GitLab or Forgejo) for repositories r joined with
+// forge_connections f.
+const repositoryRefSQL = `CASE WHEN f.name IS NULL THEN r.full_name ELSE f.name || ':' || r.full_name END`
+
 // SaveBudget sets the global budget or a repository's. Nil caps clear them.
+// The repository is named by its Ref or its ID.
 func (s *Store) SaveBudget(ctx context.Context, budget Budget) error {
 	if err := budget.validate(); err != nil {
 		return err
@@ -70,7 +78,7 @@ func (s *Store) SaveBudget(ctx context.Context, budget Budget) error {
 	}
 	// The repository is named by ID, or by a name that must match exactly
 	// one repository.
-	rows, err := s.Pool.Query(ctx, `SELECT id FROM repositories WHERE ($1::bigint = 0 OR id = $1) AND ($2 = '' OR full_name = $2) ORDER BY id LIMIT 2`, budget.RepositoryID, budget.Repository)
+	rows, err := s.Pool.Query(ctx, `SELECT r.id FROM repositories r LEFT JOIN forge_connections f ON f.id=r.forge_id WHERE ($1::bigint = 0 OR r.id = $1) AND ($2 = '' OR `+repositoryRefSQL+` = $2) ORDER BY r.id LIMIT 2`, budget.RepositoryID, budget.Repository)
 	if err != nil {
 		return err
 	}
@@ -117,7 +125,7 @@ type rowsQuerier interface {
 }
 
 func listBudgets(ctx context.Context, q rowsQuerier) ([]Budget, error) {
-	rows, err := q.Query(ctx, `SELECT COALESCE(b.repository_id, 0), COALESCE(r.full_name, ''), b.monthly_usd, b.daily_usd, b.skip_status FROM budgets b LEFT JOIN repositories r ON r.id=b.repository_id ORDER BY b.repository_id IS NOT NULL, r.full_name`)
+	rows, err := q.Query(ctx, `SELECT COALESCE(b.repository_id, 0), COALESCE(`+repositoryRefSQL+`, ''), b.monthly_usd, b.daily_usd, b.skip_status FROM budgets b LEFT JOIN repositories r ON r.id=b.repository_id LEFT JOIN forge_connections f ON f.id=r.forge_id ORDER BY b.repository_id IS NOT NULL, 2`)
 	if err != nil {
 		return nil, err
 	}
@@ -297,9 +305,12 @@ func (s *Store) GlobalBudgetStatus(ctx context.Context) (BudgetStatus, error) {
 type SkipStatusArgs struct {
 	Repository     string `json:"repository"`
 	InstallationID int64  `json:"installation_id"`
-	SHA            string `json:"sha"`
-	State          string `json:"state"`
-	Description    string `json:"description"`
+	// ForgeID is the GitLab or Forgejo connection the repository is on;
+	// 0 means GitHub, through the App installation.
+	ForgeID     int64  `json:"forge_id,omitempty"`
+	SHA         string `json:"sha"`
+	State       string `json:"state"`
+	Description string `json:"description"`
 }
 
 func (SkipStatusArgs) Kind() string { return "skip_status" }

@@ -339,8 +339,8 @@ func (s *Store) SaveBinding(ctx context.Context, binding overload.TriggerBinding
 	if err := s.Pool.QueryRow(ctx, `SELECT kind FROM workflows WHERE name=$1 AND enabled`, binding.Workflow).Scan(&kind); err != nil {
 		return err
 	}
-	if binding.Source != "github" || binding.Event != "pull_request" || kind != "pr_review" || (binding.Action != "opened" && binding.Action != "synchronize" && binding.Action != "reopened" && binding.Action != "ready_for_review") {
-		return errors.New("only GitHub PR bindings are available")
+	if !bindingSources[binding.Source] || binding.Event != "pull_request" || kind != "pr_review" || (binding.Action != "opened" && binding.Action != "synchronize" && binding.Action != "reopened" && binding.Action != "ready_for_review") {
+		return errors.New("only pull request bindings (source github, gitlab or forgejo) are available")
 	}
 	_, err := s.Pool.Exec(ctx, `INSERT INTO trigger_bindings(source,event,action,repository_full_name,workflow_id,enabled) VALUES ($1,$2,$3,$4,(SELECT id FROM workflows WHERE name=$5),$6) ON CONFLICT(source,event,action,repository_full_name) DO UPDATE SET workflow_id=EXCLUDED.workflow_id,enabled=EXCLUDED.enabled`, binding.Source, binding.Event, binding.Action, binding.Repository, binding.Workflow, binding.Enabled)
 	return err
@@ -363,16 +363,37 @@ func (s *Store) ListBindings(ctx context.Context) ([]overload.TriggerBinding, er
 	return bindings, rows.Err()
 }
 
-func (s *Store) SaveRepository(ctx context.Context, name string, enabled, dryRun bool) error {
-	if !overload.ValidRepositoryName(name) {
+// bindingSources are the hosts a pull request binding can name. A
+// binding matches pull requests from repositories on hosts of that kind.
+var bindingSources = map[string]bool{overload.ForgeGitHub: true, overload.ForgeGitLab: true, overload.ForgeForgejo: true}
+
+// SaveRepository adds or updates a repository. forge names a GitLab or
+// Forgejo connection; "" is GitHub.
+func (s *Store) SaveRepository(ctx context.Context, forge, name string, enabled, dryRun bool) error {
+	var forgeID *int64
+	kind := overload.ForgeGitHub
+	if forge != "" {
+		var id int64
+		if err := s.Pool.QueryRow(ctx, `SELECT id, kind FROM forge_connections WHERE name=$1`, forge).Scan(&id, &kind); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return fmt.Errorf("unknown git host %q", forge)
+			}
+			return err
+		}
+		forgeID = &id
+	}
+	if !overload.ValidForgeRepositoryName(kind, name) {
+		if kind == overload.ForgeGitLab {
+			return errors.New("invalid repository name: use group/name or group/subgroup/name")
+		}
 		return errors.New("invalid repository name: use owner/name")
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO repositories(full_name,enabled,dry_run) VALUES ($1,$2,$3) ON CONFLICT(full_name) DO UPDATE SET enabled=EXCLUDED.enabled,dry_run=EXCLUDED.dry_run,updated_at=now()`, name, enabled, dryRun)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO repositories(full_name,enabled,dry_run,forge_id) VALUES ($1,$2,$3,$4) ON CONFLICT((COALESCE(forge_id, 0)),full_name) DO UPDATE SET enabled=EXCLUDED.enabled,dry_run=EXCLUDED.dry_run,updated_at=now()`, name, enabled, dryRun, forgeID)
 	return err
 }
 
 func (s *Store) ListRepositories(ctx context.Context) ([]overload.Repository, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT id,COALESCE(installation_id,0),full_name,enabled,dry_run FROM repositories ORDER BY full_name`)
+	rows, err := s.Pool.Query(ctx, `SELECT r.id,COALESCE(r.installation_id,0),COALESCE(r.forge_id,0),COALESCE(f.name,''),COALESCE(f.kind,''),r.full_name,r.enabled,r.dry_run FROM repositories r LEFT JOIN forge_connections f ON f.id=r.forge_id ORDER BY COALESCE(f.name,''),r.full_name`)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +401,7 @@ func (s *Store) ListRepositories(ctx context.Context) ([]overload.Repository, er
 	var repos []overload.Repository
 	for rows.Next() {
 		var repo overload.Repository
-		if err := rows.Scan(&repo.ID, &repo.InstallationID, &repo.FullName, &repo.Enabled, &repo.DryRun); err != nil {
+		if err := rows.Scan(&repo.ID, &repo.InstallationID, &repo.ForgeID, &repo.Forge, &repo.ForgeKind, &repo.FullName, &repo.Enabled, &repo.DryRun); err != nil {
 			return nil, err
 		}
 		repos = append(repos, repo)
