@@ -56,6 +56,7 @@ type forgejoPullRequest struct {
 	Number int    `json:"number"`
 	State  string `json:"state"`
 	Title  string `json:"title"`
+	Body   string `json:"body"`
 	Draft  bool   `json:"draft"`
 	Merged bool   `json:"merged"`
 	Head   struct {
@@ -115,7 +116,7 @@ func forgejoPR(raw forgejoPullRequest) overload.PullRequest {
 	if raw.Merged {
 		state = "merged"
 	}
-	return overload.PullRequest{Number: raw.Number, State: state, Draft: raw.Draft || workInProgress(raw.Title), HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, RepositoryID: raw.Base.Repo.ID}
+	return overload.PullRequest{Number: raw.Number, State: state, Draft: raw.Draft || workInProgress(raw.Title), HeadSHA: raw.Head.SHA, BaseSHA: raw.Base.SHA, RepositoryID: raw.Base.Repo.ID, Title: raw.Title, Body: raw.Body}
 }
 
 func (forgejo *Forgejo) DownloadHead(ctx context.Context, repository, sha string, writer io.Writer) error {

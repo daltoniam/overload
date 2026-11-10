@@ -103,6 +103,10 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 			<label class="field"><span>File review limit</span><input type="number" name="max_file_reviews" min="0" max="10000" value={ optionalNumber(workflow.MaxFileReviews) } placeholder="No limit"/><small>Most (agent, file) reviews per run. A review needing more fails before calling a model; planner additions are dropped first.</small></label>
 			<label class="field"><span>Findings posted per review</span><input type="number" name="max_findings" min="0" max={ fmt.Sprint(overload.MaxFindingsLimit) } value={ optionalNumber(workflow.MaxFindings) } placeholder={ fmt.Sprintf("%d (default)", overload.DefaultMaxFindings) }/><small>The most severe findings are posted; the rest stay on the run as dropped. Raise it for workflows with several focused sub-agents.</small></label>
 		</fieldset>
+		<fieldset class="tree-node"><legend>Cost and context</legend>
+			<label class="field"><span>Most a review may spend (US dollars)</span><input type="number" name="max_run_cost_usd" min="0" max={ fmt.Sprint(overload.MaxRunCostLimit) } step="0.01" value={ optionalCost(workflow.MaxRunCostUSD) } placeholder="No cap"/><small>Counts priced models only. A review that reaches it starts no more model calls and completes as partial.</small></label>
+			<label class="field"><span>Review policy (JSON)</span><textarea name="review_policy" rows="6" class="short mono" placeholder={ policyPlaceholder }>{ policyJSON(workflow.ReviewPolicy) }</textarea><small>Optional <code>context</code> (shared pull request bundle and contracts index), <code>tiers</code> and <code>rereview</code> settings; see docs/workflows.md.</small></label>
+		</fieldset>
 		<fieldset class="tree-node"><legend>Review decision</legend>
 			<label class="field"><span>Decision</span><select name="review_decision">
 				<option value="comment" selected?={ workflow.ReviewDecision == "" }>Comment only</option>
@@ -156,6 +160,7 @@ templ subAgentSlot(workflow overload.Workflow, agents []overload.AgentDefinition
 					<option value="globs" selected?={ subScope(workflow, slot).Mode == "" || subScope(workflow, slot).Mode == overload.ScopeGlobs }>Matching paths, plus files the planner adds</option>
 					<option value="always" selected?={ subScope(workflow, slot).Mode == overload.ScopeAlways }>Only matching paths</option>
 					<option value="planned" selected?={ subScope(workflow, slot).Mode == overload.ScopePlanned }>Only files the planner assigns</option>
+					<option value="whole_pr" selected?={ subScope(workflow, slot).Mode == overload.ScopeWholePR }>Whole pull request: matching paths reviewed together, for bugs that span files</option>
 				</select></label>
 				<label class="field"><span>Paths</span><textarea name={ slotField(slot, "paths") } rows="3" class="short" placeholder="**/auth/**&#10;**/*.sql">{ strings.Join(subScope(workflow, slot).Paths, "\n") }</textarea><small>One glob per line. No paths means every changed file (except with "Only files the planner assigns").</small></label>
 				<label class="field"><span>Description for the planner</span><input name={ slotField(slot, "description") } maxlength="300" value={ subScope(workflow, slot).Description } placeholder="Authentication, sessions and access control"/></label>

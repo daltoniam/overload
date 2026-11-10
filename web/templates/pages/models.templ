@@ -4,23 +4,38 @@ import (
 	"strconv"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/layouts"
 )
 
-templ Models(models []overload.ReviewSettings) {
+templ Models(models []overload.ReviewSettings, budget *postgres.Budget, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Models", CurrentPath: "/settings"}) {
-		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted OpenAI-compatible models. Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
+		<div class="page-header"><div><p class="eyebrow">Automation / Models</p><h1>Model connections</h1><p class="muted">Connect local or hosted models (any OpenAI-compatible API, or Anthropic). Give each agent its instructions on the Agents page and combine agents in Workflows.</p></div><a class="button" href="/settings/new" hx-get="/settings/new" hx-target="#modal-root" hx-swap="innerHTML" data-open-model="true">New model</a></div>
 		<section class="panel">
 			if len(models) == 0 {
 				<div class="empty">No models yet. <a href="/settings/new">Add a model connection</a> to begin.</div>
 			} else {
-				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+				<div class="table-wrap"><table class="models-table"><thead><tr><th>Name</th><th>Type</th><th>Model ID</th><th>Parallel files</th><th>Prices (per M tokens)</th><th>Default</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
 					for _, model := range models {
-						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
+						<tr><td><a href={ templ.URL("/settings/" + model.Name) }>{ model.Name }</a><span class="secondary-line mono" title={ safeEndpoint(model.BaseURL) }>{ safeEndpoint(model.BaseURL) }</span></td><td><span class="badge neutral">{ model.ConnectionKind }</span></td><td><code>{ model.Model }</code></td><td>{ strconv.Itoa(max(model.Concurrency, 1)) }</td><td>{ priceSummary(model) }</td><td>{ modelDefaultLabel(model.IsDefault) }</td><td><a href={ templ.URL("/settings/" + model.Name) }>View / edit</a></td></tr>
 					}
 				</tbody></table></div>
 			}
 		</section>
+		if budget != nil {
+			<section class="panel"><h2>Review budget</h2>
+				<p class="muted">Caps on what reviews spend on priced models, in US dollars per calendar month and per day (UTC). Once a cap would be passed, new reviews are skipped (shown on Webhooks) and running reviews are stopped by the model proxy shortly after. Repository caps: <code>overload budget set --repo owner/name</code>.</p>
+				if budget.FromEnvironment {
+					<p class="notice warning">OVERLOAD_BUDGET_MONTHLY_USD or OVERLOAD_BUDGET_DAILY_USD is set and takes precedence over the values saved here.</p>
+				}
+				<form method="post" action="/settings/budget"><input type="hidden" name="csrf" value={ nonce }/>
+					<label class="field"><span>Monthly cap</span><input name="monthly_usd" inputmode="decimal" value={ priceValue(budget.MonthlyUSD) } placeholder="No cap"/></label>
+					<label class="field"><span>Daily cap</span><input name="daily_usd" inputmode="decimal" value={ priceValue(budget.DailyUSD) } placeholder="No cap"/></label>
+					<label class="field"><span>Commit status when a review is skipped</span><select name="skip_status"><option value="success" selected?={ budget.SkipStatus != "error" }>success: does not block merges when overload is a required check</option><option value="error" selected?={ budget.SkipStatus == "error" }>error: blocks merges until reviewed</option></select></label>
+					<div class="actions"><button type="submit">Save budget</button></div>
+				</form>
+			</section>
+		}
 	}
 }
 
@@ -33,6 +48,7 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			}
 			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ model.Name } readonly?={ model.Name != "" } placeholder="local-bonsai"/></label>
 			<label class="field"><span>Connection type</span><select name="connection_kind" required><option value="local" selected?={ model.ConnectionKind != "hosted" }>Local model server</option><option value="hosted" selected?={ model.ConnectionKind == "hosted" }>Hosted API</option></select><small>Both currently use an OpenAI-compatible API. Hosted models need a key environment variable; credentials are never stored.</small></label>
+			<label class="field"><span>Provider</span><select name="provider"><option value="openaicompat" selected?={ model.Provider != "anthropic" }>OpenAI-compatible</option><option value="anthropic" selected?={ model.Provider == "anthropic" }>Anthropic Messages API</option></select><small>Anthropic models (for example <code>claude-sonnet-5-5</code>) use the endpoint <code>https://api.anthropic.com</code>, a hosted connection, and an effort under Reasoning control (adaptive thinking).</small></label>
 			<label class="field"><span>Endpoint URL</span><input name="base_url" type="url" required value={ model.BaseURL } placeholder="http://127.0.0.1:8080/v1"/></label>
 			<label class="field"><span>Model ID</span><input name="model" required value={ model.Model } placeholder="bonsai-2-27b"/></label>
 			<label class="field"><span>API key environment variable (optional for local)</span><input name="api_key_env" value={ model.APIKeyEnv } autocomplete="off" placeholder="MODEL_API_KEY"/><small>Only enter a variable name; supply its value in the worker environment.</small></label>
@@ -47,6 +63,16 @@ templ ModelForm(model overload.ReviewSettings, nonce string) {
 			<label class="field"><span>Max output tokens per call</span><input name="max_output_tokens" type="number" min="0" max="262144" value={ strconv.Itoa(model.MaxOutputTokens) }/><small>Thinking counts against this. 0 uses the default (local 49,152; hosted 16,384). Keep it below the server's per-request context minus ~11k for the prompt.</small></label>
 			<label class="field"><span>Parallel files</span><input name="concurrency" type="number" min="1" max="32" required value={ strconv.Itoa(max(model.Concurrency, 1)) }/><small>Changed files reviewed at once. Match the server's parallel slots (llama-server <code>-np</code>); 1 reviews files one at a time.</small></label>
 			<label class="check"><input type="checkbox" name="is_default" value="true" checked?={ model.IsDefault }/> Default for legacy local reviews</label>
+			</details>
+			<details class="advanced" open?={ model.PriceInput != nil }><summary>Prices</summary>
+				<p class="muted">US dollars per million tokens, used to show what each review cost and to enforce budgets. Leave input and output empty to keep the model unpriced; its runs then show "unpriced", never $0.</p>
+				<label class="field"><span>Input</span><input name="price_input" inputmode="decimal" value={ priceValue(model.PriceInput) } placeholder="2.00"/></label>
+				<label class="field"><span>Cached input</span><input name="price_cached_input" inputmode="decimal" value={ priceValue(model.PriceCachedInput) } placeholder="same as input"/><small>Prompt tokens read from the provider's cache.</small></label>
+				<label class="field"><span>Cache writes</span><input name="price_cache_write" inputmode="decimal" value={ priceValue(model.PriceCacheWrite) } placeholder="same as input"/><small>Anthropic charges extra for tokens written to its cache.</small></label>
+				<label class="field"><span>Output</span><input name="price_output" inputmode="decimal" value={ priceValue(model.PriceOutput) } placeholder="10.00"/><small>Thinking counts as output.</small></label>
+				<label class="field"><span>Long-context threshold (prompt tokens)</span><input name="long_context_tokens" type="number" min="0" value={ strconv.FormatInt(model.LongContextTokens, 10) }/><small>0 for none. Above it, one call's prices are multiplied below.</small></label>
+				<label class="field"><span>Long-context input multiplier</span><input name="long_context_input_multiplier" inputmode="decimal" value={ multiplierValue(model.LongContextInputMultiplier) } placeholder="2"/></label>
+				<label class="field"><span>Long-context output multiplier</span><input name="long_context_output_multiplier" inputmode="decimal" value={ multiplierValue(model.LongContextOutputMultiplier) } placeholder="1.5"/></label>
 			</details>
 			<div class="actions"><button type="submit">Save model</button><a class="button secondary" href="/settings">Cancel</a></div>
 		</form></section>
@@ -68,4 +94,25 @@ func modelFormTitle(name string) string {
 		return "New model"
 	}
 	return name
+}
+
+func priceValue(price *float64) string {
+	if price == nil {
+		return ""
+	}
+	return strconv.FormatFloat(*price, 'f', -1, 64)
+}
+
+func multiplierValue(value float64) string {
+	if value == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(value, 'f', -1, 64)
+}
+
+func priceSummary(model overload.ReviewSettings) string {
+	if model.PriceInput == nil || model.PriceOutput == nil {
+		return "unpriced"
+	}
+	return "$" + priceValue(model.PriceInput) + " in / $" + priceValue(model.PriceOutput) + " out"
 }

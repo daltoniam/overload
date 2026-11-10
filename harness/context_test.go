@@ -1,0 +1,485 @@
+package harness
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"slices"
+	"strings"
+	"sync"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"charm.land/fantasy"
+	"github.com/daltoniam/overload"
+)
+
+// renameFixture renames fetch_user to load_user in svc/users.py; the head
+// still calls fetch_user in api/handlers.py, which the diff does not touch.
+const renameDiff = "diff --git a/svc/users.py b/svc/users.py\n--- a/svc/users.py\n+++ b/svc/users.py\n@@ -1,6 +1,6 @@\n import db\n \n \n-def fetch_user(user_id):\n+def load_user(user_id):\n     return db.get(user_id)\ndiff --git a/svc/util.py b/svc/util.py\n--- a/svc/util.py\n+++ b/svc/util.py\n@@ -1,2 +1,3 @@\n def helper():\n     return 1\n+# note\n"
+
+func renameRepo() fstest.MapFS {
+	return fstest.MapFS{
+		"svc/users.py":      {Data: []byte("import db\n\n\ndef load_user(user_id):\n    return db.get(user_id)\n")},
+		"svc/util.py":       {Data: []byte("def helper():\n    return 1\n# note\n")},
+		"api/handlers.py":   {Data: []byte("from svc import users\n\n\ndef show(request):\n    user_id = request.args['id']\n    return users.fetch_user(user_id)\n")},
+		"node_modules/x.js": {Data: []byte("fetch_user()\n")},
+	}
+}
+
+func TestContractsIndexListsCallersOutsideTheDiff(t *testing.T) {
+	parsed, err := parseReviewDiff(renameDiff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := buildContractsIndex(context.Background(), parsed, renameRepo(), 8)
+	if len(index.Changes) != 1 {
+		t.Fatalf("changes = %+v", index.Changes)
+	}
+	change := index.Changes[0]
+	if change.Symbol != "fetch_user" || change.Kind != "removed" || change.Path != "svc/users.py" || len(change.Uses) != 1 || change.Uses[0].Path != "api/handlers.py" || change.Uses[0].Line != 6 || change.Uses[0].InDiff {
+		t.Fatalf("change = %+v", change)
+	}
+	rendered := index.render(10000)
+	if !strings.Contains(rendered, "api/handlers.py:6: return users.fetch_user(user_id)") || !strings.Contains(rendered, "fetch_user removed in svc/users.py") {
+		t.Fatalf("rendered:\n%s", rendered)
+	}
+	if links := index.linked(); len(links["svc/users.py"]) != 1 || links["svc/users.py"][0] != "api/handlers.py" {
+		t.Fatalf("links = %+v", links)
+	}
+}
+
+func TestContractsIndexKeepsSameNamedDefinitionsApart(t *testing.T) {
+	// Two modules each change their own validate; the second module's
+	// change must not be dropped or given the first one's signature.
+	diff := "diff --git a/billing/check.py b/billing/check.py\n--- a/billing/check.py\n+++ b/billing/check.py\n@@ -1 +1 @@\n-def validate(invoice):\n+def validate(invoice, strict):\n" +
+		"diff --git a/users/check.py b/users/check.py\n--- a/users/check.py\n+++ b/users/check.py\n@@ -1 +1 @@\n-def validate(user):\n+def validate(user, role):\n"
+	parsed, err := parseReviewDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := fstest.MapFS{"api/signup.py": {Data: []byte("from users.check import validate\n\nvalidate(user)\n")}}
+	index := buildContractsIndex(context.Background(), parsed, repo, 8)
+	if len(index.Changes) != 2 {
+		t.Fatalf("changes = %+v", index.Changes)
+	}
+	for _, change := range index.Changes {
+		want := map[string]string{"billing/check.py": "def validate(invoice, strict):", "users/check.py": "def validate(user, role):"}[change.Path]
+		if change.Kind != "changed" || change.After != want {
+			t.Fatalf("change in %s = %+v, want after %q", change.Path, change, want)
+		}
+	}
+	if links := index.linked(); !slices.Contains(links["users/check.py"], "api/signup.py") {
+		t.Fatalf("links = %+v", links)
+	}
+}
+
+func TestContractsIndexBoundsUsesAndCountsBinaryReads(t *testing.T) {
+	parsed, err := parseReviewDiff(renameDiff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A minified file calls fetch_user thousands of times on each line.
+	minified := strings.Repeat(strings.Repeat("users.fetch_user(x);", 500)+"\n", 50)
+	repo := renameRepo()
+	repo["web/app.min.js"] = &fstest.MapFile{Data: []byte(minified)}
+	index := buildContractsIndex(context.Background(), parsed, repo, 3)
+	change := index.Changes[0]
+	// 50 lines of the minified file plus api/handlers.py:6, one use per line.
+	if len(change.Uses) != 3 || change.More != 48 || cap(change.Uses) > 4 {
+		t.Fatalf("uses = %d (cap %d), more = %d", len(change.Uses), cap(change.Uses), change.More)
+	}
+	if change.Uses[0].Path != "api/handlers.py" || change.Uses[1].Path != "web/app.min.js" || change.Uses[1].Line != 1 || change.Uses[2].Line != 2 {
+		t.Fatalf("first uses = %+v", change.Uses)
+	}
+	// Binary files with searchable extensions count against the budgets.
+	defer func(files int) { maxSearchFiles = files }(maxSearchFiles)
+	maxSearchFiles = 2
+	binary := fstest.MapFS{"a/blob1.py": {Data: []byte{0, 1, 2}}, "a/blob2.py": {Data: []byte{0, 1, 2}}, "z/caller.py": {Data: []byte("fetch_user(1)\n")}}
+	if index := buildContractsIndex(context.Background(), parsed, binary, 3); !index.Truncated || len(index.Changes[0].Uses) != 0 {
+		t.Fatalf("binary reads did not count: truncated=%v uses=%+v", index.Truncated, index.Changes[0].Uses)
+	}
+}
+
+func TestContractsIndexReadsLongLinesOnce(t *testing.T) {
+	diff := "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export function formatPrice(cents: number): string {\n+export function formatAmount(cents: number): string {\n"
+	parsed, err := parseReviewDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// One method declaration whose default parameters use the changed
+	// symbol 20,000 times.
+	var params []string
+	for i := range 20000 {
+		params = append(params, fmt.Sprintf("p%d = formatPrice", i))
+	}
+	repo := fstest.MapFS{"web/b.js": {Data: []byte("  render(" + strings.Join(params, ", ") + ") {\n")}}
+	start := time.Now()
+	index := buildContractsIndex(context.Background(), parsed, repo, 8)
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("one long line took %s", elapsed)
+	}
+	if len(index.Changes) != 1 || len(index.Changes[0].Uses) != 1 {
+		t.Fatalf("changes = %+v", index.Changes)
+	}
+}
+
+func TestContractsIndexRenderStaysWithinItsLimit(t *testing.T) {
+	var index contractsIndex
+	for i := range 30 {
+		index.Changes = append(index.Changes, contractChange{Symbol: fmt.Sprintf("symbol_%02d", i), Kind: "removed", Path: "svc/a.py", Before: "def x():", Uses: []symbolUse{{Path: "api/b.py", Line: i + 1, Text: strings.Repeat("y", 100)}}})
+	}
+	index.Truncated = true
+	for _, limit := range []int{50, 300, 400, 600, 1000, 2500} {
+		rendered := index.render(limit)
+		if len(rendered) > limit {
+			t.Fatalf("limit %d: rendered %d characters", limit, len(rendered))
+		}
+		if rendered != "" && !strings.Contains(rendered, "- symbol_00") {
+			t.Fatalf("limit %d: header and notes without any entry:\n%s", limit, rendered)
+		}
+	}
+	if rendered := index.render(1000); !strings.Contains(rendered, "more changed symbols left out") || !strings.Contains(rendered, "stopped early") {
+		t.Fatalf("notes missing:\n%s", rendered)
+	}
+}
+
+func TestContractsIndexSignatureChangesAndLanguages(t *testing.T) {
+	for _, test := range []struct {
+		name, diff, file, symbol, kind string
+	}{
+		{"go signature", "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-func Charge(amount int) error {\n+func Charge(amount int, currency string) error {\n", "a.go", "Charge", "changed"},
+		{"go method moved unchanged", "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n-func (s *Store) Load() error {\n+// moved\n diff --git a/b.go b/b.go\n--- a/b.go\n+++ b/b.go\n@@ -1 +1,2 @@\n x\n+func (s *Store) Load() error {\n", "", "", ""},
+		{"typescript export", "diff --git a/a.ts b/a.ts\n--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-export function formatPrice(cents: number): string {\n+export function formatAmount(cents: number): string {\n", "a.ts", "formatPrice", "removed"},
+		{"graphql field", "diff --git a/schema.graphql b/schema.graphql\n--- a/schema.graphql\n+++ b/schema.graphql\n@@ -1,3 +1,3 @@\n type Candidate {\n-  fullName: String!\n+  displayName: String!\n }\n", "schema.graphql", "fullName", "removed"},
+		{"python class", "diff --git a/m.py b/m.py\n--- a/m.py\n+++ b/m.py\n@@ -1 +1 @@\n-class Interview(Base):\n+class InterviewSession(Base):\n", "m.py", "Interview", "removed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parsed, err := parseReviewDiff(test.diff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			index := buildContractsIndex(context.Background(), parsed, fstest.MapFS{}, 8)
+			if test.symbol == "" {
+				if len(index.Changes) != 0 {
+					t.Fatalf("unchanged move listed: %+v", index.Changes)
+				}
+				return
+			}
+			if len(index.Changes) != 1 || index.Changes[0].Symbol != test.symbol || index.Changes[0].Kind != test.kind || index.Changes[0].Path != test.file {
+				t.Fatalf("changes = %+v", index.Changes)
+			}
+		})
+	}
+}
+
+type capturedRequests struct {
+	mu     sync.Mutex
+	bodies []string
+}
+
+func (captured *capturedRequests) server(t *testing.T, answer func(body string) string) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		captured.mu.Lock()
+		captured.bodies = append(captured.bodies, string(data))
+		captured.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],"usage":{"prompt_tokens":2000,"completion_tokens":100,"total_tokens":2100,"prompt_tokens_details":{"cached_tokens":1500}}}`, answer(string(data)))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func contextSpec(baseURL string) overload.ReviewSpec {
+	spec := workflowSpec(baseURL, 0, 1)
+	spec.Diff = renameDiff
+	spec.Workflow.Version = overload.SnapshotVersion
+	spec.Workflow.Context = &overload.ContextSettings{}
+	spec.PullRequest = &overload.PullRequestInfo{Title: "Rename fetch_user", Body: "Clearer name."}
+	return spec
+}
+
+func TestFileReviewsShareACacheablePrefix(t *testing.T) {
+	var captured capturedRequests
+	server := captured.server(t, func(string) string { return `{"summary":"ok","findings":[]}` })
+	result, err := (Reviewer{}).Review(context.Background(), contextSpec(server.URL), renameRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.bodies) != 2 {
+		t.Fatalf("calls = %d", len(captured.bodies))
+	}
+	var prefixes []string
+	for _, body := range captured.bodies {
+		cut := strings.Index(body, "Review this changed file")
+		if cut < 0 || !strings.Contains(body[:cut], "api/handlers.py:6") || !strings.Contains(body[:cut], "Title: Rename fetch_user") {
+			t.Fatalf("bundle not before the file section:\n%s", body)
+		}
+		prefixes = append(prefixes, body[:cut])
+	}
+	if prefixes[0] != prefixes[1] {
+		t.Fatalf("prompt prefixes differ:\n%s\n---\n%s", prefixes[0], prefixes[1])
+	}
+	if result.Metrics["contracts_symbols"] != 1 || result.Metrics["cached_input_tokens"] != int64(3000) {
+		t.Fatalf("metrics = %+v", result.Metrics)
+	}
+}
+
+func TestAnthropicMarksTheBundleCacheable(t *testing.T) {
+	plan := reasoningPlan{provider: overload.ProviderAnthropic}
+	call := reviewCall(plan, "bundle", "file")
+	data, err := json.Marshal(call.Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "cache_control") || len(call.Messages[0].Content) != 2 {
+		t.Fatalf("messages = %s", data)
+	}
+	if openai := reviewCall(reasoningPlan{}, "bundle", "file"); strings.Contains(fmt.Sprint(openai.Messages[0].Content[0]), "cache_control") {
+		t.Fatal("OpenAI call carries Anthropic cache control")
+	}
+	if plain := reviewCall(plan, "", "file"); plain.Prompt != "file" || len(plain.Messages) != 0 {
+		t.Fatalf("call without a bundle = %+v", plain)
+	}
+}
+
+func TestWholePRAgentFindsCrossFileBug(t *testing.T) {
+	recorded, err := os.ReadFile("testdata/wholepr/response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var captured capturedRequests
+	server := captured.server(t, func(body string) string {
+		if strings.Contains(body, "Review these changed files together") {
+			return string(recorded)
+		}
+		return `{"summary":"ok","findings":[]}`
+	})
+	spec := contextSpec(server.URL)
+	spec.Workflow.Context = nil
+	entry := "Find cross-file bugs."
+	spec.Workflow.Agents = append(spec.Workflow.Agents, overload.ResolvedAgent{Name: "correctness", Model: spec.Workflow.Agents[0].Model, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}, Scope: overload.Scope{Mode: overload.ScopeWholePR}})
+	result, err := (Reviewer{}).Review(context.Background(), spec, renameRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.bodies) != 3 {
+		t.Fatalf("calls = %d (want two file reviews and one whole-PR call)", len(captured.bodies))
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Path != "svc/users.py" || result.Findings[0].Line != 4 || result.Findings[0].Agents[0] != "correctness" {
+		t.Fatalf("findings = %+v", result.Findings)
+	}
+	routing := result.Metrics["routing"].(overload.Routing)
+	whole := routing.Agents[1]
+	if !whole.WholePR || whole.Reviewed != 2 || whole.Findings != 1 || len(routing.Degraded) != 0 {
+		t.Fatalf("routing = %+v", routing)
+	}
+	if routing.Agents[0].Reviewed != 2 {
+		t.Fatalf("main agent lost files to the whole-PR agent: %+v", routing.Agents[0])
+	}
+}
+
+func TestGroupWholePR(t *testing.T) {
+	section := func(name string, size int) string {
+		return fmt.Sprintf("diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-x\n+%s\n", name, name, name, name, strings.Repeat("y", size))
+	}
+	diff := section("api/a.py", 3000) + section("api/b.py", 3000) + section("web/c.ts", 3000) + section("db/d.py", 3000) + section("huge/e.py", 20000)
+	parsed, err := parseReviewDiff(diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := parsed.paths()
+	groups, left := groupWholePR(parsed, files[:4], nil, 100000)
+	if len(groups) != 1 || len(groups[0]) != 4 || len(left) != 0 {
+		t.Fatalf("under budget: %v %v", groups, left)
+	}
+	groups, left = groupWholePR(parsed, files, map[string][]string{"web/c.ts": {"db/d.py"}}, 7000+len(wholePRHeader))
+	want := "[[api/a.py api/b.py] [web/c.ts db/d.py]]"
+	if fmt.Sprint(groups) != want || fmt.Sprint(left) != "[huge/e.py]" {
+		t.Fatalf("groups = %v left = %v, want %s", groups, left, want)
+	}
+}
+
+func TestRepoToolsStayInsideTheRepository(t *testing.T) {
+	tools := newRepoTools(renameRepo(), 5)
+	byName := map[string]func(string) (string, bool){}
+	for _, tool := range tools.agentTools() {
+		byName[tool.Info().Name] = func(input string) (string, bool) {
+			response, err := tool.Run(context.Background(), fantasyCall(tool.Info().Name, input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			return response.Content, response.IsError
+		}
+	}
+	if text, isError := byName["read_file"](`{"path":"api/handlers.py","start":6,"end":6}`); isError || text != "6:     return users.fetch_user(user_id)\n" {
+		t.Fatalf("read_file = %q %v", text, isError)
+	}
+	if _, isError := byName["read_file"](`{"path":"../etc/passwd"}`); !isError {
+		t.Fatal("read outside the repository")
+	}
+	if text, _ := byName["search"](`{"pattern":"fetch_user","glob":"**/*.py"}`); text != "api/handlers.py:6: return users.fetch_user(user_id)\n" {
+		t.Fatalf("search = %q", text)
+	}
+	if text, _ := byName["search"](`{"pattern":"^def helper\\(\\):$"}`); text != "svc/util.py:1: def helper():\n" {
+		t.Fatalf("anchored search = %q", text)
+	}
+	if text, _ := byName["list_dir"](`{"path":"svc"}`); text != "svc/users.py\nsvc/util.py" {
+		t.Fatalf("list_dir = %q", text)
+	}
+	if text, isError := byName["list_dir"](`{}`); !isError || !strings.Contains(text, "limit reached") {
+		t.Fatalf("sixth call = %q %v", text, isError)
+	}
+}
+
+type unreadableFS struct {
+	fs.FS
+	bad string
+}
+
+func (repo unreadableFS) Open(name string) (fs.File, error) {
+	if name == repo.bad {
+		return nil, fs.ErrPermission
+	}
+	return repo.FS.Open(name)
+}
+
+func TestRepoSearchSaysWhenResultsMayBeIncomplete(t *testing.T) {
+	run := func(tools *repoTools, input string) string {
+		for _, tool := range tools.agentTools() {
+			if tool.Info().Name == "search" {
+				response, err := tool.Run(context.Background(), fantasyCall("search", input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return response.Content
+			}
+		}
+		t.Fatal("no search tool")
+		return ""
+	}
+	capped := newRepoTools(renameRepo(), 5)
+	capped.searchFiles = 1
+	if text := run(capped, `{"pattern":"return"}`); text != "api/handlers.py:6: return users.fetch_user(user_id)\n(search stopped after 1 files; results may be incomplete)" {
+		t.Fatalf("capped search = %q", text)
+	}
+	if text := run(capped, `{"pattern":"no such text"}`); text != "no matches\n(search stopped after 1 files; results may be incomplete)" {
+		t.Fatalf("capped empty search = %q", text)
+	}
+	broken := newRepoTools(unreadableFS{FS: renameRepo(), bad: "svc"}, 5)
+	if text := run(broken, `{"pattern":"def helper"}`); text != "no matches\n(1 paths could not be read; results may be incomplete)" {
+		t.Fatalf("unreadable search = %q", text)
+	}
+	if text := run(newRepoTools(renameRepo(), 5), `{"pattern":"def helper"}`); text != "svc/util.py:1: def helper():\n" {
+		t.Fatalf("complete search = %q", text)
+	}
+}
+
+func fantasyCall(name, input string) fantasy.ToolCall {
+	return fantasy.ToolCall{ID: "call-1", Name: name, Input: input}
+}
+
+func TestWholePRAgentCanReadTheRepository(t *testing.T) {
+	recorded, err := os.ReadFile("testdata/wholepr/response.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var toolResult string
+	wholeCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		body := string(data)
+		w.Header().Set("Content-Type", "application/json")
+		usage := `"usage":{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050}`
+		if !strings.Contains(body, "Review these changed files together") {
+			_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"summary\":\"ok\",\"findings\":[]}"}}],%s}`, usage)
+			return
+		}
+		mu.Lock()
+		wholeCalls++
+		mu.Unlock()
+		if !strings.Contains(body, `"role":"tool"`) {
+			_, _ = fmt.Fprintf(w, `{"id":"1","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"api/handlers.py\"}"}}]}}],%s}`, usage)
+			return
+		}
+		mu.Lock()
+		toolResult = body
+		mu.Unlock()
+		_, _ = fmt.Fprintf(w, `{"id":"2","object":"chat.completion","created":1,"model":"m","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":%q}}],%s}`, string(recorded), usage)
+	}))
+	defer server.Close()
+	spec := contextSpec(server.URL)
+	spec.Workflow.Context = &overload.ContextSettings{RepoTools: true, MaxToolSteps: 4}
+	spec.Workflow.Agents[0].Model.Pricing = &overload.Pricing{Input: 2, CachedInput: 2, CacheWrite: 2, Output: 10}
+	entry := "Find cross-file bugs."
+	spec.Workflow.Agents = append(spec.Workflow.Agents, overload.ResolvedAgent{Name: "correctness", Model: spec.Workflow.Agents[0].Model, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: entry, SHA256: overload.PromptDigest(entry)}, Scope: overload.Scope{Mode: overload.ScopeWholePR}})
+	result, err := (Reviewer{}).Review(context.Background(), spec, renameRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wholeCalls != 2 || !strings.Contains(toolResult, "users.fetch_user(user_id)") {
+		t.Fatalf("whole-PR calls = %d, tool result seen = %v", wholeCalls, strings.Contains(toolResult, "fetch_user"))
+	}
+	agent := result.Metrics["routing"].(overload.Routing).Agents[1]
+	// Two steps of 1,000 input x $2 + 50 output x $10 per million.
+	if len(result.Findings) != 1 || agent.Calls != 2 || agent.CostUSD < 0.004999 || agent.CostUSD > 0.005001 {
+		t.Fatalf("findings = %d, agent = %+v", len(result.Findings), agent)
+	}
+}
+
+func TestIdentifiersInFindsAdjacentNames(t *testing.T) {
+	symbols := map[string]int{"First": 0, "Second": 1, "load": 2}
+	if got := fmt.Sprint(identifiersIn("x := First(Second()) + loader(load)", symbols)); got != "[First Second load]" {
+		t.Fatalf("identifiers = %s", got)
+	}
+}
+
+func TestLineCountsSeeChangedLinesThatLookLikeHeaders(t *testing.T) {
+	patch := "diff --git a/c.go b/c.go\n--- a/c.go\n+++ b/c.go\n@@ -1,3 +1,3 @@\n x\n---counter\n+++counter\n+--flag\n"
+	if added, removed := lineCounts(patch); added != 2 || removed != 1 {
+		t.Fatalf("added %d removed %d, want 2 and 1", added, removed)
+	}
+	if header, _ := planSummary(reviewSection{path: "c.go", patch: patch}); header != "### c.go (+2 -1)\n" {
+		t.Fatalf("planner summary = %q", header)
+	}
+}
+
+func TestFailedWholePRGroupCountsEveryFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"message":"bad request"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(server.Close)
+	spec := contextSpec(server.URL)
+	parsed, err := parseReviewDiff(spec.Diff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := parsed.paths()
+	if len(files) < 2 {
+		t.Fatalf("want a multi-file diff, got %v", files)
+	}
+	fileIndex := map[string]int{}
+	for index, name := range files {
+		fileIndex[name] = index
+	}
+	agent, plan, err := newAgent(context.Background(), spec.Workflow.Agents[0].Model, "Review.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runs := newAgentRuns(1, len(files))
+	if err := runWholePR(context.Background(), spec.Workflow, 0, agent, plan, [][]string{files}, "", parsed, fileIndex, runs, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if failed := runs.failed[0].Load(); failed != int64(len(files)) || runs.completed[0].Load() != 0 {
+		t.Fatalf("failed = %d completed = %d, want %d failed", failed, runs.completed[0].Load(), len(files))
+	}
+}

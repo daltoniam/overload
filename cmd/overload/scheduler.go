@@ -54,3 +54,19 @@ func catchUpWebhooks(ctx context.Context, store *postgres.Store) {
 		cancel()
 	}
 }
+
+// watchBudget logs when global spend passes 80% and 100% of a monthly or
+// daily cap, once per period.
+func watchBudget(ctx context.Context, store *postgres.Store) {
+	alerts := queue.NewBudgetAlerts()
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		alerts.Check(ctx, store, time.Now())
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}

@@ -5,12 +5,15 @@ package modelproxy
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,29 +24,91 @@ import (
 // maxRequestBytes bounds one model request (prompt plus repository context).
 const maxRequestBytes = 16 << 20
 
-// allowedPaths are the model endpoints a sandbox may call.
-var allowedPaths = map[string]bool{"chat/completions": true, "responses": true}
+// allowedPaths are the model endpoints a sandbox may call, by provider.
+// OpenAI-compatible base URLs end in /v1; Anthropic's do not.
+var allowedPaths = map[string]map[string]bool{
+	overload.ProviderOpenAICompat: {"chat/completions": true, "responses": true},
+	overload.ProviderAnthropic:    {"v1/messages": true},
+}
+
+// anthropicHeader matches the version and beta headers the Anthropic SDK
+// sends, which the proxy passes through.
+var anthropicHeader = regexp.MustCompile(`^[A-Za-z0-9._,-]{1,200}$`)
 
 type grant struct {
 	model   overload.ModelProfile
 	expires time.Time
+	// ended is when the grant was revoked or expired; it stops
+	// authorizing calls but keeps counting its spend for settleWindow.
+	ended time.Time
+	// spent is what the grant's calls cost so far, including calls that
+	// finish after the grant ended. It counts as pending spend until the
+	// run has recorded its cost.
+	spent float64
+	// active counts calls still streaming; lastDone is when the latest
+	// one finished. A grant settles only once no call is active.
+	active   int
+	lastDone time.Time
 }
 
-// Proxy forwards granted model requests. It is safe for concurrent use.
+// settleWindow is how long a finished grant's spend keeps counting as
+// pending after it ended and its last call finished: long enough for its
+// run to record the cost and for the budget gate to read it again.
+const settleWindow = 2 * time.Minute
+
+func (entry *grant) live(now time.Time) bool {
+	return entry.ended.IsZero() && !now.After(entry.expires)
+}
+
+// endedAt is when the grant stopped authorizing calls.
+func (entry *grant) endedAt() time.Time {
+	if !entry.ended.IsZero() {
+		return entry.ended
+	}
+	return entry.expires
+}
+
+// settled reports whether the grant's spend no longer counts as pending:
+// it has ended, none of its calls are still running, and settleWindow has
+// passed since both.
+func (entry *grant) settled(now time.Time) bool {
+	if entry.live(now) || entry.active > 0 {
+		return false
+	}
+	since := entry.endedAt()
+	if entry.lastDone.After(since) {
+		since = entry.lastDone
+	}
+	return now.Sub(since) > settleWindow
+}
+
+// BudgetGate decides whether more model calls may go out: pending is what
+// calls through the proxy cost that runs have not recorded yet. It returns
+// a reason when the budget is spent.
+type BudgetGate func(ctx context.Context, pending float64) (string, error)
+
+// maxMeteredBytes bounds the copy of an answer kept to read its usage.
+const maxMeteredBytes = 16 << 20
+
+// Proxy forwards granted model requests and meters what they cost. It is
+// safe for concurrent use.
 type Proxy struct {
 	base   string
 	client *http.Client
 	now    func() time.Time
+	// Budget, when set, refuses calls with 429 once the budget is spent:
+	// the backstop for reviews already running when it ran out.
+	Budget BudgetGate
 
 	mu     sync.Mutex
-	grants map[string]grant
+	grants map[string]*grant
 }
 
 // New returns a proxy whose grants are reachable at base (for example
 // http://overload.overload.svc:8083).
 func New(base string) *Proxy {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	return &Proxy{base: strings.TrimRight(base, "/"), client: &http.Client{Transport: transport}, now: time.Now, grants: map[string]grant{}}
+	return &Proxy{base: strings.TrimRight(base, "/"), client: &http.Client{Transport: transport}, now: time.Now, grants: map[string]*grant{}}
 }
 
 // Grant returns a base URL that reaches model for ttl, and a function that
@@ -57,39 +122,81 @@ func (proxy *Proxy) Grant(model overload.ModelProfile, ttl time.Duration) (strin
 	proxy.mu.Lock()
 	now := proxy.now()
 	for existing, entry := range proxy.grants {
-		if now.After(entry.expires) {
+		if entry.settled(now) {
 			delete(proxy.grants, existing)
 		}
 	}
-	proxy.grants[token] = grant{model: model, expires: now.Add(ttl)}
+	proxy.grants[token] = &grant{model: model, expires: now.Add(ttl)}
 	proxy.mu.Unlock()
 	return proxy.base + "/v1/m/" + token, func() {
 		proxy.mu.Lock()
-		delete(proxy.grants, token)
+		if entry, ok := proxy.grants[token]; ok && entry.ended.IsZero() {
+			entry.ended = proxy.now()
+		}
 		proxy.mu.Unlock()
 	}
 }
 
-func (proxy *Proxy) lookup(token string) (overload.ModelProfile, bool) {
+// begin starts a call through a live grant. The caller must call finish
+// when the call is done, so the grant is kept until its cost is metered.
+func (proxy *Proxy) begin(token string) (overload.ModelProfile, bool) {
 	proxy.mu.Lock()
 	defer proxy.mu.Unlock()
 	entry, ok := proxy.grants[token]
-	if !ok || proxy.now().After(entry.expires) {
+	if !ok || !entry.live(proxy.now()) {
 		return overload.ModelProfile{}, false
 	}
+	entry.active++
 	return entry.model, true
+}
+
+// finish ends a call begun with begin and charges what it cost.
+func (proxy *Proxy) finish(token string, usd float64) {
+	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	if entry, ok := proxy.grants[token]; ok {
+		entry.spent += usd
+		entry.active--
+		entry.lastDone = proxy.now()
+	}
+}
+
+// Pending is what calls through grants that have not settled cost so far:
+// live grants, grants with calls still running, and grants whose end or
+// last call was within settleWindow.
+func (proxy *Proxy) Pending() float64 {
+	proxy.mu.Lock()
+	defer proxy.mu.Unlock()
+	now := proxy.now()
+	total := 0.0
+	for _, entry := range proxy.grants {
+		if !entry.settled(now) {
+			total += entry.spent
+		}
+	}
+	return total
 }
 
 func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rest, ok := strings.CutPrefix(r.URL.Path, "/v1/m/")
 	token, path, found := strings.Cut(rest, "/")
-	if !ok || !found || r.Method != http.MethodPost || !allowedPaths[path] || r.URL.RawQuery != "" {
+	if !ok || !found || r.Method != http.MethodPost || r.URL.RawQuery != "" {
 		http.NotFound(w, r)
 		return
 	}
-	model, ok := proxy.lookup(token)
+	model, ok := proxy.begin(token)
 	if !ok {
 		http.Error(w, "unknown or expired model grant", http.StatusUnauthorized)
+		return
+	}
+	charged := 0.0
+	defer func() { proxy.finish(token, charged) }()
+	provider := model.Provider
+	if provider == "" {
+		provider = overload.ProviderOpenAICompat
+	}
+	if !allowedPaths[provider][path] {
+		http.NotFound(w, r)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBytes+1))
@@ -104,6 +211,28 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request must name the granted model", http.StatusForbidden)
 		return
 	}
+	// The budget is checked once the request is fully read, right before
+	// it goes upstream: a slow upload cannot start while there was room
+	// and finish after the budget ran out.
+	if proxy.Budget != nil {
+		reason, err := proxy.Budget(r.Context(), proxy.Pending())
+		if err != nil {
+			// Without knowing whether the budget allows it, the call is not
+			// made; the client may retry.
+			slog.Warn("model proxy could not check the budget", "error", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "30")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"type":"budget_unavailable","message":"overload could not check its review budget; try again shortly"}}`)
+			return
+		}
+		if reason != "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": "budget_exhausted", "message": "overload's " + reason + " review budget is spent"}})
+			return
+		}
+	}
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, strings.TrimRight(model.BaseURL, "/")+"/"+path, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "invalid model URL", http.StatusBadGateway)
@@ -117,7 +246,17 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for name, value := range model.Headers {
 		upstream.Header.Set(name, value)
 	}
-	if model.APIKeyEnv != "" {
+	switch {
+	case provider == overload.ProviderAnthropic:
+		for _, name := range []string{"Anthropic-Version", "Anthropic-Beta"} {
+			if value := r.Header.Get(name); anthropicHeader.MatchString(value) {
+				upstream.Header.Set(name, value)
+			}
+		}
+		if model.APIKeyEnv != "" {
+			upstream.Header.Set("X-Api-Key", os.Getenv(model.APIKeyEnv))
+		}
+	case model.APIKeyEnv != "":
 		upstream.Header.Set("Authorization", "Bearer "+os.Getenv(model.APIKeyEnv))
 	}
 	response, err := proxy.client.Do(upstream)
@@ -133,10 +272,24 @@ func (proxy *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(response.StatusCode)
 	flusher, _ := w.(http.Flusher)
+	metered := newUsageMeter(provider, response.Header.Get("Content-Type"))
+	defer func() {
+		if response.StatusCode < 200 || response.StatusCode > 299 {
+			return
+		}
+		usage, exact := metered.usage()
+		if !exact {
+			slog.Warn("model proxy could not read a call's usage; charging an estimate", "model", model.Model, "response_bytes", metered.bytes)
+		}
+		if usd, priced := model.Pricing.Cost(usage); priced {
+			charged = usd
+		}
+	}()
 	buf := make([]byte, 32<<10)
 	for {
 		n, readErr := response.Body.Read(buf)
 		if n > 0 {
+			metered.write(buf[:n])
 			if _, err := w.Write(buf[:n]); err != nil {
 				return
 			}

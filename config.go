@@ -118,6 +118,7 @@ type Workflow struct {
 	// file review; larger diffs are skipped as too large. 0 picks a default
 	// for the workflow's models (see FileCharBudget).
 	MaxFileChars int `json:"max_file_chars,omitempty"`
+	ReviewPolicy
 }
 
 func (workflow Workflow) Validate() error {
@@ -149,6 +150,9 @@ func (workflow Workflow) Validate() error {
 		return err
 	}
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
+		return err
+	}
+	if err := workflow.checkPolicy(workflow.Kind, workflow.Agents); err != nil {
 		return err
 	}
 	return validateRouting(routingSettings{kind: workflow.Kind, skipPaths: workflow.SkipPaths, mainReviews: workflow.MainReviews, maxFileReviews: workflow.MaxFileReviews, maxFindings: workflow.MaxFindings, scopes: workflow.Scopes, planner: strings.TrimSpace(workflow.PlannerPrompt) != "", verifier: strings.TrimSpace(workflow.VerifierPrompt) != ""})
@@ -214,6 +218,7 @@ type ResolvedWorkflow struct {
 	ReviewDecision string          `json:"review_decision,omitempty"`
 	BlockSeverity  string          `json:"block_severity,omitempty"`
 	MaxFileChars   int             `json:"max_file_chars,omitempty"`
+	ReviewPolicy
 }
 
 // Verify checks a pinned workflow once before it runs: a known kind, a main
@@ -224,7 +229,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 	if workflow.Kind != "pr_review" && workflow.Kind != "scheduled_prompt" {
 		return fmt.Errorf("unsupported workflow kind %q", workflow.Kind)
 	}
-	if workflow.Version != 0 && workflow.Version != 2 && workflow.Version != SnapshotVersion {
+	if workflow.Version != 0 && workflow.Version != 2 && workflow.Version != 3 && workflow.Version != SnapshotVersion {
 		return fmt.Errorf("workflow snapshot version %d is not supported", workflow.Version)
 	}
 	scopes := map[string]Scope{}
@@ -249,6 +254,16 @@ func (workflow ResolvedWorkflow) Verify() error {
 	if err := validateFileChars(workflow.Kind, workflow.MaxFileChars); err != nil {
 		return err
 	}
+	names := make([]string, len(workflow.Agents))
+	for index, agent := range workflow.Agents {
+		names[index] = agent.Name
+	}
+	if err := workflow.checkPolicy(workflow.Kind, names); err != nil {
+		return err
+	}
+	if workflow.Version < 4 && workflow.ReviewPolicy != (ReviewPolicy{}) {
+		return errors.New("cost, tier, context and re-review settings need workflow snapshot version 4")
+	}
 	if workflow.Version < 3 && (workflow.PlannerPrompt != nil || workflow.VerifierPrompt != nil) {
 		return errors.New("planner and verifier prompts need workflow snapshot version 3")
 	}
@@ -266,7 +281,7 @@ func (workflow ResolvedWorkflow) Verify() error {
 			return fmt.Errorf("agent %q appears more than once", agent.Name)
 		}
 		seen[agent.Name] = true
-		if agent.Name == "" || agent.Model.Provider != "openaicompat" || agent.Model.Model == "" || agent.Model.BaseURL == "" {
+		if agent.Name == "" || (agent.Model.Provider != ProviderOpenAICompat && agent.Model.Provider != ProviderAnthropic) || agent.Model.Model == "" || agent.Model.BaseURL == "" {
 			return fmt.Errorf("agent %q has no usable model", agent.Name)
 		}
 		if agent.EntryPrompt.Kind != "entry" || PromptDigest(agent.EntryPrompt.Body) != agent.EntryPrompt.SHA256 {

@@ -90,6 +90,11 @@ func (s *Store) FinishLocalReview(ctx context.Context, runID int64, spec overloa
 	if command.RowsAffected() != 1 {
 		return errors.New("run is not in progress")
 	}
+	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
+		if err := s.SetRunCostIn(ctx, tx, runID, spend); err != nil {
+			return err
+		}
+	}
 	for name, content := range map[string][]byte{"spec.json": specData, "result.json": resultData} {
 		if _, err := tx.Exec(ctx, `INSERT INTO run_artifacts (run_id, name, content) VALUES ($1, $2, $3)`, runID, name, content); err != nil {
 			return fmt.Errorf("save %s: %w", name, err)

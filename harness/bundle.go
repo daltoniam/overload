@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"strings"
 
+	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/diff"
 )
 
@@ -74,6 +75,34 @@ func (parsed reviewDiff) paths() []string {
 		}
 	}
 	return paths
+}
+
+// touched lists every path the diff changes, old paths of renames and
+// deleted files included.
+func (parsed reviewDiff) touched() map[string]bool {
+	touched := map[string]bool{}
+	add := func(name string) {
+		if name != "" {
+			touched[name] = true
+		}
+	}
+	for _, section := range parsed.sections {
+		add(section.path)
+		add(oldPath(section.patch))
+		// Renames and other files without commentable lines have no
+		// section path; their header and rename lines still name them.
+		for _, change := range overload.DiffChanges(section.patch) {
+			add(change.Path)
+			add(change.OldPath)
+		}
+		first, _, _ := strings.Cut(section.patch, "\n")
+		if rest, ok := strings.CutPrefix(first, "diff --git "); ok {
+			from, to := overload.GitHeaderPaths(rest)
+			add(from)
+			add(to)
+		}
+	}
+	return touched
 }
 
 // tooLarge lists files whose diff alone exceeds budget characters; they

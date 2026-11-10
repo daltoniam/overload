@@ -28,6 +28,10 @@ type PullRequest struct {
 	// RepositoryID is the host's numeric ID for the repository the pull
 	// request targets, used to follow renames.
 	RepositoryID int64
+	// Title and Body are the author's description: untrusted text that
+	// gives reviews context.
+	Title string
+	Body  string
 }
 
 // Errors a git host client returns that the posting worker handles.

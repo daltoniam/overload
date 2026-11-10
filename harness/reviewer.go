@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"charm.land/fantasy"
@@ -105,23 +106,46 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 			result.Metrics["degraded"] = true
 		}
 	}()
+	budget := newRunBudget(workflow.MaxRunCostUSD)
+	agentMeters := make([]*meter, len(workflow.Agents))
+	for index := range agentMeters {
+		agentMeters[index] = newMeter(budget)
+	}
+	plannerMeter, verifierMeter := newMeter(budget), newMeter(budget)
+	defer func() {
+		recordSpend(result.Metrics, budget, plannerMeter, verifierMeter)
+		for index := range routing.Agents {
+			if index < len(agentMeters) {
+				usage, spend := agentMeters[index].totals()
+				agent := &routing.Agents[index]
+				agent.Calls, agent.InputTokens, agent.CachedInputTokens, agent.CacheWriteTokens, agent.OutputTokens = usage.Calls, usage.Input, usage.CachedInput, usage.CacheWrite, usage.Output
+				agent.CostUSD, agent.UnpricedCalls = spend.USD, spend.Unpriced
+			}
+		}
+	}()
 	if routeErr != nil {
 		return result, routeErr
 	}
 	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(reviewable) > len(routing.Skipped) {
-		var usage plannerUsage
 		tooLarge := routing.TooLarge
-		if routing, usage, err = planRouting(ctx, workflow, parsed, reviewable, routing); err != nil {
+		if routing, err = planRouting(ctx, workflow, parsed, reviewable, routing, plannerMeter); err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
 		routing.TooLarge = tooLarge
-		result.Metrics["planner_input_tokens"], result.Metrics["planner_output_tokens"] = usage.inputTokens, usage.outputTokens
-		result.Metrics["input_tokens"], result.Metrics["output_tokens"] = usage.inputTokens, usage.outputTokens
 	}
 	if len(routing.TooLarge) > 0 {
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
-	paths := reviewablePaths(reviewable, routing.Skipped)
+	var shared prContext
+	wholePR := slices.ContainsFunc(routing.Agents, func(agent overload.AgentFiles) bool { return agent.WholePR && len(agent.Files) > 0 })
+	if workflow.Context != nil || wholePR || spec.Incremental != nil {
+		shared = buildPRContext(ctx, spec, parsed, repo)
+		result.Metrics["pr_context_chars"] = len(shared.text)
+		result.Metrics["contracts_symbols"] = len(shared.index.Changes)
+	}
+	again := planRereview(spec.Incremental, reviewablePaths(reviewable, routing.Skipped), shared.index.linked(), parsed.touched())
+	again.carry(&routing)
+	paths := slices.DeleteFunc(reviewablePaths(reviewable, routing.Skipped), func(name string) bool { return again != nil && again.carried[name] })
 	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())
 	fileIndex := make(map[string]int, len(paths))
 	for index, path := range paths {
@@ -139,16 +163,48 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		}
 		result.Metrics["agent_"+resolved.Name+"_reasoning"] = plans[index].label()
 	}
+	fileShared := ""
+	if workflow.Context != nil {
+		fileShared = shared.text
+	}
 	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
 	runs := newAgentRuns(len(workflow.Agents), len(batches))
+	leftOut := make([][]string, len(workflow.Agents))
+	var wholeWait sync.WaitGroup
+	var wholeMu sync.Mutex
+	var wholeErr error
+	for position := range workflow.Agents {
+		if !routing.Agents[position].WholePR || len(routing.Agents[position].Files) == 0 {
+			continue
+		}
+		var wholeGroups [][]string
+		wholeGroups, leftOut[position] = groupWholePR(parsed, routing.Agents[position].Files, shared.index.linked(), workflow.Context.WholePRBudget())
+		agent, plan := agents[position], plans[position]
+		if workflow.Context != nil && workflow.Context.RepoTools {
+			if agent, plan, err = newAgent(ctx, workflow.Agents[position].Model, plans[position].system, fantasy.WithTools(newRepoTools(repo, 2*workflow.Context.ToolSteps()).agentTools()...)); err != nil {
+				return result, err
+			}
+		}
+		wholeWait.Go(func() {
+			if err := runWholePR(ctx, workflow, position, agent, plan, wholeGroups, shared.text, parsed, fileIndex, runs, agentMeters[position], again); err != nil {
+				wholeMu.Lock()
+				wholeErr = preferError(wholeErr, err)
+				wholeMu.Unlock()
+			}
+		})
+	}
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
 		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
-		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], parsed.patchFor(paths[task.file]))
+		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], reviewCall(plans[task.agent], fileShared, batches[task.file]+again.priorText(paths[task.file])), paths[task.file], parsed.patchFor(paths[task.file]), agentMeters[task.agent])
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
+			}
+			if errors.Is(err, errCostCap) {
+				runs.capped[task.agent].Add(1)
+				return nil
 			}
 			message := overload.TruncateUTF8(err.Error(), 300)
 			runs.failures[task.agent].CompareAndSwap(nil, &message)
@@ -163,7 +219,21 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		runs.completed[task.agent].Add(1)
 		return nil
 	})
+	wholeWait.Wait()
+	if wholeErr != nil {
+		err = preferError(err, wholeErr)
+	}
 	runs.record(workflow, &routing, result.Metrics, groups, groupOf, fileIndex, err == nil)
+	for position, files := range leftOut {
+		if len(files) > 0 {
+			for _, name := range files {
+				if !slices.Contains(routing.Agents[position].Unreviewed, name) {
+					routing.Agents[position].Unreviewed = append(routing.Agents[position].Unreviewed, name)
+				}
+			}
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("whole-PR agent %s left out %s whose diff is over its %d-character budget: %s", workflow.Agents[position].Name, overload.Plural(len(files), "file"), workflow.Context.WholePRBudget(), strings.Join(files, ", ")))
+		}
+	}
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return result, fmt.Errorf("review incomplete: %w", ctxErr)
@@ -189,7 +259,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		for index, path := range paths {
 			bundles[path] = batches[index]
 		}
-		verified, err := verifyFindings(ctx, workflow, result.Findings, bundles)
+		verified, err := verifyFindings(ctx, workflow, result.Findings, bundles, verifierMeter)
 		if err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
@@ -197,12 +267,12 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		for index := range routing.Agents {
 			routing.Agents[index].Verified, routing.Agents[index].Dropped = verified.checked[index], verified.droppedBy[index]
 		}
-		result.Metrics["verifier_input_tokens"], result.Metrics["verifier_output_tokens"] = verified.inputTokens, verified.outputTokens
-		result.Metrics["input_tokens"] = metricTokens(result.Metrics, "input_tokens") + verified.inputTokens
-		result.Metrics["output_tokens"] = metricTokens(result.Metrics, "output_tokens") + verified.outputTokens
 		result.Metrics["verifier_dropped"] = len(verified.dropped)
 		if verified.failures > 0 {
 			routing.Degraded = append(routing.Degraded, fmt.Sprintf("verifier could not check %d findings; they were kept", verified.failures))
+		}
+		if verified.capped > 0 {
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("cost cap reached: the verifier did not check %d findings; they were kept", verified.capped))
 		}
 	}
 	result.Findings, result.Dropped = limitFindings(result.Findings, result.Dropped, workflow.FindingLimit())
@@ -214,7 +284,20 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		}
 	}
 	result.Metrics["reviewed_files"] = len(batches)
+	if again != nil {
+		var verdicts []overload.PriorVerdict
+		for index := range runs.outcomes {
+			for _, outcome := range runs.outcomes[index] {
+				verdicts = append(verdicts, outcome.prior...)
+			}
+		}
+		result.Prior = again.verdicts(verdicts)
+		again.record(result.Metrics, len(batches), result.Prior)
+	}
 	result.Summary = summarize(result.Findings, summaries, len(batches))
+	if again != nil && len(batches) == 0 && len(again.carried) > 0 {
+		result.Summary = "No file changed since the last review; its findings stay open."
+	}
 	return result, nil
 }
 
@@ -248,6 +331,9 @@ func scheduleReviews(workflow overload.ResolvedWorkflow, routing overload.Routin
 	groups := make([]connectionGroup, len(loads))
 	for index := range workflow.Agents {
 		group := groupOf[index]
+		if routing.Agents[index].WholePR {
+			continue
+		}
 		for _, path := range routing.Agents[index].Files {
 			groups[group].tasks = append(groups[group].tasks, reviewTask{agent: index, file: fileIndex[path]})
 		}
@@ -271,10 +357,11 @@ type agentRuns struct {
 	completed []atomic.Int64
 	failures  []atomic.Pointer[string]
 	failed    []atomic.Int64
+	capped    []atomic.Int64
 }
 
 func newAgentRuns(agents, files int) *agentRuns {
-	runs := &agentRuns{outcomes: make([][]fileOutcome, agents), done: make([][]bool, agents), completed: make([]atomic.Int64, agents), failures: make([]atomic.Pointer[string], agents), failed: make([]atomic.Int64, agents)}
+	runs := &agentRuns{outcomes: make([][]fileOutcome, agents), done: make([][]bool, agents), completed: make([]atomic.Int64, agents), failures: make([]atomic.Pointer[string], agents), failed: make([]atomic.Int64, agents), capped: make([]atomic.Int64, agents)}
 	for index := range agents {
 		runs.outcomes[index] = make([]fileOutcome, files)
 		runs.done[index] = make([]bool, files)
@@ -292,15 +379,11 @@ func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overl
 		metrics["agent_"+resolved.Name+"_reviewed_files"] = reviewed
 		agent := &routing.Agents[index]
 		agent.Reviewed = reviewed
-		for _, outcome := range runs.outcomes[index] {
-			agent.InputTokens += outcome.inputTokens
-			agent.OutputTokens += outcome.outputTokens
-		}
+		agent.CostCapped = int(runs.capped[index].Load())
 		message := runs.failures[index].Load()
-		if message == nil || !completed {
+		if (message == nil && agent.CostCapped == 0) || !completed {
 			continue
 		}
-		agent.Failed = *message
 		for _, path := range agent.Files {
 			if !runs.done[index][fileIndex[path]] {
 				agent.Unreviewed = append(agent.Unreviewed, path)
@@ -310,7 +393,37 @@ func (runs *agentRuns) record(workflow overload.ResolvedWorkflow, routing *overl
 		if index == 0 {
 			role = "main agent"
 		}
+		if message == nil {
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("cost cap reached: %s %s did not review %d of its %d files", role, resolved.Name, len(agent.Unreviewed), len(agent.Files)))
+			continue
+		}
+		agent.Failed = *message
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%s %s failed and did not review %d of its %d files", role, resolved.Name, len(agent.Unreviewed), len(agent.Files)))
+	}
+}
+
+// recordSpend puts the run's token usage and cost on its metrics:
+// cost_usd is the priced spend and cost_unpriced_calls the calls to models
+// without prices. The planner and verifier are also listed apart.
+func recordSpend(metrics map[string]any, budget *runBudget, planner, verifier *meter) {
+	usage, spend, _ := budget.totals()
+	metrics["model_calls"] = usage.Calls
+	metrics["input_tokens"] = usage.Input
+	metrics["cached_input_tokens"] = usage.CachedInput
+	metrics["cache_write_tokens"] = usage.CacheWrite
+	metrics["output_tokens"] = usage.Output
+	metrics["cost_usd"] = spend.USD
+	metrics["cost_unpriced_calls"] = spend.Unpriced
+	if budget.limit > 0 {
+		metrics["max_run_cost_usd"] = budget.limit
+	}
+	for name, part := range map[string]*meter{"planner": planner, "verifier": verifier} {
+		usage, spend := part.totals()
+		if usage.Calls == 0 {
+			continue
+		}
+		metrics[name+"_input_tokens"], metrics[name+"_output_tokens"] = usage.Input, usage.Output
+		metrics[name+"_cost_usd"] = spend.USD
 	}
 }
 
@@ -400,11 +513,4 @@ func validateModelHeaders(headers map[string]string) error {
 func metricCount(metrics map[string]any, key string) int {
 	count, _ := metrics[key].(int)
 	return count
-}
-
-func metricTokens(metrics map[string]any, key string) int64 {
-	if count, ok := metrics[key].(int64); ok {
-		return count
-	}
-	return 0
 }

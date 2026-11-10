@@ -118,7 +118,7 @@ const gitlabProjectPath = "/api/v4/projects/group%2Fsub%2Fapi"
 
 func TestGitLabPullRequestWithDiff(t *testing.T) {
 	host, server := newFakeHost(t, "PRIVATE-TOKEN", "glpat-test")
-	host.json("GET "+gitlabProjectPath+"/merge_requests/7", 200, map[string]any{"iid": 7, "state": "opened", "sha": headSHA, "target_project_id": 42, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": headSHA, "start_sha": baseSHA}})
+	host.json("GET "+gitlabProjectPath+"/merge_requests/7", 200, map[string]any{"iid": 7, "title": "Add greeting", "description": "Says hello.", "state": "opened", "sha": headSHA, "target_project_id": 42, "diff_refs": map[string]string{"base_sha": baseSHA, "head_sha": headSHA, "start_sha": baseSHA}})
 	host.routes["GET "+gitlabProjectPath+"/merge_requests/7/diffs"] = func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("page") == "1" {
 			w.Header().Set("X-Next-Page", "2")
@@ -134,7 +134,7 @@ func TestGitLabPullRequestWithDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := overload.PullRequest{Number: 7, State: "open", HeadSHA: headSHA, BaseSHA: baseSHA, RepositoryID: 42}
+	want := overload.PullRequest{Number: 7, State: "open", HeadSHA: headSHA, BaseSHA: baseSHA, RepositoryID: 42, Title: "Add greeting", Body: "Says hello."}
 	if pr != want {
 		t.Fatalf("pull request = %+v, want %+v", pr, want)
 	}
@@ -258,7 +258,7 @@ const forgejoRepoPath = "/api/v1/repos/acme/api"
 
 func TestForgejoPullRequestWithDiff(t *testing.T) {
 	host, server := newFakeHost(t, "Authorization", "token fj-test")
-	host.json("GET "+forgejoRepoPath+"/pulls/3", 200, map[string]any{"number": 3, "state": "open", "title": "WIP: refactor", "head": map[string]any{"sha": headSHA}, "base": map[string]any{"sha": baseSHA, "repo": map[string]any{"id": 77}}})
+	host.json("GET "+forgejoRepoPath+"/pulls/3", 200, map[string]any{"number": 3, "state": "open", "title": "WIP: refactor", "body": "Split the parser.", "head": map[string]any{"sha": headSHA}, "base": map[string]any{"sha": baseSHA, "repo": map[string]any{"id": 77}}})
 	host.routes["GET "+forgejoRepoPath+"/pulls/3.diff"] = func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n"))
 	}
@@ -266,7 +266,7 @@ func TestForgejoPullRequestWithDiff(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pr.Number != 3 || pr.State != "open" || !pr.Draft || pr.HeadSHA != headSHA || pr.BaseSHA != baseSHA || pr.RepositoryID != 77 || !strings.HasPrefix(patch, "diff --git") {
+	if pr.Number != 3 || pr.State != "open" || !pr.Draft || pr.HeadSHA != headSHA || pr.BaseSHA != baseSHA || pr.RepositoryID != 77 || pr.Title != "WIP: refactor" || pr.Body != "Split the parser." || !strings.HasPrefix(patch, "diff --git") {
 		t.Fatalf("pr = %+v patch = %q", pr, patch)
 	}
 }

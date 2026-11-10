@@ -37,6 +37,8 @@ type gitlabDiffRefs struct {
 
 type gitlabMergeRequest struct {
 	IID             int            `json:"iid"`
+	Title           string         `json:"title"`
+	Description     string         `json:"description"`
 	State           string         `json:"state"`
 	Draft           bool           `json:"draft"`
 	WorkInProgress  bool           `json:"work_in_progress"`
@@ -122,7 +124,7 @@ func gitlabPullRequest(mr gitlabMergeRequest) overload.PullRequest {
 	if state == "opened" {
 		state = "open"
 	}
-	pr := overload.PullRequest{Number: mr.IID, State: state, Draft: mr.Draft || mr.WorkInProgress, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA, RepositoryID: mr.TargetProjectID}
+	pr := overload.PullRequest{Number: mr.IID, State: state, Draft: mr.Draft || mr.WorkInProgress, HeadSHA: mr.SHA, BaseSHA: mr.DiffRefs.BaseSHA, RepositoryID: mr.TargetProjectID, Title: mr.Title, Body: mr.Description}
 	if pr.HeadSHA == "" {
 		pr.HeadSHA = mr.DiffRefs.HeadSHA
 	}

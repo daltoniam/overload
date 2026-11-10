@@ -2,6 +2,7 @@ package pages
 
 import (
 	"fmt"
+	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
 )
 
@@ -27,6 +28,23 @@ templ DashboardGraphs(stats postgres.DashboardStats) {
 			<section class="panel stat-card"><span class="muted">Completed</span><strong>{ fmt.Sprint(stats.Completed) }</strong></section>
 			<section class="panel stat-card"><span class="muted">Failed</span><strong>{ fmt.Sprint(stats.Failed) }</strong></section>
 			<section class="panel stat-card"><span class="muted">Queued / running</span><strong>{ fmt.Sprint(stats.Active) }</strong></section>
+		</div>
+		if threshold, period := stats.Budget.Alert(); threshold >= 100 {
+			<p class="notice error" role="status"><strong>The { period } review budget is spent.</strong> New reviews are skipped until it resets or the cap is raised (<code>overload budget set</code>).</p>
+		} else if threshold >= 80 {
+			<p class="notice warning" role="status"><strong>{ fmt.Sprintf("%d%%", threshold) } of the { period } review budget is used.</strong> New reviews are skipped once it is spent.</p>
+		}
+		<div class="stat-grid">
+			<section class="panel stat-card"><span class="muted">Spend today</span><strong>{ overload.FormatUSD(stats.Spend.Today) }</strong></section>
+			<section class="panel stat-card"><span class="muted">Spend this month</span><strong>{ overload.FormatUSD(stats.Spend.Month) }</strong>
+				if stats.Budget.MonthlyUSD != nil {
+					<span class="muted">{ fmt.Sprintf("%.0f%% of %s", stats.Budget.MonthPercent, overload.FormatUSD(*stats.Budget.MonthlyUSD)) }</span>
+				}
+			</section>
+			<section class="panel stat-card"><span class="muted">Average per run this month</span><strong>{ overload.FormatUSD(stats.Spend.AverageRun) }</strong><span class="muted">{ fmt.Sprintf("%d priced runs", stats.Spend.MonthRuns) }</span></section>
+			if stats.Spend.Unpriced > 0 {
+				<section class="panel stat-card"><span class="muted">Runs with unpriced calls</span><strong>{ fmt.Sprint(stats.Spend.Unpriced) }</strong><span class="muted">Add prices on Models</span></section>
+			}
 		</div>
 		if stats.Total == 0 {
 			<p class="empty">No runs were created in this period. Charts will fill as jobs arrive.</p>

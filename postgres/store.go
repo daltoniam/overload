@@ -20,6 +20,15 @@ var migrations embed.FS
 
 type Store struct {
 	Pool *pgxpool.Pool
+	// Now is the clock budget checks use; nil means time.Now.
+	Now func() time.Time
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -228,7 +237,12 @@ func (s *Store) ListDeliveries(ctx context.Context) ([]Delivery, error) {
 
 func (s *Store) GetRun(ctx context.Context, id int64) (overload.Run, error) {
 	var run overload.Run
-	err := s.Pool.QueryRow(ctx, `SELECT id, COALESCE(repository_id,0), COALESCE(pr_number,0), head_sha, base_sha, trigger, kind, status, mode, dry_run, COALESCE(river_job_id, 0), created_at, started_at, finished_at, error_code, error_message FROM runs WHERE id = $1`, id).Scan(&run.ID, &run.RepositoryID, &run.PRNumber, &run.HeadSHA, &run.BaseSHA, &run.Trigger, &run.Kind, &run.Status, &run.Mode, &run.DryRun, &run.RiverJobID, &run.CreatedAt, &run.StartedAt, &run.FinishedAt, &run.ErrorCode, &run.ErrorMessage)
+	var costUSD *float64
+	var unpriced int64
+	err := s.Pool.QueryRow(ctx, `SELECT id, COALESCE(repository_id,0), COALESCE(pr_number,0), head_sha, base_sha, trigger, kind, status, mode, dry_run, COALESCE(river_job_id, 0), created_at, started_at, finished_at, error_code, error_message, cost_usd, cost_unpriced_calls FROM runs WHERE id = $1`, id).Scan(&run.ID, &run.RepositoryID, &run.PRNumber, &run.HeadSHA, &run.BaseSHA, &run.Trigger, &run.Kind, &run.Status, &run.Mode, &run.DryRun, &run.RiverJobID, &run.CreatedAt, &run.StartedAt, &run.FinishedAt, &run.ErrorCode, &run.ErrorMessage, &costUSD, &unpriced)
+	if costUSD != nil {
+		run.Cost = &overload.Spend{USD: *costUSD, Unpriced: unpriced}
+	}
 	return run, err
 }
 

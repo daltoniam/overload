@@ -55,6 +55,10 @@ func decodeModelReview(text string) (overload.ReviewResult, error) {
 	var raw struct {
 		Summary  string         `json:"summary"`
 		Findings []looseFinding `json:"findings"`
+		Prior    []struct {
+			ID     json.RawMessage `json:"id"`
+			Status string          `json:"status"`
+		} `json:"prior"`
 	}
 	if err := json.Unmarshal([]byte(cleanModelJSON(text)), &raw); err != nil {
 		return overload.ReviewResult{}, err
@@ -73,6 +77,14 @@ func decodeModelReview(text string) (overload.ReviewResult, error) {
 			return overload.ReviewResult{}, fmt.Errorf("finding %d confidence: %w", index, err)
 		}
 		result.Findings = append(result.Findings, finding)
+	}
+	for _, item := range raw.Prior {
+		id, err := looseInt(item.ID)
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if err != nil || id < 1 || (status != overload.PriorResolved && status != overload.PriorStillPresent) {
+			continue
+		}
+		result.Prior = append(result.Prior, overload.PriorVerdict{ID: int64(id), Status: status})
 	}
 	return result, nil
 }

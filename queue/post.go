@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/daltoniam/overload"
@@ -82,7 +83,14 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		return fmt.Errorf("check existing review: %w", err)
 	}
 	if existing > 0 {
-		return w.Store.FinishPost(ctx, target, "posted", existing)
+		// The review was posted but the job stopped before recording it,
+		// so the threads of fixed findings were never resolved either.
+		if err := w.Store.FinishPost(ctx, target, "posted", existing); err != nil {
+			return err
+		}
+		w.recordComments(ctx, poster, target, existing)
+		w.resolveThreads(ctx, poster, target)
+		return nil
 	}
 	severities := append([]string(nil), target.DuplicateSeverities...)
 	for _, finding := range target.Findings {
@@ -103,6 +111,7 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 		if err := w.Store.FinishPost(ctx, target, "nothing_new", 0); err != nil {
 			return err
 		}
+		w.resolveThreads(ctx, poster, target)
 		state, description := finalStatus(event, len(severities), target.Partial)
 		reportStatus(ctx, w.Store, w.Status, runID, state, description)
 		return nil
@@ -129,6 +138,8 @@ func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostRevie
 	if err := w.Store.FinishPost(ctx, target, "posted", reviewID); err != nil {
 		return err
 	}
+	w.recordComments(ctx, poster, target, reviewID)
+	w.resolveThreads(ctx, poster, target)
 	state, description := finalStatus(event, len(severities), target.Partial)
 	reportStatus(ctx, w.Store, w.Status, runID, state, description)
 	return nil
@@ -171,5 +182,55 @@ func reviewSummary(event string, target postgres.PostTarget, earlier int) string
 		return fmt.Sprintf("Overload found nothing at %s severity or above. %d minor issue(s) are noted as comments.", block, len(target.Findings)+earlier)
 	default:
 		return fmt.Sprintf("Overload found %d issue(s) in this pull request.%s", len(target.Findings), partial)
+	}
+}
+
+// commentLister lists the comments of a posted review.
+type commentLister interface {
+	ReviewComments(ctx context.Context, installationID int64, repository string, number int, reviewID int64) ([]github.PostedComment, error)
+}
+
+// recordComments saves the GitHub comment each posted finding became, so
+// later replies and thread resolution follow the comment itself. It is
+// best effort: without it, findings are matched by path, line and title.
+func (w *PostWorker) recordComments(ctx context.Context, poster ReviewPoster, target postgres.PostTarget, reviewID int64) {
+	lister, ok := poster.(commentLister)
+	if !ok || reviewID <= 0 || len(target.Findings) == 0 {
+		return
+	}
+	comments, err := lister.ReviewComments(ctx, target.InstallationID, target.Repository, target.PRNumber, reviewID)
+	if err == nil {
+		err = w.Store.SetFindingComments(context.WithoutCancel(ctx), github.MatchComments(target.Findings, comments))
+	}
+	if err != nil {
+		slog.Warn("review comment IDs not recorded", "run_id", target.RunID, "error", err)
+	}
+}
+
+// threadResolver resolves overload's review threads for fixed findings.
+type threadResolver interface {
+	ResolveThreads(ctx context.Context, installationID int64, repository string, number int, fixed []overload.Finding) (int, error)
+}
+
+// resolveThreads resolves the GitHub threads of findings a re-review found
+// fixed, when the workflow asks for it. It is best effort: a failure is
+// logged and recorded on the run, never retried.
+func (w *PostWorker) resolveThreads(ctx context.Context, poster ReviewPoster, target postgres.PostTarget) {
+	if !target.ResolveThreads || len(target.Fixed) == 0 {
+		return
+	}
+	resolver, ok := poster.(threadResolver)
+	if !ok {
+		return
+	}
+	resolved, err := resolver.ResolveThreads(ctx, target.InstallationID, target.Repository, target.PRNumber, target.Fixed)
+	message := fmt.Sprintf("Resolved %s for findings this review found fixed", overload.Plural(resolved, "review thread"))
+	level := "info"
+	if err != nil {
+		slog.Warn("review threads not resolved", "run_id", target.RunID, "error", err)
+		message, level = "Review threads not resolved: "+overload.TruncateUTF8(err.Error(), 200), "warn"
+	}
+	if _, err := w.Store.Pool.Exec(context.WithoutCancel(ctx), `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, $2, 'posted', $3)`, target.RunID, level, message); err != nil {
+		slog.Warn("run event not recorded", "run_id", target.RunID, "error", err)
 	}
 }

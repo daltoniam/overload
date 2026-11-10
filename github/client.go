@@ -92,6 +92,8 @@ func pullRequest(pr *gh.PullRequest) overload.PullRequest {
 		HeadSHA:      pr.GetHead().GetSHA(),
 		BaseSHA:      pr.GetBase().GetSHA(),
 		RepositoryID: pr.GetBase().GetRepo().GetID(),
+		Title:        pr.GetTitle(),
+		Body:         pr.GetBody(),
 	}
 }
 
@@ -240,6 +242,92 @@ func (client *Client) DismissReview(ctx context.Context, installationID int64, r
 	}
 	_, _, err = api.PullRequests.DismissReview(ctx, owner, repo, number, reviewID, &gh.PullRequestReviewDismissalRequest{Message: gh.Ptr(message)})
 	return err
+}
+
+// CanWrite reports whether a user has write access (write, maintain or
+// admin) to a repository. Organization membership alone is not enough.
+func (client *Client) CanWrite(ctx context.Context, installationID int64, repository, login string) (bool, error) {
+	owner, repo, err := splitRepository(repository)
+	if err != nil {
+		return false, err
+	}
+	if login == "" {
+		return false, nil
+	}
+	api, err := client.installation(installationID)
+	if err != nil {
+		return false, err
+	}
+	level, _, err := api.Repositories.GetPermissionLevel(ctx, owner, repo, login)
+	if err != nil {
+		return false, err
+	}
+	switch level.GetPermission() {
+	case "admin", "write":
+		return true, nil
+	}
+	switch level.GetRoleName() {
+	case "admin", "maintain", "write":
+		return true, nil
+	}
+	return false, nil
+}
+
+// PostedComment is one comment of a posted review.
+type PostedComment struct {
+	ID   int64
+	Path string
+	Line int
+	Body string
+}
+
+// ReviewComments lists the comments of one of overload's reviews.
+func (client *Client) ReviewComments(ctx context.Context, installationID int64, repository string, number int, reviewID int64) ([]PostedComment, error) {
+	owner, repo, err := splitRepository(repository)
+	if err != nil {
+		return nil, err
+	}
+	api, err := client.installation(installationID)
+	if err != nil {
+		return nil, err
+	}
+	var comments []PostedComment
+	options := &gh.ListOptions{PerPage: 100}
+	for page := 0; page < 20; page++ {
+		batch, response, err := api.PullRequests.ListReviewComments(ctx, owner, repo, number, reviewID, options)
+		if err != nil {
+			return nil, err
+		}
+		for _, comment := range batch {
+			line := comment.GetOriginalLine()
+			if line == 0 {
+				line = comment.GetLine()
+			}
+			comments = append(comments, PostedComment{ID: comment.GetID(), Path: comment.GetPath(), Line: line, Body: comment.GetBody()})
+		}
+		if response.NextPage == 0 {
+			break
+		}
+		options.Page = response.NextPage
+	}
+	return comments, nil
+}
+
+// MatchComments pairs a review's comments with the findings it posted, by
+// path, line and title, and returns comment IDs by finding ID.
+func MatchComments(findings []overload.Finding, comments []PostedComment) map[int64]int64 {
+	matched := map[int64]int64{}
+	used := map[int64]bool{}
+	for _, finding := range findings {
+		for _, comment := range comments {
+			if !used[comment.ID] && comment.Path == finding.Path && comment.Line == finding.Line && strings.HasPrefix(comment.Body, commentTitle(finding.Title)) {
+				matched[finding.ID] = comment.ID
+				used[comment.ID] = true
+				break
+			}
+		}
+	}
+	return matched
 }
 
 // ownReviews calls visit for each review overload posted on the PR, until

@@ -75,6 +75,12 @@ func run(args []string) error {
 		return inlineReview(args[1:])
 	case "settings":
 		return manageSettings(args[1:])
+	case "runs":
+		return manageRuns(args[1:])
+	case "eval":
+		return evaluate(args[1:])
+	case "budget":
+		return manageBudget(args[1:])
 	case "agents", "workflows", "bindings", "repositories", "schedules", "tools":
 		return manageConfiguration(args[0], args[1:])
 	case "forges":
@@ -139,7 +145,7 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	models, err := modelProxyFromEnvironment(ctx, runner != nil)
+	models, err := modelProxyFromEnvironment(ctx, runner != nil, store)
 	if err != nil {
 		return err
 	}
@@ -157,6 +163,7 @@ func serve() error {
 	}
 	go scanSchedules(ctx, store, client)
 	go catchUpWebhooks(ctx, store)
+	go watchBudget(ctx, store)
 	defer func() {
 		stop()
 		<-client.Stopped()
@@ -242,6 +249,24 @@ func (store serverStore) IngestForgePR(ctx context.Context, connection overload.
 		Eligible:   event.Eligible,
 		Payload:    payload,
 	})
+}
+
+// ReviewCommand queues a review of a pull request's current head for an
+// "/overload review" comment. Like "Review now", it skips the workflow's
+// re-review limit and reviews a head that was already reviewed.
+func (store serverStore) ReviewCommand(ctx context.Context, event github.CommentEvent) (int64, error) {
+	reader, err := queue.AppClient(ctx, store.Store)
+	if err != nil {
+		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
+	}
+	allowed, err := reader.CanWrite(ctx, event.Installation.ID, event.Repository.FullName, event.Comment.User.Login)
+	if err != nil {
+		return 0, fmt.Errorf("%w: cannot check %s's permission: %v", queue.ErrReviewNotQueued, event.Comment.User.Login, err)
+	}
+	if !allowed {
+		return 0, fmt.Errorf("%w: %s cannot write to %s", queue.ErrReviewNotQueued, event.Comment.User.Login, event.Repository.FullName)
+	}
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, queue.HostReader(store.Store), event.Repository.FullName, event.Issue.Number, true)
 }
 
 // RunScheduleNow queues a schedule's workflow on this server's job queue.

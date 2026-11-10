@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strconv"
@@ -33,6 +34,12 @@ type RunReader interface {
 }
 
 type PRIngest func(context.Context, string, string, []byte, github.PullRequestEvent) (bool, error)
+
+// ReviewCommander queues a review someone asked for with an
+// "/overload review" comment.
+type ReviewCommander interface {
+	ReviewCommand(context.Context, github.CommentEvent) (int64, error)
+}
 
 func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	mux := http.NewServeMux()
@@ -185,7 +192,16 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			http.Error(w, "Unable to load settings", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.Models(settings).Render(r.Context(), w)
+		var budget *postgres.Budget
+		if store, ok := reader.(BudgetStore); ok {
+			budgets, err := store.Budgets(r.Context())
+			if err != nil {
+				http.Error(w, "Unable to load the budget", http.StatusInternalServerError)
+				return
+			}
+			budget = &budgets[0]
+		}
+		_ = pages.Models(settings, budget, csrf).Render(r.Context(), w)
 	})
 	registerModels(mux, reader, csrf)
 	mux.HandleFunc("GET /webhooks", func(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +249,9 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 			}
 			w.WriteHeader(http.StatusAccepted)
 			return
+		}
+		if event == "issue_comment" {
+			action, repoName = reviewCommand(r.Context(), reader, body)
 		}
 		if event == "pull_request" {
 			parsed, err := github.ParsePullRequest(body)
@@ -320,4 +339,25 @@ func ValidateAuth() error {
 		return errors.New("OVERLOAD_UI_USER and OVERLOAD_UI_PASSWORD required unless Cloudflare Access (OVERLOAD_ACCESS_TEAM_DOMAIN, OVERLOAD_ACCESS_AUD) or OVERLOAD_UI_INSECURE=1 is set")
 	}
 	return nil
+}
+
+// reviewCommand queues a review for an "/overload review" comment, when the
+// server can, and returns the delivery's action and repository for the
+// webhook log.
+func reviewCommand(ctx context.Context, reader RunReader, body []byte) (string, string) {
+	parsed, err := github.ParseComment(body)
+	if err != nil {
+		return "", ""
+	}
+	commander, ok := reader.(ReviewCommander)
+	if !ok || !parsed.RequestsReview() {
+		return parsed.Action, parsed.Repository.FullName
+	}
+	runID, err := commander.ReviewCommand(ctx, parsed)
+	if err != nil {
+		slog.Info("review command not queued", "repository", parsed.Repository.FullName, "pull_request", parsed.Issue.Number, "reason", err)
+	} else {
+		slog.Info("review command queued", "repository", parsed.Repository.FullName, "pull_request", parsed.Issue.Number, "run_id", runID)
+	}
+	return "review_command", parsed.Repository.FullName
 }

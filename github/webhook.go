@@ -68,3 +68,61 @@ func ShouldReview(event PullRequestEvent) bool {
 		return false
 	}
 }
+
+// ReviewCommand is the comment that asks overload to review a pull
+// request again, regardless of its re-review limit.
+const ReviewCommand = "/overload review"
+
+// CommentEvent is an issue_comment webhook, reduced to what the review
+// command needs.
+type CommentEvent struct {
+	Action       string `json:"action"`
+	Installation struct {
+		ID int64 `json:"id"`
+	} `json:"installation"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	Issue struct {
+		Number      int             `json:"number"`
+		PullRequest json.RawMessage `json:"pull_request"`
+	} `json:"issue"`
+	Comment struct {
+		Body              string `json:"body"`
+		AuthorAssociation string `json:"author_association"`
+		User              struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"user"`
+	} `json:"comment"`
+}
+
+// ParseComment reads an issue_comment webhook.
+func ParseComment(body []byte) (CommentEvent, error) {
+	var event CommentEvent
+	if err := json.Unmarshal(body, &event); err != nil {
+		return event, err
+	}
+	if event.Repository.FullName == "" || event.Issue.Number < 1 {
+		return event, errors.New("comment event missing repository or number")
+	}
+	return event, nil
+}
+
+// RequestsReview reports whether the comment asks for a review: a new
+// comment on a pull request whose first line is the review command, from
+// an owner, member or collaborator, not a bot. The association is only a
+// first filter: an organization member may lack write access, so the
+// commenter's repository permission must still be checked (CanWrite).
+func (event CommentEvent) RequestsReview() bool {
+	if event.Action != "created" || len(event.Issue.PullRequest) == 0 || string(event.Issue.PullRequest) == "null" || event.Comment.User.Type == "Bot" {
+		return false
+	}
+	switch event.Comment.AuthorAssociation {
+	case "OWNER", "MEMBER", "COLLABORATOR":
+	default:
+		return false
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(event.Comment.Body), "\n")
+	return strings.EqualFold(strings.TrimSpace(first), ReviewCommand)
+}

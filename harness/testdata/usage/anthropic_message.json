@@ -1,0 +1,1 @@
+{"id":"msg_01","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"{\"summary\":\"No issues\",\"findings\":[]}"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":2000,"output_tokens":800,"cache_read_input_tokens":10000,"cache_creation_input_tokens":3000}}

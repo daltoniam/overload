@@ -58,14 +58,17 @@ type repoFacts struct {
 }
 
 const (
-	skipNotEligible        = "event not eligible for review"
-	skipNotEnabled         = "repository disabled or not installed"
-	skipSuspended          = "installation suspended"
-	skipInstallMismatch    = "installation does not match repository"
-	skipNotLinked          = "repository not linked to this GitHub App installation"
-	skipNoBinding          = "no matching workflow binding"
-	skipAlreadyReviewed    = "head already reviewed"
-	skipWorkflowBroken     = "workflow cannot run"
+	skipNotEligible     = "event not eligible for review"
+	skipNotEnabled      = "repository disabled or not installed"
+	skipSuspended       = "installation suspended"
+	skipInstallMismatch = "installation does not match repository"
+	skipNotLinked       = "repository not linked to this GitHub App installation"
+	skipNoBinding       = "no matching workflow binding"
+	skipAlreadyReviewed = "head already reviewed"
+	skipWorkflowBroken  = "workflow cannot run"
+	// SkipReviewLimit marks a push past the workflow's reviews per pull
+	// request.
+	SkipReviewLimit        = "review_limit_reached"
 	errMissingSHAs         = "reviewable PR requires head and base SHAs"
 	deliveryOutcomeQueued  = "queued"
 	deliveryOutcomeSkipped = "skipped"
@@ -243,6 +246,36 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if err != nil {
 		return false, err
 	}
+	expected, err := expectedRunCost(ctx, tx, snapshot)
+	if err != nil {
+		return false, err
+	}
+	budget, err := s.checkBudget(ctx, tx, repo.id, pendingReplacement{pr: delivery.PR, head: delivery.HeadSHA}, expected)
+	if err != nil {
+		return false, err
+	}
+	// A newer head makes queued reviews of older heads obsolete even when
+	// this head is not reviewed (budget or re-review limit reached).
+	if budget.Exceeded {
+		if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
+			return false, err
+		}
+		if repo.installation != 0 || delivery.ForgeID > 0 {
+			if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: repo.name, InstallationID: repo.installation, ForgeID: delivery.ForgeID, SHA: delivery.HeadSHA, State: budget.SkipStatus, Description: budget.Description()}, nil); err != nil {
+				return false, err
+			}
+		}
+		return skip(budgetSkipReason(budget), nil)
+	}
+	if reason, err := reviewLimit(ctx, tx, client, resolved, delivery, repo); err != nil || reason != "" {
+		if err != nil {
+			return false, err
+		}
+		if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
+			return false, err
+		}
+		return skip(reason, nil)
+	}
 	if err := supersedeQueued(ctx, tx, client, repo.id, delivery.PR, delivery.HeadSHA); err != nil {
 		return false, err
 	}
@@ -259,7 +292,18 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if err != nil {
 		return false, err
 	}
-	job, err := client.InsertTx(ctx, tx, ReviewArgs{RunID: runID}, nil)
+	queuedMessage := "Review queued"
+	if delivery.Manual {
+		queuedMessage = "Review queued by hand"
+	}
+	var options *river.InsertOpts
+	if wait := resolved.Rereview.Debounce(); wait > 0 && delivery.Action == "synchronize" && !delivery.Manual {
+		// A push is held so a quick follow-up push supersedes it instead
+		// of both being reviewed.
+		options = &river.InsertOpts{ScheduledAt: s.now().Add(wait)}
+		queuedMessage = fmt.Sprintf("Review queued; waiting %s for further pushes", wait)
+	}
+	job, err := client.InsertTx(ctx, tx, ReviewArgs{RunID: runID}, options)
 	if err != nil {
 		return false, err
 	}
@@ -268,10 +312,6 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	}
 	if _, err := tx.Exec(ctx, `UPDATE webhook_deliveries SET outcome = $1, run_id = $2 WHERE id = $3`, deliveryOutcomeQueued, runID, deliveryRow); err != nil {
 		return false, err
-	}
-	queuedMessage := "Review queued"
-	if delivery.Manual {
-		queuedMessage = "Review queued by hand"
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'queued', $2)`, runID, queuedMessage); err != nil {
 		return false, err
@@ -317,4 +357,44 @@ func (s *Store) KnownDelivery(ctx context.Context, guid string) (bool, error) {
 	var known bool
 	err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM webhook_deliveries WHERE source = 'github' AND delivery_id = $1)`, guid).Scan(&known)
 	return known, err
+}
+
+// budgetSkipReason explains a review the budget left out.
+func budgetSkipReason(check BudgetCheck) string {
+	scope := "global"
+	if check.Scope != "" {
+		scope = check.Scope
+	}
+	return fmt.Sprintf("%s: %s %s budget %s reached (%s spent, %s expected for queued and running reviews, %s for this one)", SkipBudgetExhausted, scope, check.Period, overload.FormatUSD(check.Cap), overload.FormatUSD(check.Spent), overload.FormatUSD(check.Pending), overload.FormatUSD(check.Expected))
+}
+
+// reviewLimit returns a skip reason when a webhook review would pass the
+// workflow's reviews per pull request, and sets the head's commit status
+// so a required check does not wait. Reviews asked for by hand always run.
+func reviewLimit(ctx context.Context, tx pgx.Tx, client *river.Client[pgx.Tx], workflow overload.ResolvedWorkflow, delivery PullRequestDelivery, repo repoFacts) (string, error) {
+	limit := workflow.Rereview.ReviewLimit()
+	if limit == 0 || delivery.Manual {
+		return "", nil
+	}
+	var reviews int
+	// Queued reviews of other heads are about to be superseded by this
+	// one, so they do not count.
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM runs WHERE repository_id=$1 AND pr_number=$2 AND trigger='webhook' AND (status IN ('running', 'completed') OR (status = 'queued' AND head_sha = $3))`, repo.id, delivery.PR, delivery.HeadSHA).Scan(&reviews); err != nil {
+		return "", err
+	}
+	if reviews < limit {
+		return "", nil
+	}
+	if repo.installation != 0 || delivery.ForgeID > 0 {
+		// The comment command is read from GitHub; on other hosts a review
+		// is asked for from overload's UI or CLI.
+		description := fmt.Sprintf("Overload: review limit reached (%d); comment /overload review to review again", limit)
+		if delivery.ForgeID > 0 {
+			description = fmt.Sprintf("Overload: review limit reached (%d); use Review now in overload to review again", limit)
+		}
+		if _, err := client.InsertTx(ctx, tx, SkipStatusArgs{Repository: repo.name, InstallationID: repo.installation, ForgeID: delivery.ForgeID, SHA: delivery.HeadSHA, State: BudgetSkipSuccess, Description: description}, nil); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("%s: %s of this pull request already", SkipReviewLimit, overload.Plural(reviews, "webhook review")), nil
 }

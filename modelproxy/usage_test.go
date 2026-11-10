@@ -1,0 +1,247 @@
+package modelproxy
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"math"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/daltoniam/overload"
+)
+
+func TestParseUsage(t *testing.T) {
+	for _, test := range []struct {
+		name, provider, contentType, body string
+		want                              overload.Usage
+	}{
+		{"chat completions", overload.ProviderOpenAICompat, "application/json", `{"usage":{"prompt_tokens":12000,"completion_tokens":800,"prompt_tokens_details":{"cached_tokens":10000}}}`, overload.Usage{Calls: 1, Input: 12000, CachedInput: 10000, Output: 800}},
+		{"responses", overload.ProviderOpenAICompat, "application/json", `{"usage":{"input_tokens":5000,"output_tokens":300,"input_tokens_details":{"cached_tokens":4000}}}`, overload.Usage{Calls: 1, Input: 5000, CachedInput: 4000, Output: 300}},
+		{"anthropic", overload.ProviderAnthropic, "application/json", `{"usage":{"input_tokens":2000,"output_tokens":800,"cache_read_input_tokens":10000,"cache_creation_input_tokens":3000}}`, overload.Usage{Calls: 1, Input: 15000, CachedInput: 10000, CacheWrite: 3000, Output: 800}},
+		{"chat stream", overload.ProviderOpenAICompat, "text/event-stream", "data: {\"choices\":[]}\n\ndata: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":7}}\n\ndata: [DONE]\n", overload.Usage{Calls: 1, Input: 100, Output: 7}},
+		{"responses stream", overload.ProviderOpenAICompat, "text/event-stream", "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":50,\"output_tokens\":5}}}\n", overload.Usage{Calls: 1, Input: 50, Output: 5}},
+		{"anthropic stream", overload.ProviderAnthropic, "text/event-stream", "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":100,\"output_tokens\":1}}}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":40}}\n", overload.Usage{Calls: 1, Input: 120, CachedInput: 100, Output: 40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := parseUsage(test.provider, test.contentType, []byte(test.body))
+			if !ok || got != test.want {
+				t.Fatalf("usage = %+v %v, want %+v", got, ok, test.want)
+			}
+		})
+	}
+	if _, ok := parseUsage(overload.ProviderOpenAICompat, "application/json", []byte(`{"error":"x"}`)); ok {
+		t.Fatal("usage read from an error")
+	}
+}
+
+func TestProxyMetersSpendAndStopsAtTheBudget(t *testing.T) {
+	t.Setenv("OVERLOAD_MODEL_TEST", "key")
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[],"usage":{"prompt_tokens":12000,"completion_tokens":800,"prompt_tokens_details":{"cached_tokens":10000}}}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	var seen []float64
+	stop, broken := false, false
+	proxy.Budget = func(_ context.Context, pending float64) (string, error) {
+		seen = append(seen, pending)
+		if broken {
+			return "", errors.New("database unavailable")
+		}
+		if stop {
+			return "monthly", nil
+		}
+		return "", nil
+	}
+	server := httptest.NewServer(proxy)
+	defer server.Close()
+	base, revoke := proxy.Grant(overload.ModelProfile{BaseURL: upstream.URL + "/v1", Model: "sol", APIKeyEnv: "OVERLOAD_MODEL_TEST", Pricing: &overload.Pricing{Input: 2, CachedInput: 0.10, Output: 10}}, time.Minute)
+	path := strings.TrimPrefix(base, "http://overload:8083")
+	post := func() int {
+		response, err := http.Post(server.URL+path+"/chat/completions", "application/json", strings.NewReader(`{"model":"sol"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		return response.StatusCode
+	}
+	for range 2 {
+		if status := post(); status != http.StatusOK {
+			t.Fatalf("status %d", status)
+		}
+	}
+	// Each call: 2,000 uncached x $2 + 10,000 cached x $0.10 + 800 output x $10 per million = $0.013.
+	if pending := proxy.Pending(); math.Abs(pending-0.026) > 1e-9 || len(seen) != 2 || math.Abs(seen[1]-0.013) > 1e-9 {
+		t.Fatalf("pending = %v seen = %v", pending, seen)
+	}
+	stop = true
+	if status := post(); status != http.StatusTooManyRequests || calls != 2 {
+		t.Fatalf("over budget: status %d after %d upstream calls", status, calls)
+	}
+	// A budget that cannot be checked refuses the call too.
+	stop, broken = false, true
+	if status := post(); status != http.StatusServiceUnavailable || calls != 2 {
+		t.Fatalf("budget check failed: status %d after %d upstream calls", status, calls)
+	}
+	broken = false
+	stop = false
+	// A revoked grant stops calls but its spend counts until the run has
+	// recorded it, including calls that finish after the revoke.
+	token := strings.TrimPrefix(path, "/v1/m/")
+	if _, ok := proxy.begin(token); !ok {
+		t.Fatal("live grant refused a call")
+	}
+	revoke()
+	if status := post(); status != http.StatusUnauthorized {
+		t.Fatalf("call after revoke: %d", status)
+	}
+	proxy.finish(token, 0.01)
+	if pending := proxy.Pending(); math.Abs(pending-0.036) > 1e-9 {
+		t.Fatalf("pending after revoke = %v", pending)
+	}
+	later := time.Now().Add(settleWindow + time.Second)
+	proxy.now = func() time.Time { return later }
+	if pending := proxy.Pending(); pending != 0 {
+		t.Fatalf("settled grant still pending: %v", pending)
+	}
+}
+
+func TestUsageMeterSurvivesHugeAnswers(t *testing.T) {
+	meter := newUsageMeter(overload.ProviderAnthropic, "text/event-stream")
+	meter.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n"))
+	// A content line over the line limit is skipped, not fatal.
+	meter.write([]byte("data: {\"delta\":\"" + strings.Repeat("x", maxEventLine+10)))
+	meter.write([]byte("\"}\n\n"))
+	// Answers past the size limit are still read as they stream.
+	for range 20 {
+		meter.write([]byte("data: {\"delta\":\"" + strings.Repeat("y", 1<<20-100) + "\"}\n\n"))
+	}
+	meter.write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4000}}\n"))
+	usage, exact := meter.usage()
+	if !exact || usage.Input != 20 || usage.Output != 4000 || meter.bytes < maxMeteredBytes {
+		t.Fatalf("usage = %+v exact = %v after %d bytes", usage, exact, meter.bytes)
+	}
+	plain := newUsageMeter(overload.ProviderOpenAICompat, "application/json")
+	plain.write([]byte(strings.Repeat("z", 3000)))
+	if usage, exact := plain.usage(); exact || usage.Output != 1001 {
+		t.Fatalf("estimate = %+v %v", usage, exact)
+	}
+}
+
+func TestInterruptedAnthropicStreamEstimatesItsOutput(t *testing.T) {
+	meter := newUsageMeter(overload.ProviderAnthropic, "text/event-stream")
+	meter.write([]byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":20,\"cache_read_input_tokens\":100,\"output_tokens\":1}}}\n\n"))
+	meter.write([]byte("data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"" + strings.Repeat("x", 3000) + "\"}}\n\n"))
+	// The stream ends here, before message_delta reports the output.
+	usage, exact := meter.usage()
+	if exact || usage.Input != 120 || usage.CachedInput != 100 || usage.Output < 1000 {
+		t.Fatalf("usage = %+v exact = %v", usage, exact)
+	}
+	meter.write([]byte("data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":900}}\n\n"))
+	if usage, exact := meter.usage(); !exact || usage.Output != 900 || usage.Input != 120 {
+		t.Fatalf("complete stream = %+v exact = %v", usage, exact)
+	}
+}
+
+func TestUsageFromMultilineEvents(t *testing.T) {
+	// One event whose JSON spans two data lines, joined by a newline.
+	usage, ok := parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\n\ndata: {\"usage\":\ndata: {\"prompt_tokens\":100,\"completion_tokens\":10}}\n\n"))
+	if !ok || usage.Input != 100 || usage.Output != 10 {
+		t.Fatalf("multi-line event usage = %+v %v", usage, ok)
+	}
+	// Streams that skip the blank line between events still read.
+	usage, ok = parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\ndata: {\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}\n"))
+	if !ok || usage.Input != 7 || usage.Output != 3 {
+		t.Fatalf("events without blank lines = %+v %v", usage, ok)
+	}
+	// A long answer without blank lines between events does not crowd out
+	// the usage at its end.
+	meter := newUsageMeter(overload.ProviderOpenAICompat, "text/event-stream")
+	chunk := []byte("data: {\"choices\":[{\"delta\":{\"content\":\"" + strings.Repeat("x", 4000) + "\"}}]}\n")
+	for range maxEventLine/len(chunk) + 50 {
+		meter.write(chunk)
+	}
+	meter.write([]byte("data: {\"usage\":{\"prompt_tokens\":900,\"completion_tokens\":80}}\n"))
+	if usage, exact := meter.usage(); !exact || usage.Input != 900 || usage.Output != 80 {
+		t.Fatalf("long separator-free stream = %+v exact = %v", usage, exact)
+	}
+}
+
+type trackedBody struct {
+	reader io.Reader
+	done   *bool
+}
+
+func (body trackedBody) Read(buf []byte) (int, error) {
+	n, err := body.reader.Read(buf)
+	if err == io.EOF {
+		*body.done = true
+	}
+	return n, err
+}
+
+func TestProxyChecksTheBudgetAfterTheUpload(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer upstream.Close()
+	proxy := New("http://overload:8083")
+	uploaded := false
+	proxy.Budget = func(context.Context, float64) (string, error) {
+		if !uploaded {
+			t.Error("budget checked before the request was read")
+		}
+		// The budget ran out while the request was uploading.
+		return "monthly", nil
+	}
+	base, _ := proxy.Grant(overload.ModelProfile{BaseURL: upstream.URL + "/v1", Model: "sol"}, time.Minute)
+	request := httptest.NewRequest(http.MethodPost, strings.TrimPrefix(base, "http://overload:8083")+"/chat/completions", trackedBody{reader: strings.NewReader(`{"model":"sol"}`), done: &uploaded})
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d", recorder.Code)
+	}
+}
+
+func TestUsageWithCarriageReturnLineEndings(t *testing.T) {
+	// Bare CR line endings.
+	usage, ok := parseUsage(overload.ProviderOpenAICompat, "text/event-stream", []byte("data: {\"choices\":[]}\r\rdata: {\"usage\":{\"prompt_tokens\":40,\"completion_tokens\":4}}\r\r"))
+	if !ok || usage.Input != 40 || usage.Output != 4 {
+		t.Fatalf("CR stream = %+v %v", usage, ok)
+	}
+	// CRLF, with a multi-line event and the CR and LF in separate writes.
+	meter := newUsageMeter(overload.ProviderOpenAICompat, "text/event-stream")
+	for _, part := range []string{"data: {\"usage\":\r", "\ndata: {\"prompt_tokens\":9,\"completion_tokens\":2}}\r", "\n\r", "\n"} {
+		meter.write([]byte(part))
+	}
+	if usage, exact := meter.usage(); !exact || usage.Input != 9 || usage.Output != 2 {
+		t.Fatalf("CRLF stream = %+v exact = %v", usage, exact)
+	}
+}
+
+func TestBudgetRefusalIsValidJSON(t *testing.T) {
+	proxy := New("http://overload:8083")
+	proxy.Budget = func(context.Context, float64) (string, error) { return "odd \"reason\"\n\\", nil }
+	base, _ := proxy.Grant(overload.ModelProfile{BaseURL: "http://127.0.0.1:1/v1", Model: "sol"}, time.Minute)
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, strings.TrimPrefix(base, "http://overload:8083")+"/chat/completions", strings.NewReader(`{"model":"sol"}`)))
+	var body struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if recorder.Code != http.StatusTooManyRequests || json.Unmarshal(recorder.Body.Bytes(), &body) != nil || body.Error.Type != "budget_exhausted" || !strings.Contains(body.Error.Message, `odd "reason"`) {
+		t.Fatalf("status %d body %q", recorder.Code, recorder.Body.String())
+	}
+}

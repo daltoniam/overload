@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"charm.land/fantasy"
+	"charm.land/fantasy/providers/anthropic"
 	"charm.land/fantasy/providers/openai"
 	"charm.land/fantasy/providers/openaicompat"
 	"github.com/charmbracelet/openai-go/option"
@@ -24,6 +25,9 @@ var modelHTTPClient = func() *http.Client {
 }()
 
 func newProvider(model overload.ModelProfile) (fantasy.Provider, error) {
+	if model.Provider == overload.ProviderAnthropic {
+		return anthropic.New(anthropic.WithBaseURL(model.BaseURL), anthropic.WithAPIKey(os.Getenv(model.APIKeyEnv)), anthropic.WithHeaders(model.Headers), anthropic.WithHTTPClient(modelHTTPClient))
+	}
 	if model.API == overload.APIResponses {
 		options := []openai.Option{openai.WithBaseURL(model.BaseURL), openai.WithAPIKey(os.Getenv(model.APIKeyEnv)), openai.WithHeaders(model.Headers), openai.WithUseResponsesAPI(), openai.WithResponsesAPIFunc(func(string) bool { return true })}
 		options = append(options, openai.WithHTTPClient(modelHTTPClient))
@@ -56,19 +60,25 @@ func newAgent(ctx context.Context, model overload.ModelProfile, systemPrompt str
 		return nil, reasoningPlan{}, err
 	}
 	plan := planFor(model)
+	plan.systemChars, plan.system = len(systemPrompt), systemPrompt
 	return fantasy.NewAgent(languageModel, append(reviewAgentOptions(plan, systemPrompt), extra...)...), plan, nil
 }
 
 // Complete sends one prompt to a model with the same connection, reasoning
 // and output settings reviews use, and returns the reply text.
-func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, prompt string) (string, error) {
+//
+// It also returns what the calls cost; a call to a model without prices
+// counts as unpriced.
+func Complete(ctx context.Context, model overload.ModelProfile, systemPrompt, prompt string) (string, overload.Spend, error) {
 	agent, plan, err := newAgent(ctx, model, systemPrompt)
 	if err != nil {
-		return "", err
+		return "", overload.Spend{}, err
 	}
-	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt})
+	meter := newMeter(nil)
+	response, _, err := generateReview(ctx, agent, plan, fantasy.AgentCall{Prompt: prompt}, meter)
+	_, spend := meter.totals()
 	if err != nil {
-		return "", err
+		return "", spend, err
 	}
-	return response.Response.Content.Text(), nil
+	return response.Response.Content.Text(), spend, nil
 }

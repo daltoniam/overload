@@ -43,6 +43,8 @@ type Run struct {
 	ErrorMessage string
 	StartedAt    *time.Time
 	FinishedAt   *time.Time
+	// Cost is what the run's model calls cost; nil when not recorded.
+	Cost *Spend
 }
 
 type Finding struct {
@@ -62,6 +64,9 @@ type Finding struct {
 	// DropReason is set on findings the verifier dropped. They are stored
 	// on the run but never posted.
 	DropReason string `json:"drop_reason,omitempty"`
+	// CommentID is the GitHub review comment the finding was posted as,
+	// when known.
+	CommentID int64 `json:"comment_id,omitempty"`
 }
 
 type Repository struct {
@@ -111,6 +116,8 @@ type ModelProfile struct {
 	// API is the request style: "" for Chat Completions, APIResponses for
 	// OpenAI's Responses API.
 	API string `json:",omitempty"`
+	// Pricing is the model's price list; nil means calls are unpriced.
+	Pricing *Pricing `json:",omitempty"`
 }
 
 type ReviewSettings struct {
@@ -127,7 +134,43 @@ type ReviewSettings struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	MaxOutputTokens int    `json:"max_output_tokens,omitempty"`
 	API             string `json:"api,omitempty"`
+	// Prices in US dollars per million tokens. Input and output are set
+	// together; cached input and cache writes default to the input price.
+	PriceInput       *float64 `json:"price_input,omitempty"`
+	PriceCachedInput *float64 `json:"price_cached_input,omitempty"`
+	PriceCacheWrite  *float64 `json:"price_cache_write,omitempty"`
+	PriceOutput      *float64 `json:"price_output,omitempty"`
+	// Above LongContextTokens prompt tokens in one call, input and output
+	// prices are multiplied by the long-context multipliers.
+	LongContextTokens           int64   `json:"long_context_tokens,omitempty"`
+	LongContextInputMultiplier  float64 `json:"long_context_input_multiplier,omitempty"`
+	LongContextOutputMultiplier float64 `json:"long_context_output_multiplier,omitempty"`
 }
+
+// Pricing returns the settings' price list, or nil when unpriced.
+func (settings ReviewSettings) Pricing() *Pricing {
+	if settings.PriceInput == nil || settings.PriceOutput == nil {
+		return nil
+	}
+	pricing := &Pricing{Input: *settings.PriceInput, CachedInput: *settings.PriceInput, CacheWrite: *settings.PriceInput, Output: *settings.PriceOutput, LongContextTokens: settings.LongContextTokens, LongContextInput: settings.LongContextInputMultiplier, LongContextOutput: settings.LongContextOutputMultiplier}
+	if settings.PriceCachedInput != nil {
+		pricing.CachedInput = *settings.PriceCachedInput
+	}
+	if settings.PriceCacheWrite != nil {
+		pricing.CacheWrite = *settings.PriceCacheWrite
+	}
+	return pricing
+}
+
+// Model providers: any OpenAI-compatible API, or Anthropic's Messages API.
+const (
+	ProviderOpenAICompat = "openaicompat"
+	ProviderAnthropic    = "anthropic"
+)
+
+// anthropicEfforts are the effort levels Anthropic's adaptive thinking
+// takes (output_config.effort).
+var anthropicEfforts = map[string]bool{"low": true, "medium": true, "high": true, "xhigh": true, "max": true}
 
 // APIResponses selects OpenAI's Responses API instead of Chat Completions.
 // Newer OpenAI reasoning models only accept tools together with a
@@ -221,8 +264,20 @@ var settingName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (settings ReviewSettings) Validate() error {
-	if !settingName.MatchString(settings.Name) || settings.Provider != "openaicompat" || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
+	if !settingName.MatchString(settings.Name) || (settings.Provider != ProviderOpenAICompat && settings.Provider != ProviderAnthropic) || strings.TrimSpace(settings.Model) == "" || len(settings.Model) > 200 || strings.TrimSpace(settings.Model) != settings.Model {
 		return errors.New("invalid model name or provider")
+	}
+	if settings.Provider == ProviderAnthropic {
+		switch {
+		case settings.ConnectionKind != "hosted":
+			return errors.New("an Anthropic model is a hosted connection")
+		case settings.API != "":
+			return errors.New("an Anthropic model uses the Messages API; leave the API style empty")
+		case settings.ReasoningParam == ReasoningChatTemplate:
+			return errors.New("an Anthropic model takes an effort (reasoning_effort), not the chat template switch")
+		case settings.ReasoningParam == ReasoningEffortField && !anthropicEfforts[settings.ReasoningEffort]:
+			return errors.New("the Anthropic effort must be low, medium, high, xhigh or max")
+		}
 	}
 	if settings.PromptProfile != "context" && settings.PromptProfile != "switchboard-go" {
 		return errors.New("unsupported prompt profile")
@@ -251,6 +306,9 @@ func (settings ReviewSettings) Validate() error {
 	default:
 		return errors.New("API must be empty (Chat Completions) or responses")
 	}
+	if err := validatePricing(settings.PriceInput, settings.PriceCachedInput, settings.PriceCacheWrite, settings.PriceOutput, settings.LongContextTokens, settings.LongContextInputMultiplier, settings.LongContextOutputMultiplier); err != nil {
+		return err
+	}
 	parsed, err := url.Parse(settings.BaseURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(settings.BaseURL) > 2048 || strings.ContainsAny(settings.BaseURL, "\r\n") {
 		return errors.New("invalid model base URL")
@@ -259,7 +317,7 @@ func (settings ReviewSettings) Validate() error {
 }
 
 func (settings ReviewSettings) Profile() ModelProfile {
-	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API}
+	return ModelProfile{Name: settings.Name, Provider: settings.Provider, ConnectionKind: settings.ConnectionKind, BaseURL: settings.BaseURL, Model: settings.Model, APIKeyEnv: settings.APIKeyEnv, Concurrency: settings.Concurrency, ReasoningParam: settings.ReasoningParam, ReasoningEffort: settings.ReasoningEffort, MaxOutputTokens: settings.MaxOutputTokens, API: settings.API, Pricing: settings.Pricing()}
 }
 
 type ReviewSpec struct {
@@ -267,12 +325,69 @@ type ReviewSpec struct {
 	PRNumber   int              `json:"pr_number"`
 	Diff       string           `json:"diff"`
 	Workflow   ResolvedWorkflow `json:"workflow"`
+	// PullRequest is the pull request's title and description, already
+	// stripped of links, HTML and mentions; they are untrusted text.
+	PullRequest *PullRequestInfo `json:"pull_request,omitempty"`
+	// Incremental makes this a re-review of what changed since an earlier
+	// review.
+	Incremental *Incremental `json:"incremental,omitempty"`
+	// Tier is the size tier the workflow's tiers put the pull request in;
+	// a lighter tier has already narrowed Workflow to its agents.
+	Tier *TierDecision `json:"tier,omitempty"`
+}
+
+// Incremental describes a re-review: the files whose diff is the same as
+// at the earlier review (they are not reviewed again unless linked to a
+// changed file), and the earlier review's open findings.
+type Incremental struct {
+	SinceRunID int64    `json:"since_run_id"`
+	Unchanged  []string `json:"unchanged,omitempty"`
+	// Reverted lists files the earlier review's diff changed that the
+	// current diff no longer does: the pull request put them back.
+	Reverted []string       `json:"reverted,omitempty"`
+	Prior    []PriorFinding `json:"prior,omitempty"`
+}
+
+// PriorFinding is an open finding from an earlier review of the pull
+// request, with replies people left on its thread (untrusted text,
+// stripped of links, HTML and mentions).
+type PriorFinding struct {
+	ID       int64    `json:"id"`
+	Path     string   `json:"path"`
+	Line     int      `json:"line"`
+	Severity string   `json:"severity"`
+	Title    string   `json:"title"`
+	Body     string   `json:"body"`
+	Replies  []string `json:"replies,omitempty"`
+	// CommentID is the GitHub review comment the finding was posted as,
+	// when known.
+	CommentID int64 `json:"comment_id,omitempty"`
+}
+
+// PriorVerdict is a re-review's judgment of an earlier finding.
+type PriorVerdict struct {
+	ID     int64  `json:"id"`
+	Status string `json:"status"`
+}
+
+// Prior finding statuses.
+const (
+	PriorResolved     = "resolved"
+	PriorStillPresent = "still_present"
+)
+
+// PullRequestInfo is what a pull request says about itself.
+type PullRequestInfo struct {
+	Title string `json:"title"`
+	Body  string `json:"body,omitempty"`
 }
 
 type ReviewResult struct {
-	Findings []Finding      `json:"findings"`
-	Dropped  []Finding      `json:"dropped,omitempty"`
-	Summary  string         `json:"summary"`
-	Metrics  map[string]any `json:"metrics,omitempty"`
-	Error    string         `json:"error,omitempty"`
+	Findings []Finding `json:"findings"`
+	Dropped  []Finding `json:"dropped,omitempty"`
+	// Prior judges earlier findings in an incremental re-review.
+	Prior   []PriorVerdict `json:"prior,omitempty"`
+	Summary string         `json:"summary"`
+	Metrics map[string]any `json:"metrics,omitempty"`
+	Error   string         `json:"error,omitempty"`
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
 )
 
@@ -14,7 +15,37 @@ type modelDeleter interface {
 	DeleteReviewSettings(context.Context, string) error
 }
 
+// BudgetStore keeps spending caps.
+type BudgetStore interface {
+	Budgets(context.Context) ([]postgres.Budget, error)
+	SaveBudget(context.Context, postgres.Budget) error
+}
+
 func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
+	if store, ok := reader.(BudgetStore); ok {
+		mux.HandleFunc("POST /settings/budget", func(w http.ResponseWriter, r *http.Request) {
+			if !validForm(w, r, csrf) {
+				return
+			}
+			budget := postgres.Budget{SkipStatus: r.PostForm.Get("skip_status")}
+			for _, field := range []struct {
+				name   string
+				target **float64
+			}{{"monthly_usd", &budget.MonthlyUSD}, {"daily_usd", &budget.DailyUSD}} {
+				value, err := overload.ParsePrice(r.PostForm.Get(field.name))
+				if err != nil {
+					http.Error(w, "Budget caps must be dollar amounts", http.StatusBadRequest)
+					return
+				}
+				*field.target = value
+			}
+			if err := store.SaveBudget(r.Context(), budget); err != nil {
+				http.Error(w, "Budget not saved: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		})
+	}
 	mux.HandleFunc("GET /settings/{name}", func(w http.ResponseWriter, r *http.Request) {
 		selected := overload.ReviewSettings{ConnectionKind: "local", PromptProfile: "context"}
 		if r.PathValue("name") != "new" {
@@ -63,7 +94,11 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 			http.Error(w, "Invalid model connection type", http.StatusBadRequest)
 			return
 		}
-		setting := overload.ReviewSettings{Name: name, Provider: "openaicompat", ConnectionKind: kind, BaseURL: r.PostForm.Get("base_url"), Model: r.PostForm.Get("model"), APIKeyEnv: r.PostForm.Get("api_key_env"), PromptProfile: "context", IsDefault: r.PostForm.Get("is_default") == "true", Concurrency: 1}
+		provider := r.PostForm.Get("provider")
+		if provider == "" {
+			provider = overload.ProviderOpenAICompat
+		}
+		setting := overload.ReviewSettings{Name: name, Provider: provider, ConnectionKind: kind, BaseURL: r.PostForm.Get("base_url"), Model: r.PostForm.Get("model"), APIKeyEnv: r.PostForm.Get("api_key_env"), PromptProfile: "context", IsDefault: r.PostForm.Get("is_default") == "true", Concurrency: 1}
 		setting.API = r.PostForm.Get("api")
 		setting.ReasoningParam = r.PostForm.Get("reasoning_param")
 		setting.ReasoningEffort = strings.TrimSpace(r.PostForm.Get("reasoning_effort"))
@@ -85,6 +120,38 @@ func registerModels(mux *http.ServeMux, reader RunReader, csrf string) {
 				return
 			}
 			setting.Concurrency = parsed
+		}
+		for _, price := range []struct {
+			field  string
+			target **float64
+		}{{"price_input", &setting.PriceInput}, {"price_cached_input", &setting.PriceCachedInput}, {"price_cache_write", &setting.PriceCacheWrite}, {"price_output", &setting.PriceOutput}} {
+			value, err := overload.ParsePrice(r.PostForm.Get(price.field))
+			if err != nil {
+				http.Error(w, "Invalid model settings: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			*price.target = value
+		}
+		if value := strings.TrimSpace(r.PostForm.Get("long_context_tokens")); value != "" {
+			parsed, err := strconv.ParseInt(value, 10, 64)
+			if err != nil {
+				http.Error(w, "Invalid long-context threshold", http.StatusBadRequest)
+				return
+			}
+			setting.LongContextTokens = parsed
+		}
+		for _, multiplier := range []struct {
+			field  string
+			target *float64
+		}{{"long_context_input_multiplier", &setting.LongContextInputMultiplier}, {"long_context_output_multiplier", &setting.LongContextOutputMultiplier}} {
+			value, err := overload.ParsePrice(r.PostForm.Get(multiplier.field))
+			if err != nil {
+				http.Error(w, "Invalid long-context multiplier", http.StatusBadRequest)
+				return
+			}
+			if value != nil {
+				*multiplier.target = *value
+			}
 		}
 		if previous != nil {
 			setting.PromptProfile = previous.PromptProfile

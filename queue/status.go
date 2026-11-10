@@ -10,6 +10,7 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/riverqueue/river"
 )
 
 // StatusSetter sets overload's commit status on a pull request's head.
@@ -111,4 +112,48 @@ func finalStatus(event string, findings int, partial bool) (string, string) {
 		description = "Partial review, some files not reviewed. " + description
 	}
 	return state, description
+}
+
+// SkipStatusWorker sets the commit status of a head overload chose not to
+// review (for example because the budget was reached), so a required
+// overload check reflects the decision instead of staying pending.
+type SkipStatusWorker struct {
+	river.WorkerDefaults[postgres.SkipStatusArgs]
+	Store *postgres.Store
+	// Status sets commit statuses; nil uses the GitHub App.
+	Status StatusSetter
+}
+
+func (w *SkipStatusWorker) Work(ctx context.Context, job *river.Job[postgres.SkipStatusArgs]) error {
+	args := job.Args
+	if (args.InstallationID == 0 && args.ForgeID == 0) || args.SHA == "" {
+		return nil
+	}
+	setter := w.Status
+	if setter == nil && args.ForgeID > 0 {
+		client, err := ForgeClient(ctx, w.Store, args.ForgeID)
+		if err != nil {
+			slog.Warn("skip status not set: git host connection unavailable", "repository", args.Repository, "error", err)
+			return nil
+		}
+		setter = forgePoster{client: client}
+	}
+	if setter == nil {
+		client, err := appClient(ctx, w.Store)
+		if err != nil {
+			slog.Warn("skip status not set: GitHub App unavailable", "repository", args.Repository, "error", err)
+			return nil
+		}
+		setter = client
+	}
+	err := setter.SetStatus(ctx, args.InstallationID, args.Repository, args.SHA, args.State, args.Description, "")
+	switch {
+	case errors.Is(err, overload.ErrStatusForbidden) && args.ForgeID > 0:
+		slog.Warn("skip status not set; the git host token needs permission to set commit statuses", "repository", args.Repository)
+		return nil
+	case errors.Is(err, overload.ErrStatusForbidden):
+		slog.Warn("skip status not set; grant the GitHub App \"Commit statuses: write\"", "repository", args.Repository)
+		return nil
+	}
+	return err
 }

@@ -22,9 +22,14 @@ type Runner interface {
 	Review(ctx context.Context, repo string, prNumber int) (overload.ReviewSpec, overload.ReviewResult, string, error)
 }
 
+// maxDescription bounds the pull request description sent to models.
+const maxDescription = 8000
+
 // fetchPR loads an open pull request, its diff and head archive and builds
-// the spec both runners review.
-func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.ResolvedWorkflow, repo string, prNumber int) (overload.ReviewSpec, *bytes.Buffer, string, error) {
+// the spec both runners review. The workflow's tiers are applied here,
+// before any archive, sandbox or model: a skipped tier returns no archive,
+// and a lighter tier narrows the spec's workflow to its agents.
+func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.ResolvedWorkflow, repo string, prNumber int, rereview *Rereview) (overload.ReviewSpec, *bytes.Buffer, string, error) {
 	pr, patch, err := source.PullRequestWithDiff(ctx, repo, prNumber)
 	if err != nil {
 		return overload.ReviewSpec{}, nil, "", fmt.Errorf("fetch PR: %w", err)
@@ -33,12 +38,37 @@ func fetchPR(ctx context.Context, source PullRequestSource, workflow overload.Re
 		return overload.ReviewSpec{}, nil, pr.HeadSHA, err
 	}
 	sha := pr.HeadSHA
-	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: repo}, PRNumber: prNumber, Diff: patch, Workflow: workflow}
+	spec := overload.ReviewSpec{Repository: overload.Repository{FullName: repo}, PRNumber: prNumber, Diff: patch, Workflow: workflow, PullRequest: &overload.PullRequestInfo{Title: Sanitize(pr.Title, 300), Body: Sanitize(pr.Body, maxDescription)}, Incremental: rereview.incremental(patch)}
+	if decision := spec.Workflow.ChooseTier(overload.DiffChanges(patch)); decision.Skip {
+		spec.Tier = &decision
+		return spec, nil, sha, nil
+	} else if spec.Workflow.Tiers != nil {
+		spec.Workflow = spec.Workflow.WithAgents(decision.Agents)
+		spec.Tier = &decision
+	}
 	archive := &bytes.Buffer{}
 	if err := source.DownloadHead(ctx, repo, sha, archive); err != nil {
 		return spec, nil, sha, fmt.Errorf("download head: %w", err)
 	}
 	return spec, archive, sha, nil
+}
+
+// skippedReview is the result of a review its tier skipped: no model was
+// called.
+func skippedReview(decision overload.TierDecision) overload.ReviewResult {
+	return overload.ReviewResult{Findings: []overload.Finding{}, Summary: "Trivial change (" + decision.Reason + "); not reviewed.", Metrics: map[string]any{"tier": decision.Tier, "tier_reason": decision.Reason, "tier_skipped": true, "model_calls": int64(0), "cost_usd": 0.0, "cost_unpriced_calls": int64(0)}}
+}
+
+// recordTier puts the tier on a finished review's metrics.
+func recordTier(spec overload.ReviewSpec, result overload.ReviewResult) overload.ReviewResult {
+	if spec.Tier == nil {
+		return result
+	}
+	if result.Metrics == nil {
+		result.Metrics = map[string]any{}
+	}
+	result.Metrics["tier"], result.Metrics["tier_reason"] = spec.Tier.Tier, spec.Tier.Reason
+	return result
 }
 
 func checkPR(pr overload.PullRequest, prNumber int, patch string) error {
@@ -60,16 +90,24 @@ type LocalRunner struct {
 	Source   PullRequestSource
 	Reviewer overload.Reviewer
 	Workflow overload.ResolvedWorkflow
+	// Rereview, when set, makes this an incremental re-review.
+	Rereview *Rereview
 }
 
 func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int) (overload.ReviewSpec, overload.ReviewResult, string, error) {
 	if runner.Source == nil || runner.Reviewer == nil {
 		return overload.ReviewSpec{}, overload.ReviewResult{}, "", errors.New("PR source and reviewer required")
 	}
-	spec, archive, sha, err := fetchPR(ctx, runner.Source, runner.Workflow, repo, prNumber)
+	timer := newTransferTimer()
+	spec, archive, sha, err := fetchPR(ctx, runner.Source, runner.Workflow, repo, prNumber, runner.Rereview)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}
+	if spec.Tier != nil && spec.Tier.Skip {
+		return spec, skippedReview(*spec.Tier), sha, nil
+	}
+	timer.lap("fetch_seconds")
+	timer.metrics["archive_bytes"] = int64(archive.Len())
 	workspace, err := os.MkdirTemp("", "overload-pr-")
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
@@ -78,12 +116,18 @@ func (runner LocalRunner) Review(ctx context.Context, repo string, prNumber int)
 	if err := ExtractArchive(ctx, bytes.NewReader(archive.Bytes()), workspace); err != nil {
 		return spec, overload.ReviewResult{}, sha, fmt.Errorf("extract head: %w", err)
 	}
+	timer.lap("extract_seconds")
 	root, err := os.OpenRoot(workspace)
 	if err != nil {
 		return spec, overload.ReviewResult{}, sha, err
 	}
 	defer func() { _ = root.Close() }()
 	result, err := runner.Reviewer.Review(ctx, spec, root.FS())
+	timer.lap("review_seconds")
+	result = recordTier(spec, result)
+	if result.Metrics != nil {
+		result.Metrics["transfer"] = timer.metrics
+	}
 	if err != nil {
 		return spec, result, sha, err
 	}

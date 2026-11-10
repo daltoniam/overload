@@ -18,6 +18,8 @@ type AgentRun struct {
 	ToolCalls    int
 	InputTokens  int64
 	OutputTokens int64
+	// Spend is the priced cost of the run's model calls, one per step.
+	Spend overload.Spend
 	// HitStepLimit means the agent was still working when it ran out of
 	// steps and was asked to report.
 	HitStepLimit bool
@@ -54,7 +56,10 @@ func RunAgent(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	if result != nil {
 		run.Steps = len(result.Steps)
 		run.Text = stripThinking(result.Response.Content.Text())
-		run.InputTokens, run.OutputTokens = result.TotalUsage.InputTokens, result.TotalUsage.OutputTokens
+		run.InputTokens, run.OutputTokens = result.TotalUsage.InputTokens+result.TotalUsage.CacheReadTokens+result.TotalUsage.CacheCreationTokens, result.TotalUsage.OutputTokens
+		for _, step := range result.Steps {
+			run.Spend = run.Spend.Charge(model.Pricing, usageOf(step.Usage))
+		}
 	}
 	return run, err
 }

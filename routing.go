@@ -12,8 +12,10 @@ import (
 
 // SnapshotVersion is the format of resolved workflows pinned on runs.
 // Version 0 snapshots predate scopes: every agent reviews every file.
-// Version 2 added scopes and skip paths, version 3 the planner and verifier.
-const SnapshotVersion = 3
+// Version 2 added scopes and skip paths, version 3 the planner and verifier,
+// version 4 the review policy (cost cap, tiers, context, re-reviews), which
+// older agents would silently ignore.
+const SnapshotVersion = 4
 
 // Main agent review modes.
 const (
@@ -31,11 +33,15 @@ const (
 
 // Scope modes. ScopeGlobs (the default) reviews files matching the paths
 // and any the planner adds; ScopeAlways reviews only files matching the
-// paths; ScopePlanned reviews only files the planner assigns.
+// paths; ScopePlanned reviews only files the planner assigns. ScopeWholePR
+// reviews every file its paths match (all files without paths) together
+// in one call, or a few calls of related files, to catch bugs that span
+// files; it never takes files away from the main agent.
 const (
 	ScopeGlobs   = "globs"
 	ScopeAlways  = "always"
 	ScopePlanned = "planned"
+	ScopeWholePR = "whole_pr"
 )
 
 const maxDescription = 300
@@ -55,13 +61,13 @@ func (scope Scope) Validate() error {
 		return fmt.Errorf("max findings must be between 0 and %d", maxFindingsCap)
 	}
 	switch scope.Mode {
-	case "", ScopeGlobs, ScopeAlways:
+	case "", ScopeGlobs, ScopeAlways, ScopeWholePR:
 	case ScopePlanned:
 		if len(scope.Paths) > 0 {
 			return errors.New("planned scopes take files from the planner, not paths")
 		}
 	default:
-		return errors.New("scope mode must be globs, always or planned")
+		return errors.New("scope mode must be globs, always, planned or whole_pr")
 	}
 	if len(scope.Description) > maxDescription || strings.ContainsFunc(scope.Description, func(r rune) bool { return r < 32 }) {
 		return fmt.Errorf("scope description must be one line of at most %d bytes", maxDescription)
@@ -75,7 +81,12 @@ func (scope Scope) empty() bool {
 
 // Plannable reports whether the planner may assign files to the scope.
 func (scope Scope) Plannable() bool {
-	return scope.Mode != ScopeAlways
+	return scope.Mode != ScopeAlways && scope.Mode != ScopeWholePR
+}
+
+// WholePR reports whether the scope's agent reviews its files together.
+func (scope Scope) WholePR() bool {
+	return scope.Mode == ScopeWholePR
 }
 
 // CompileGlob turns a path glob into a matcher. `*` and `?` stay within one
@@ -150,8 +161,10 @@ func (set globSet) match(path string) bool {
 // added beyond the agent's scope; Unreviewed the files it did not review
 // because it failed.
 type AgentFiles struct {
-	Agent        string   `json:"agent"`
-	Files        []string `json:"files"`
+	Agent string   `json:"agent"`
+	Files []string `json:"files"`
+	// WholePR marks an agent that reviews its files together.
+	WholePR      bool     `json:"whole_pr,omitempty"`
 	Planned      []string `json:"planned,omitempty"`
 	Reviewed     int      `json:"reviewed,omitempty"`
 	Findings     int      `json:"findings,omitempty"`
@@ -162,6 +175,21 @@ type AgentFiles struct {
 	OutputTokens int64    `json:"output_tokens,omitempty"`
 	Failed       string   `json:"failed,omitempty"`
 	Unreviewed   []string `json:"unreviewed,omitempty"`
+	// Calls, cached and cache-write tokens and cost are the agent's model
+	// calls; UnpricedCalls went to models without prices.
+	Calls             int64   `json:"calls,omitempty"`
+	CachedInputTokens int64   `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64   `json:"cache_write_tokens,omitempty"`
+	CostUSD           float64 `json:"cost_usd,omitempty"`
+	UnpricedCalls     int64   `json:"unpriced_calls,omitempty"`
+	// CostCapped counts the agent's file reviews not started because the
+	// run's cost cap was reached.
+	CostCapped int `json:"cost_capped,omitempty"`
+}
+
+// Spend is the agent's priced spend.
+func (agent AgentFiles) Spend() Spend {
+	return Spend{USD: agent.CostUSD, Unpriced: agent.UnpricedCalls}
 }
 
 // Routing records which agent reviews which changed file. Agents are in
@@ -171,16 +199,25 @@ type Routing struct {
 	Skipped []string `json:"skipped,omitempty"`
 	// TooLarge lists changed files whose diff alone exceeds the review
 	// context budget; no agent reviews them.
-	TooLarge []string     `json:"too_large,omitempty"`
+	TooLarge []string `json:"too_large,omitempty"`
+	// Carried lists changed files an incremental re-review did not review
+	// again: their diff is the same as at the earlier review, and their
+	// earlier findings stay open.
+	Carried  []string     `json:"carried,omitempty"`
 	Agents   []AgentFiles `json:"agents"`
 	Planner  string       `json:"planner,omitempty"`
 	Degraded []string     `json:"degraded,omitempty"`
 }
 
-// FileReviews is the number of (agent, file) reviews the routing needs.
+// FileReviews is the number of (agent, file) reviews the routing needs. A
+// whole-PR agent counts once: it reviews its files together.
 func (routing Routing) FileReviews() int {
 	total := 0
 	for _, agent := range routing.Agents {
+		if agent.WholePR {
+			total += min(len(agent.Files), 1)
+			continue
+		}
 		total += len(agent.Files)
 	}
 	return total
@@ -221,7 +258,7 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 	}
 	routing := Routing{Agents: make([]AgentFiles, len(workflow.Agents))}
 	for position, agent := range workflow.Agents {
-		routing.Agents[position] = AgentFiles{Agent: agent.Name, Files: []string{}}
+		routing.Agents[position] = AgentFiles{Agent: agent.Name, Files: []string{}, WholePR: agent.Scope.WholePR()}
 	}
 	for _, path := range paths {
 		if skip.match(path) {
@@ -237,7 +274,7 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 			if byGlob || extra[position][path] {
 				routing.Agents[position].Files = append(routing.Agents[position].Files, path)
 			}
-			claimed = claimed || byGlob
+			claimed = claimed || (byGlob && !workflow.Agents[position].Scope.WholePR())
 			if !byGlob && extra[position][path] {
 				routing.Agents[position].Planned = append(routing.Agents[position].Planned, path)
 			}
@@ -379,8 +416,20 @@ type Preview struct {
 	Calls    int           `json:"model_calls"`
 	Estimate time.Duration `json:"-"`
 	Minutes  int           `json:"estimate_minutes"`
-	Warnings []string      `json:"warnings,omitempty"`
+	// CostUSD is a rough cost when every model has prices: each call
+	// counted at PreviewInputTokens in and PreviewOutputTokens out.
+	CostUSD *float64 `json:"estimate_cost_usd,omitempty"`
+	// Tier explains which tier the files fall in; line counts are not
+	// known from a file list, so it may depend on them.
+	Tier     string   `json:"tier,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
+
+// Tokens per call assumed by preview cost estimates.
+const (
+	PreviewInputTokens  = 12000
+	PreviewOutputTokens = 2000
+)
 
 // Preview routes paths and estimates the work per model server. Servers run
 // at the same time, so the estimate is the slowest server's.
@@ -418,6 +467,16 @@ func (workflow ResolvedWorkflow) Preview(paths []string) (Preview, error) {
 	if workflow.VerifierPrompt != nil {
 		preview.Warnings = append(preview.Warnings, "The verifier adds one model call per sub-agent finding.")
 	}
+	preview.CostUSD = workflow.estimateCost(routing, planner)
+	preview.Tier = workflow.previewTier(paths)
+	if preview.CostUSD != nil && workflow.MaxRunCostUSD > 0 && *preview.CostUSD > workflow.MaxRunCostUSD {
+		preview.Warnings = append(preview.Warnings, fmt.Sprintf("The rough cost (%s) is over the workflow's cap of %s per review; the review would stop early and be marked partial.", FormatUSD(*preview.CostUSD), FormatUSD(workflow.MaxRunCostUSD)))
+	}
+	for _, agent := range routing.Agents {
+		if agent.WholePR && len(agent.Files) > 0 {
+			preview.Warnings = append(preview.Warnings, fmt.Sprintf("%s reviews its %s together; a large pull request is split into a few calls of related files.", agent.Agent, Plural(len(agent.Files), "file")))
+		}
+	}
 	return preview, err
 }
 
@@ -432,7 +491,12 @@ func (workflow ResolvedWorkflow) ServerLoads(routing Routing) []ServerLoad {
 	groupOf, loads := workflow.ServerGroups()
 	for position := range workflow.Agents {
 		if position < len(routing.Agents) {
-			loads[groupOf[position]].Reviews += len(routing.Agents[position].Files)
+			agent := routing.Agents[position]
+			if agent.WholePR {
+				loads[groupOf[position]].Reviews += min(len(agent.Files), 1)
+				continue
+			}
+			loads[groupOf[position]].Reviews += len(agent.Files)
 		}
 	}
 	return loads
@@ -635,4 +699,69 @@ func validateFileChars(kind string, chars int) error {
 		return fmt.Errorf("max_file_chars must be between %d and %d (0 picks a default for the workflow's models)", MinFileChars, MaxFileCharsLimit)
 	}
 	return nil
+}
+
+// estimateCost prices a routing's calls at the preview's nominal tokens,
+// or returns nil when a model has no prices.
+func (workflow ResolvedWorkflow) estimateCost(routing Routing, planner bool) *float64 {
+	call := Usage{Input: PreviewInputTokens, Output: PreviewOutputTokens}
+	total := 0.0
+	for position, agent := range routing.Agents {
+		if position >= len(workflow.Agents) {
+			break
+		}
+		calls := len(agent.Files)
+		if agent.WholePR {
+			calls = min(calls, 1)
+		}
+		if calls == 0 {
+			continue
+		}
+		usd, ok := workflow.Agents[position].Model.Pricing.Cost(call)
+		if !ok {
+			return nil
+		}
+		total += usd * float64(calls)
+	}
+	if planner && len(workflow.Agents) > 0 {
+		usd, ok := workflow.Agents[0].Model.Pricing.Cost(call)
+		if !ok {
+			return nil
+		}
+		total += usd
+	}
+	return &total
+}
+
+// previewTier describes the tier for a list of changed files without line
+// counts: full when a file is sensitive or the files are too many, and
+// otherwise the line limits that decide it.
+func (workflow ResolvedWorkflow) previewTier(paths []string) string {
+	tiers := workflow.Tiers
+	if tiers == nil {
+		return ""
+	}
+	changes := make([]FileChange, len(paths))
+	for index, path := range paths {
+		changes[index] = FileChange{Path: path}
+	}
+	decision := workflow.ChooseTier(changes)
+	if decision.Tier == TierFull {
+		return "full workflow: " + decision.Reason
+	}
+	var limits []string
+	for _, tier := range []struct {
+		name string
+		tier *Tier
+	}{{TierTrivial, tiers.Trivial}, {TierLite, tiers.Lite}} {
+		if tier.tier == nil || len(paths) > tier.tier.MaxFiles {
+			continue
+		}
+		action := "reviewed by " + strings.Join(workflow.tierAgents(tier.tier.Agents), ", ")
+		if tier.tier.Action == TierSkip {
+			action = "skipped"
+		}
+		limits = append(limits, fmt.Sprintf("%s (%s) at %d changed lines or fewer", tier.name, action, tier.tier.MaxLines))
+	}
+	return "depends on changed lines: " + strings.Join(limits, "; ") + "; full workflow above that"
 }

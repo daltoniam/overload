@@ -13,6 +13,8 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/modelproxy"
+	"github.com/daltoniam/overload/postgres"
+	"github.com/daltoniam/overload/queue"
 	reviewpkg "github.com/daltoniam/overload/review"
 	"github.com/daltoniam/overload/sandbox"
 	sdk "sigs.k8s.io/agent-sandbox/clients/go/sandbox"
@@ -46,7 +48,7 @@ func sandboxFromEnvironment(ctx context.Context) (overload.SandboxRunner, error)
 // pod (for example http://overload.overload.svc:8083). It listens on
 // OVERLOAD_MODEL_PROXY_ADDR (default 0.0.0.0:8083), separately from the UI,
 // so network policy can open it to sandbox pods alone.
-func modelProxyFromEnvironment(ctx context.Context, sandboxed bool) (reviewpkg.ModelGrants, error) {
+func modelProxyFromEnvironment(ctx context.Context, sandboxed bool, store *postgres.Store) (reviewpkg.ModelGrants, error) {
 	base := os.Getenv("OVERLOAD_MODEL_PROXY_URL")
 	if base == "" {
 		return nil, nil
@@ -58,6 +60,7 @@ func modelProxyFromEnvironment(ctx context.Context, sandboxed bool) (reviewpkg.M
 		return nil, errors.New("OVERLOAD_MODEL_PROXY_URL must be a scheme and host such as http://overload.overload.svc:8083")
 	}
 	proxy := modelproxy.New(base)
+	proxy.Budget = queue.BudgetGate(store, queue.BudgetMargin, 15*time.Second)
 	server := &http.Server{Addr: envOr("OVERLOAD_MODEL_PROXY_ADDR", "0.0.0.0:8083"), Handler: proxy, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
 	listener, err := net.Listen("tcp", server.Addr)
 	if err != nil {

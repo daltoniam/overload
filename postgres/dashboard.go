@@ -21,6 +21,10 @@ type DashboardStats struct {
 	Days      []ChartValue
 	Outcomes  []ChartValue
 	Kinds     []ChartValue
+	// Spend is what model calls cost today and this month (UTC); Budget
+	// is spend against the global caps.
+	Spend  SpendSummary
+	Budget BudgetStatus
 }
 
 func (s *Store) DashboardStatistics(ctx context.Context, now time.Time) (DashboardStats, error) {
@@ -83,5 +87,13 @@ func (s *Store) DashboardStatistics(ctx context.Context, now time.Time) (Dashboa
 	stats.Completed = stats.Outcomes[2].Count
 	stats.Failed = stats.Outcomes[3].Count
 	stats.Active = stats.Outcomes[0].Count + stats.Outcomes[1].Count
+	spend, err := s.Spend(ctx, now)
+	if err != nil {
+		return DashboardStats{}, err
+	}
+	stats.Spend = spend
+	if stats.Budget, err = s.GlobalBudgetStatus(ctx); err != nil {
+		return DashboardStats{}, err
+	}
 	return stats, nil
 }

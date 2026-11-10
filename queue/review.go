@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -26,6 +27,8 @@ type ReviewWorker struct {
 	Models  reviewpkg.ModelGrants
 	// Status sets commit statuses; nil uses the GitHub App.
 	Status StatusSetter
+	// Archives caches head archives on disk; nil downloads every time.
+	Archives *reviewpkg.ArchiveCache
 }
 
 func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewArgs]) error {
@@ -69,11 +72,20 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 			return w.failRun(ctx, runID, code, err.Error()+" to worker")
 		}
 	}
-	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved}
+	again := w.rereviewBase(ctx, run, resolved, source, repoName)
+	if w.Archives != nil {
+		source = reviewpkg.CachedSource{PullRequestSource: source, Cache: w.Archives}
+	}
+	var runner reviewpkg.Runner = reviewpkg.LocalRunner{Source: source, Reviewer: harness.Reviewer{}, Workflow: resolved, Rereview: again}
 	if w.Sandbox != nil {
-		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models}
+		runner = reviewpkg.SandboxRunner{Source: source, Sandbox: w.Sandbox, Workflow: resolved, RunID: runID, Models: w.Models, Rereview: again}
 	}
 	spec, result, sha, reviewErr := runner.Review(ctx, repoName, run.PRNumber)
+	if spend, ok := overload.MetricsSpend(result.Metrics); ok {
+		if err := w.Store.SetRunCost(context.WithoutCancel(ctx), runID, spend); err != nil {
+			slog.Warn("run cost not recorded", "run_id", runID, "error", err)
+		}
+	}
 	if name, ok := result.Metrics["sandbox"].(string); ok {
 		if _, err := w.Store.Pool.Exec(ctx, `UPDATE runs SET sandbox_name=$2 WHERE id=$1`, runID, name); err != nil {
 			return err
@@ -94,6 +106,51 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		return err
 	}
 	return nil
+}
+
+// replySource reads replies to overload's earlier review comments.
+type replySource interface {
+	PriorReplies(ctx context.Context, repository string, number int, prior []overload.PriorFinding) (map[int64][]string, error)
+}
+
+// rereviewBase prepares an incremental re-review when the workflow asks for
+// one and the pull request has an earlier completed review with the same
+// workflow revision. Replies to earlier findings are read when the source
+// can; any failure falls back to a full review or no replies.
+func (w *ReviewWorker) rereviewBase(ctx context.Context, run overload.Run, workflow overload.ResolvedWorkflow, source reviewpkg.PullRequestSource, repository string) *reviewpkg.Rereview {
+	if !workflow.Rereview.IncrementalReviews() || run.ID == 0 {
+		return nil
+	}
+	sinceID, previous, prior, err := w.Store.RereviewBase(ctx, run, workflow)
+	if err != nil {
+		slog.Warn("re-review base unavailable; reviewing in full", "run_id", run.ID, "error", err)
+		return nil
+	}
+	if sinceID == 0 {
+		return nil
+	}
+	if replies, ok := source.(replySource); ok && len(prior) > 0 {
+		byFinding, err := replies.PriorReplies(ctx, repository, run.PRNumber, prior)
+		if err != nil {
+			slog.Warn("replies to earlier findings unavailable", "run_id", run.ID, "error", err)
+		}
+		for index := range prior {
+			for _, reply := range byFinding[prior[index].ID] {
+				prior[index].Replies = append(prior[index].Replies, reviewpkg.Sanitize(reply, 1000))
+			}
+		}
+	}
+	if _, err := w.Store.Pool.Exec(ctx, `UPDATE runs SET since_run_id=$2 WHERE id=$1`, run.ID, sinceID); err != nil {
+		slog.Warn("re-review base not recorded", "run_id", run.ID, "error", err)
+	}
+	w.event(ctx, run.ID, fmt.Sprintf("Re-review of the changes since run %d", sinceID))
+	return &reviewpkg.Rereview{SinceRunID: sinceID, PreviousDiff: previous, Prior: prior}
+}
+
+func (w *ReviewWorker) event(ctx context.Context, runID int64, message string) {
+	if _, err := w.Store.Pool.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'rereview', $2)`, runID, message); err != nil {
+		slog.Warn("run event not recorded", "run_id", runID, "error", err)
+	}
 }
 
 // AppClient returns the GitHub App client from the environment or the
@@ -153,7 +210,15 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 		return err
 	}
 	plan := planPosting(run.DryRun, PostingEnabled())
+	tierSkipped, _ := result.Metrics["tier_skipped"].(bool)
+	if tierSkipped {
+		reason, _ := result.Metrics["tier_reason"].(string)
+		plan = postingPlan{findingStatus: "dry_run", postStatus: "tier_skipped", message: "Trivial change; not reviewed (" + reason + ")"}
+	}
 	if err := postgres.InsertFindings(ctx, finalTx, runID, repoName, run.PRNumber, plan.findingStatus, append(result.Findings, result.Dropped...)); err != nil {
+		return err
+	}
+	if _, err := postgres.ResolveFindings(ctx, finalTx, runID, resolvedPrior(spec, result)); err != nil {
 		return err
 	}
 	if plan.enqueue {
@@ -176,6 +241,10 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	}
 	if err := finalTx.Commit(ctx); err != nil {
 		return err
+	}
+	if tierSkipped {
+		reportStatus(ctx, w.Store, w.Status, runID, statusSuccess, "Overload skipped: trivial change")
+		return nil
 	}
 	if !plan.enqueue {
 		degraded, _ := result.Metrics["degraded"].(bool)
@@ -211,12 +280,47 @@ func planPosting(dryRun, enabled bool) postingPlan {
 
 func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner, models reviewpkg.ModelGrants) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
-	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models})
+	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models, Archives: archiveCacheFromEnvironment()})
 	river.AddWorker(workers, &ScheduleWorker{Store: store})
 	river.AddWorker(workers, &PostWorker{Store: store})
+	river.AddWorker(workers, &SkipStatusWorker{Store: store})
 	return river.NewClient(riverpgxv5.New(store.Pool), &river.Config{
 		Queues:     map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrent}},
 		Workers:    workers,
 		JobTimeout: time.Duration(timeoutSeconds) * time.Second,
 	})
+}
+
+// resolvedPrior returns the earlier findings a re-review judged fixed,
+// among those it was shown.
+func resolvedPrior(spec overload.ReviewSpec, result overload.ReviewResult) []int64 {
+	if spec.Incremental == nil {
+		return nil
+	}
+	shown := map[int64]bool{}
+	for _, finding := range spec.Incremental.Prior {
+		shown[finding.ID] = true
+	}
+	var ids []int64
+	for _, verdict := range result.Prior {
+		if verdict.Status == overload.PriorResolved && shown[verdict.ID] {
+			ids = append(ids, verdict.ID)
+		}
+	}
+	return ids
+}
+
+// archiveCacheFromEnvironment caches head archives in
+// OVERLOAD_ARCHIVE_CACHE_DIR, up to OVERLOAD_ARCHIVE_CACHE_MB megabytes
+// (default 2048), when the directory is set.
+func archiveCacheFromEnvironment() *reviewpkg.ArchiveCache {
+	dir := os.Getenv("OVERLOAD_ARCHIVE_CACHE_DIR")
+	if dir == "" {
+		return nil
+	}
+	megabytes := int64(2048)
+	if value, err := strconv.ParseInt(os.Getenv("OVERLOAD_ARCHIVE_CACHE_MB"), 10, 64); err == nil && value > 0 {
+		megabytes = value
+	}
+	return &reviewpkg.ArchiveCache{Dir: dir, MaxBytes: megabytes << 20}
 }

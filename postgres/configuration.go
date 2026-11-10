@@ -186,7 +186,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars, ReviewPolicy: workflow.ReviewPolicy}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -224,6 +224,7 @@ type workflowRouting struct {
 	ReviewDecision     string                    `json:"review_decision,omitempty"`
 	BlockSeverity      string                    `json:"block_severity,omitempty"`
 	MaxFileChars       int                       `json:"max_file_chars,omitempty"`
+	overload.ReviewPolicy
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -250,6 +251,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 		workflow.MaxSteps, workflow.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 		workflow.ReviewDecision, workflow.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 		workflow.MaxFileChars = routing.MaxFileChars
+		workflow.ReviewPolicy = routing.ReviewPolicy
 		workflows = append(workflows, workflow)
 	}
 	return workflows, rows.Err()
@@ -285,6 +287,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	result.MaxSteps, result.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 	result.ReviewDecision, result.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 	result.MaxFileChars = routing.MaxFileChars
+	result.ReviewPolicy = routing.ReviewPolicy
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue
@@ -299,15 +302,17 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 		var agent overload.ResolvedAgent
 		var entryID int64
 		var tools []byte
+		var prices overload.ReviewSettings
 		agent.Name = agentName
 		agent.Scope = routing.Scopes[agentName]
-		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &entryID, &tools)
+		err := q.QueryRow(ctx, `SELECT m.name,m.provider,m.connection_kind,m.base_url,m.model,m.api_key_env,m.concurrency,m.reasoning_param,m.reasoning_effort,m.max_output_tokens,m.api,m.price_input,m.price_cached_input,m.price_cache_write,m.price_output,m.long_context_tokens,m.long_context_input_multiplier,m.long_context_output_multiplier,a.entry_prompt_revision_id,a.tool_servers FROM agent_definitions a JOIN model_profiles m ON m.id=a.model_profile_id WHERE a.name=$1 AND a.enabled AND a.kind=$2`, agentName, result.Kind).Scan(&agent.Model.Name, &agent.Model.Provider, &agent.Model.ConnectionKind, &agent.Model.BaseURL, &agent.Model.Model, &agent.Model.APIKeyEnv, &agent.Model.Concurrency, &agent.Model.ReasoningParam, &agent.Model.ReasoningEffort, &agent.Model.MaxOutputTokens, &agent.Model.API, &prices.PriceInput, &prices.PriceCachedInput, &prices.PriceCacheWrite, &prices.PriceOutput, &prices.LongContextTokens, &prices.LongContextInputMultiplier, &prices.LongContextOutputMultiplier, &entryID, &tools)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return result, fmt.Errorf("%w: agent %s is disabled, missing or for a different job type", ErrWorkflowUnavailable, agentName)
 		}
 		if err != nil {
 			return result, err
 		}
+		agent.Model.Pricing = prices.Pricing()
 		if err := loadPromptRevision(ctx, q, entryID, &agent.EntryPrompt); err != nil {
 			return result, err
 		}

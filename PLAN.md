@@ -741,6 +741,67 @@ Not done yet: webhook catch-up (GitLab and Forgejo have no redelivery API
 like GitHub's), `/overload review` comments, and a run against real
 servers.
 
+### 7.12 Cost, context and re-reviews for large teams
+
+Added for a team replacing a hosted review bot with overload on its own
+cluster, with hosted models only: spend must be enforceable, reviews
+must catch bugs that span files, re-reviews must be cheap, and the bot
+never approves. Decisions (2026-11-09):
+
+- **Cost accounting.** Model connections carry optional prices (input,
+  cached input, cache write, output, long-context threshold and
+  multipliers), pinned in the workflow snapshot. Fantasy already reports
+  cache reads and writes for OpenAI and Anthropic, so usage is read there;
+  every call is priced on its own (long-context prices depend on one
+  call's prompt) and summed per agent, planner, verifier and run
+  (`runs.cost_usd`). An unpriced model shows "unpriced", never $0.
+- **Budgets.** A per-run cap reserves an upper estimate (prompt as
+  uncached input plus the full output budget) before each call, and
+  before each step of a tool-using call from that step's growing prompt,
+  so a run stays within it and completes degraded. Monthly and daily caps
+  (global and per repository, `budgets` table or environment) are checked
+  when a review is queued: spend plus the expected cost of queued and
+  running runs (scheduled jobs included for the global cap) plus this
+  one. Spend is recorded as timestamped additions (`run_costs`), so it
+  counts in the day and month it was incurred. The model proxy meters
+  sandboxed calls from their usage and returns 429 past a global cap
+  plus 5% as the backstop (503 when the budget cannot be read, so
+  spending never goes unchecked). A budget skip sets a `success` status
+  by default (configurable to `error`) so a required check does not
+  block merges.
+- **Context.** The contracts index is built in Go (portable and testable,
+  and the same in host mode where ripgrep may be missing), in one pass
+  over the head with a combined regular expression and size limits. The
+  pull request bundle is the first part of every call so providers cache
+  it. `whole_pr` agents review their files together; repository tools
+  for them ship behind `context.repo_tools`, off by default, until
+  evaluation shows the bundle alone is not enough.
+- **Re-reviews.** Files are compared by a hash of their patch's changed
+  and context lines, not by commit ancestry, so rebases and base merges
+  do not trigger full reviews. Verdicts on earlier findings are limited
+  to the findings the run was shown; resolving GitHub threads is opt-in
+  (`rereview.resolve_threads`). Debounce uses River's scheduled jobs and
+  the existing supersede of queued runs. `/overload review` comments
+  (issue_comment events) need write access and bypass the limit, like
+  Review now.
+- **Tiers** are deterministic and applied on the control plane before
+  the archive is downloaded.
+- **Repository transfer** is measured first (`metrics.transfer`, `overload
+  runs transfer`); the only optimization so far is an optional on-disk
+  cache of head archives per commit. Filtering the archive to the changed
+  files and the contracts index's uses waits on those measurements.
+- Workflow snapshot version 4 carries the review policy, so an older
+  agent image refuses it instead of ignoring a cost cap.
+- **Git hosts.** Costs, budgets, tiers, context and re-reviews work the
+  same on GitHub, GitLab and Forgejo. Budget and re-review-limit skips set
+  the commit status through the repository's own host, budgets and
+  `overload eval prs` name repositories by their ref (`owner/name` on
+  GitHub, `connection:path` elsewhere) and evaluation reads pull requests
+  from the repository's host. Reading replies to earlier findings,
+  resolving their threads and the `/overload review` comment are GitHub
+  only for now: on GitLab and Forgejo re-reviews still judge earlier
+  findings, without replies, and leave their discussions open.
+
 ## 8. Data model (initial)
 
 ```
@@ -1008,7 +1069,16 @@ Before the first release:
 
 After:
 4. Evaluation: real PRs with known bugs, scored per model and per workflow
-   shape, beyond the planted-bug fixtures.
+   shape, beyond the planted-bug fixtures. Started (7.12): `overload eval
+   prs` runs workflows over past pull requests as dry runs and reports
+   recall against a labels file, findings per PR, and cost and time at
+   p50 and p90. It reads pull requests from the repository's own host
+   (GitHub, GitLab or Forgejo) and pins the exact repository it resolved.
+   Next: run it on real repositories with labeled bugs.
+4a. Cost, context and re-reviews (7.12): implemented and tested with fake
+   GitHub and recorded model responses. Next: measure prompt-cache hit
+   rates and transfer times on a large monorepo, and decide on archive
+   filtering and default repository tools from the evaluation.
 5. A reaper for sandbox claims left by a crashed worker; backup, restore and
    upgrade tests.
 6. Sentry and other signed webhook sources for generic jobs.
@@ -1045,10 +1115,10 @@ After:
   connection's URL cannot send an existing key elsewhere; refuse metadata
   and link-local addresses for hosted connections.
 
-- **Cloud model providers**: Fantasy already supports Anthropic, OpenAI,
-  Bedrock, Google and OpenRouter; add them to model profiles. Prefer an
-  overload-hosted model gateway (OpenAI-compatible proxy in the control plane)
-  so API keys never enter sandboxes and token usage is metered centrally.
+- **Cloud model providers**: Anthropic's Messages API is supported (7.12);
+  Fantasy also supports Bedrock and Google; add them to model profiles
+  when needed. The model proxy keeps API keys out of sandboxes and meters
+  token usage centrally.
 - **CLI harnesses** (Claude Code, Crush, Codex): alternate agent images that
   run the CLI and emit `result.json` in the same schema.
 - **Generic jobs**: signed source adapters (starting with Sentry), typed

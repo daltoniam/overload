@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -59,11 +60,18 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 	worker.event(ctx, runID, postgres.RunEvent{Level: "info", Step: "running", Message: "Scheduled job started"})
 	maxSteps, timeoutMinutes := workflow.RunLimits()
 	var outputs []postgres.AgentOutput
+	var spent overload.Spend
 	for _, agent := range workflow.Agents {
 		output, err := worker.runAgent(ctx, runID, agent, input, maxSteps, time.Duration(timeoutMinutes)*time.Minute)
+		spent = spent.Add(overload.Spend{USD: output.CostUSD, Unpriced: output.UnpricedCalls})
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
+			}
+			// Agents add their spend as they finish; the total also covers
+			// an addition that failed to save before the run is closed.
+			if err := worker.Store.SetRunCost(context.WithoutCancel(ctx), runID, spent); err != nil {
+				slog.Warn("run cost not recorded", "run_id", runID, "error", err)
 			}
 			return worker.fail(ctx, runID, fmt.Sprintf("Agent %s failed: %s", agent.Name, err))
 		}
@@ -74,11 +82,13 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 		return err
 	}
 	var totals struct {
-		Agents       int   `json:"agents"`
-		Steps        int   `json:"steps,omitempty"`
-		ToolCalls    int   `json:"tool_calls,omitempty"`
-		InputTokens  int64 `json:"input_tokens,omitempty"`
-		OutputTokens int64 `json:"output_tokens,omitempty"`
+		Agents       int     `json:"agents"`
+		Steps        int     `json:"steps,omitempty"`
+		ToolCalls    int     `json:"tool_calls,omitempty"`
+		InputTokens  int64   `json:"input_tokens,omitempty"`
+		OutputTokens int64   `json:"output_tokens,omitempty"`
+		CostUSD      float64 `json:"cost_usd"`
+		Unpriced     int64   `json:"cost_unpriced_calls"`
 	}
 	totals.Agents = len(outputs)
 	for _, output := range outputs {
@@ -86,6 +96,8 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 		totals.ToolCalls += output.ToolCalls
 		totals.InputTokens += output.InputTokens
 		totals.OutputTokens += output.OutputTokens
+		totals.CostUSD += output.CostUSD
+		totals.Unpriced += output.UnpricedCalls
 	}
 	metrics, err := json.Marshal(totals)
 	if err != nil {
@@ -102,6 +114,11 @@ func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.
 	}
 	if command.RowsAffected() != 1 {
 		return nil
+	}
+	// Each agent's spend was added as it finished; the total also covers
+	// any addition that failed to save, without counting the rest twice.
+	if err := worker.Store.SetRunCostIn(ctx, tx, runID, overload.Spend{USD: totals.CostUSD, Unpriced: totals.Unpriced}); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO job_outputs(run_id,kind,content) VALUES ($1,'scheduled_prompt',$2)`, runID, data); err != nil {
 		return err
@@ -121,8 +138,14 @@ func (worker *ScheduleWorker) runAgent(ctx context.Context, runID int64, agent o
 		if agent.LegacyFocus.Kind == "review" {
 			instructions += "\n" + agent.LegacyFocus.Body
 		}
-		text, err := harness.Complete(ctx, agent.Model, instructions, "Scheduled input:\n"+string(input))
+		text, spend, err := harness.Complete(ctx, agent.Model, instructions, "Scheduled input:\n"+string(input))
 		output.Text = overload.TruncateUTF8(strings.TrimSpace(text), maxAgentOutput)
+		output.CostUSD, output.UnpricedCalls = spend.USD, spend.Unpriced
+		if err == nil || spend.USD > 0 || spend.Unpriced > 0 {
+			if err := worker.Store.AddRunCost(context.WithoutCancel(ctx), runID, spend); err != nil {
+				slog.Warn("run cost not recorded", "run_id", runID, "error", err)
+			}
+		}
 		return output, err
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -148,6 +171,12 @@ func (worker *ScheduleWorker) runAgent(ctx context.Context, runID int64, agent o
 	result, err := harness.RunAgent(agentCtx, agent.Model, toolPreamble+agent.EntryPrompt.Body, "Scheduled input:\n"+string(input), toolset, maxSteps)
 	output.Text = overload.TruncateUTF8(result.Text, maxAgentOutput)
 	output.Steps, output.ToolCalls, output.InputTokens, output.OutputTokens, output.HitStepLimit = result.Steps, result.ToolCalls, result.InputTokens, result.OutputTokens, result.HitStepLimit
+	output.CostUSD, output.UnpricedCalls = result.Spend.USD, result.Spend.Unpriced
+	if result.Steps > 0 {
+		if err := worker.Store.AddRunCost(context.WithoutCancel(ctx), runID, result.Spend); err != nil {
+			slog.Warn("run cost not recorded", "run_id", runID, "error", err)
+		}
+	}
 	if err != nil && errors.Is(agentCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 		return output, fmt.Errorf("stopped after the %s time limit (%d steps, %d tool calls)", timeout, result.Steps, result.ToolCalls)
 	}

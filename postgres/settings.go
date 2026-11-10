@@ -9,7 +9,7 @@ import (
 )
 
 func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettings, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api FROM model_profiles ORDER BY name`)
+	rows, err := s.Pool.Query(ctx, `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api, price_input, price_cached_input, price_cache_write, price_output, long_context_tokens, long_context_input_multiplier, long_context_output_multiplier FROM model_profiles ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -17,7 +17,7 @@ func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettin
 	var settings []overload.ReviewSettings
 	for rows.Next() {
 		var setting overload.ReviewSettings
-		if err := rows.Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API); err != nil {
+		if err := rows.Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API, &setting.PriceInput, &setting.PriceCachedInput, &setting.PriceCacheWrite, &setting.PriceOutput, &setting.LongContextTokens, &setting.LongContextInputMultiplier, &setting.LongContextOutputMultiplier); err != nil {
 			return nil, err
 		}
 		settings = append(settings, setting)
@@ -27,8 +27,8 @@ func (s *Store) ListReviewSettings(ctx context.Context) ([]overload.ReviewSettin
 
 func (s *Store) GetReviewSettings(ctx context.Context, name string) (overload.ReviewSettings, error) {
 	var setting overload.ReviewSettings
-	query := `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api FROM model_profiles WHERE name=$1 OR ($1='' AND is_default=true) ORDER BY is_default DESC LIMIT 1`
-	err := s.Pool.QueryRow(ctx, query, name).Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API)
+	query := `SELECT name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api, price_input, price_cached_input, price_cache_write, price_output, long_context_tokens, long_context_input_multiplier, long_context_output_multiplier FROM model_profiles WHERE name=$1 OR ($1='' AND is_default=true) ORDER BY is_default DESC LIMIT 1`
+	err := s.Pool.QueryRow(ctx, query, name).Scan(&setting.Name, &setting.Provider, &setting.ConnectionKind, &setting.BaseURL, &setting.Model, &setting.APIKeyEnv, &setting.PromptProfile, &setting.IsDefault, &setting.Concurrency, &setting.ReasoningParam, &setting.ReasoningEffort, &setting.MaxOutputTokens, &setting.API, &setting.PriceInput, &setting.PriceCachedInput, &setting.PriceCacheWrite, &setting.PriceOutput, &setting.LongContextTokens, &setting.LongContextInputMultiplier, &setting.LongContextOutputMultiplier)
 	return setting, err
 }
 
@@ -67,7 +67,7 @@ func (s *Store) SaveReviewSettings(ctx context.Context, setting overload.ReviewS
 		}
 		setting.IsDefault = err == nil && current
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO model_profiles (name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (name) DO UPDATE SET provider=EXCLUDED.provider, connection_kind=EXCLUDED.connection_kind, base_url=EXCLUDED.base_url, model=EXCLUDED.model, api_key_env=EXCLUDED.api_key_env, prompt_profile=EXCLUDED.prompt_profile, is_default=EXCLUDED.is_default, concurrency=EXCLUDED.concurrency, reasoning_param=EXCLUDED.reasoning_param, reasoning_effort=EXCLUDED.reasoning_effort, max_output_tokens=EXCLUDED.max_output_tokens, api=EXCLUDED.api, updated_at=now()`, setting.Name, setting.Provider, setting.ConnectionKind, setting.BaseURL, setting.Model, setting.APIKeyEnv, setting.PromptProfile, setting.IsDefault, setting.Concurrency, setting.ReasoningParam, setting.ReasoningEffort, setting.MaxOutputTokens, setting.API)
+	_, err = tx.Exec(ctx, `INSERT INTO model_profiles (name, provider, connection_kind, base_url, model, api_key_env, prompt_profile, is_default, concurrency, reasoning_param, reasoning_effort, max_output_tokens, api, price_input, price_cached_input, price_cache_write, price_output, long_context_tokens, long_context_input_multiplier, long_context_output_multiplier) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (name) DO UPDATE SET provider=EXCLUDED.provider, connection_kind=EXCLUDED.connection_kind, base_url=EXCLUDED.base_url, model=EXCLUDED.model, api_key_env=EXCLUDED.api_key_env, prompt_profile=EXCLUDED.prompt_profile, is_default=EXCLUDED.is_default, concurrency=EXCLUDED.concurrency, reasoning_param=EXCLUDED.reasoning_param, reasoning_effort=EXCLUDED.reasoning_effort, max_output_tokens=EXCLUDED.max_output_tokens, api=EXCLUDED.api, price_input=EXCLUDED.price_input, price_cached_input=EXCLUDED.price_cached_input, price_cache_write=EXCLUDED.price_cache_write, price_output=EXCLUDED.price_output, long_context_tokens=EXCLUDED.long_context_tokens, long_context_input_multiplier=EXCLUDED.long_context_input_multiplier, long_context_output_multiplier=EXCLUDED.long_context_output_multiplier, updated_at=now()`, setting.Name, setting.Provider, setting.ConnectionKind, setting.BaseURL, setting.Model, setting.APIKeyEnv, setting.PromptProfile, setting.IsDefault, setting.Concurrency, setting.ReasoningParam, setting.ReasoningEffort, setting.MaxOutputTokens, setting.API, setting.PriceInput, setting.PriceCachedInput, setting.PriceCacheWrite, setting.PriceOutput, setting.LongContextTokens, setting.LongContextInputMultiplier, setting.LongContextOutputMultiplier)
 	if err != nil {
 		return err
 	}
