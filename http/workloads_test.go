@@ -414,6 +414,14 @@ func TestWorkloadRuleValidate(t *testing.T) {
 			rule.Issuer = "https://k8s.example.com"
 			rule.Conditions = map[string]string{"sub": "*"}
 		}, false},
+		"pinned only by the issuer": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://gitlab.com"
+			rule.Conditions = map[string]string{"iss": "https://gitlab.com", "project_path": "*/*"}
+		}, false},
+		"pinned only by the audience": {func(rule *overload.WorkloadRule) {
+			rule.Issuer = "https://gitlab.com"
+			rule.Conditions = map[string]string{"aud": "https://overload.example.com", "project_path": "*/*"}
+		}, false},
 		"any namespace": {func(rule *overload.WorkloadRule) {
 			rule.Issuer = "https://k8s.example.com"
 			rule.Conditions = map[string]string{"sub": "system:serviceaccount:*:runner"}

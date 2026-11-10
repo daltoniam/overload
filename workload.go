@@ -60,6 +60,11 @@ func (rule WorkloadRule) Validate() error {
 		if !settingName.MatchString(claim) || pattern == "" || len(pattern) > 300 {
 			return fmt.Errorf("invalid condition %q", claim)
 		}
+		// Every token from the issuer for this audience has the same
+		// registered claims, so a condition on them narrows nothing.
+		if registeredClaims[claim] {
+			return fmt.Errorf("condition %s: the issuer and audience are checked already; match a claim that identifies your project, such as a namespace, project or organization", claim)
+		}
 		if _, err := path.Match(pattern, ""); err != nil {
 			return fmt.Errorf("condition %s: invalid pattern", claim)
 		}
@@ -110,6 +115,10 @@ func (rule WorkloadRule) hasLiteralCondition() bool {
 	namespace, _, found := strings.Cut(rest, ":")
 	return ok && found && namespace != "" && literal(namespace)
 }
+
+// registeredClaims are the standard JWT claims, which identify the issuer,
+// audience and lifetime rather than the workload.
+var registeredClaims = map[string]bool{"iss": true, "aud": true, "exp": true, "iat": true, "nbf": true, "jti": true, "azp": true}
 
 // literal reports whether a pattern matches only itself.
 func literal(pattern string) bool { return !strings.ContainsAny(pattern, `*?[\`) }

@@ -670,9 +670,12 @@ Shared issuers (GitHub Actions, gitlab.com, Buildkite, a cluster serving
 many namespaces) issue tokens to everyone who uses them, so every rule
 must pin something only you control: at least one condition without
 wildcards, such as GitLab's `namespace_path` or Buildkite's
-`organization_slug`. A Kubernetes `sub` may end in a wildcard after a
-fixed namespace (`system:serviceaccount:ci:*`), but not
-`system:serviceaccount:*:*`. GitHub rules have a stricter check, below.
+`organization_slug`. The pinned value must identify you: conditions on
+the standard claims (`iss`, `aud`, `exp`, `iat`, `nbf`, `jti`, `azp`) are
+refused, since every token for the rule's issuer and audience shares
+them. A Kubernetes `sub` may end in a wildcard after a fixed namespace
+(`system:serviceaccount:ci:*`), but not `system:serviceaccount:*:*`.
+GitHub rules have a stricter check, below.
 
 GitHub Actions (issuer `https://token.actions.githubusercontent.com`, or
 an enterprise's own issuer under it): every job on GitHub can get a token
