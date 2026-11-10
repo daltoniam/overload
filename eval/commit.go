@@ -92,7 +92,7 @@ func CaseFromCommit(ctx context.Context, dir, commit, name string) (Case, error)
 	// Submodule pointers are listed like text files but are not files.
 	// Their tree entries say so (mode 160000) without needing the
 	// submodule's commit, which lives in the submodule's own repository.
-	tree, err := git(append([]string{"ls-tree", "-z", "--full-tree", parent, "--"}, paths...)...)
+	tree, err := git(append([]string{"--literal-pathspecs", "ls-tree", "-z", "--full-tree", parent, "--"}, paths...)...)
 	if err != nil {
 		return Case{}, err
 	}

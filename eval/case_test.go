@@ -211,6 +211,24 @@ func TestCaseFromCommitRefuses(t *testing.T) {
 	}
 }
 
+func TestCaseFromCommitWithPathspecMagicInAName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir, git, write := gitRepo(t)
+	const name = ":(glob)foo.go"
+	write(name, "package a\n\nconst A = 1\n")
+	git("add", "--", ":(literal)"+name)
+	git("commit", "-q", "-m", "first")
+	write(name, "package a\n\nconst A = 2\n")
+	git("add", "--", ":(literal)"+name)
+	git("commit", "-q", "-m", "fix A")
+	item, err := CaseFromCommit(context.Background(), dir, git("rev-parse", "HEAD"), "")
+	if err != nil || len(item.Files) != 1 || item.Files[0].Path != name {
+		t.Fatalf("case = %+v, %v", item, err)
+	}
+}
+
 func TestCaseFromCommitSkipsSubmodulesWithoutTheirCommits(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not installed")

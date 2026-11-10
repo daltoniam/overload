@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing/fstest"
+	"unicode"
+	"unicode/utf8"
 )
 
 // A Case is one review to score: the changed files' contents, the diff a
@@ -203,7 +205,7 @@ func startsWord(text, word string) bool {
 			return false
 		}
 		index += offset
-		if index == 0 || !isWordByte(text[index-1]) {
+		if before, _ := utf8.DecodeLastRuneInString(text[:index]); index == 0 || !isWordRune(before) {
 			return true
 		}
 		offset = index + 1
@@ -211,6 +213,6 @@ func startsWord(text, word string) bool {
 	return false
 }
 
-func isWordByte(char byte) bool {
-	return char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char >= 0x80
+func isWordRune(char rune) bool {
+	return char == '_' || unicode.IsLetter(char) || unicode.IsDigit(char)
 }
