@@ -203,7 +203,7 @@ func (plan reasoningPlan) generate(ctx context.Context, agent fantasy.Agent, cal
 	return meter.call(ctx, plan, call, func(ctx context.Context, call fantasy.AgentCall) (*fantasy.AgentResult, error) {
 		// The agent may have been built before its model was found to lack
 		// adaptive thinking; every later call on it asks for a budget.
-		if plan.provider == overload.ProviderAnthropic && plan.param == overload.ReasoningEffortField && plan.usesThinkingBudget() {
+		if plan.provider == overload.ProviderAnthropic && plan.param == overload.ReasoningEffortField && plan.usesThinkingBudget() && !hasThinkingBudget(call) {
 			call.ProviderOptions = plan.providerOptions(effortOf(call, plan))
 		}
 		response, err := plan.generateOnce(ctx, agent, call)
@@ -213,6 +213,14 @@ func (plan reasoningPlan) generate(ctx context.Context, agent fantasy.Agent, cal
 		}
 		return response, err
 	})
+}
+
+// hasThinkingBudget reports whether a call already asks an Anthropic model
+// for thinking with a budget (or for none), as a lower-effort retry built
+// after the model was remembered does.
+func hasThinkingBudget(call fantasy.AgentCall) bool {
+	options, ok := call.ProviderOptions[anthropic.Name].(*anthropic.ProviderOptions)
+	return ok && options.Effort == nil
 }
 
 // effortOf is the effort a call asks for: the plan's, or the fallback

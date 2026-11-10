@@ -114,6 +114,20 @@ func TestAnthropicModelsWithoutAdaptiveThinkingGetABudget(t *testing.T) {
 	if len(thinking) != 6 || thinking[3]["type"] != "adaptive" || thinking[4]["type"] != "enabled" || thinking[5]["type"] != "enabled" {
 		t.Fatalf("thinking requests on one agent = %v", thinking[3:])
 	}
+	// A lower-effort retry keeps its smaller budget.
+	high := model
+	high.ReasoningEffort = "high"
+	agent, plan, err = newAgent(context.Background(), high, "Review.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := fantasy.AgentCall{Prompt: "Say ok.", ProviderOptions: plan.providerOptions(localFallbackEffort)}
+	if _, err := plan.generate(context.Background(), agent, retry, nil); err != nil {
+		t.Fatal(err)
+	}
+	if last := thinking[len(thinking)-1]; last["budget_tokens"] != float64(8192) {
+		t.Fatalf("fallback budget = %v, want the medium budget", last)
+	}
 	if got := thinkingBudget("high", 4096); got != 2048 {
 		t.Fatalf("budget within a small output limit = %d", got)
 	}
