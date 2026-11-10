@@ -17,6 +17,8 @@
 # notary profile. VERSION (default: git describe) and OUTDIR (default:
 # dist/pkg) are optional.
 set -eu
+# Files in the payload are installed with the modes they have here.
+umask 022
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 version=${VERSION:-$(git -C "$root" describe --tags --always --dirty 2>/dev/null || echo dev)}
@@ -87,6 +89,8 @@ fi
 # ditto drops resource forks, ACLs and extended attributes from the files.
 payload=$work/payload
 ditto --norsrc --noextattr --noacl "$staging" "$payload"
+chmod 755 "$payload" "$payload/bin" "$payload/bin/overload"
+chmod 644 "$payload/LICENSE"
 scripts=$work/scripts
 mkdir -p "$scripts"
 cp "$root/deploy/macos/postinstall" "$scripts/postinstall"
@@ -110,6 +114,8 @@ pkgutil --expand "$work/component.pkg" "$flat"
 gzip -9 -c "$work/payload.cpio" >"$flat/Payload"
 rm -rf "$flat/Scripts"
 ditto --norsrc --noextattr --noacl "$scripts" "$flat/Scripts"
+# installKBytes, which pkgbuild computed, is left as is: the ._ entries
+# were empty, so the installed size is unchanged.
 lsbom "$flat/Bom" | grep -v '/\._' >"$work/bom.txt"
 mkbom -i "$work/bom.txt" "$flat/Bom"
 # The payload holds only /usr/local/overload; overwrite-permissions off also

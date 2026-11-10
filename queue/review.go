@@ -317,8 +317,10 @@ func planPosting(dryRun, enabled bool) postingPlan {
 }
 
 // SoftStopTimeout is how long a stopping server lets running jobs finish
-// before cancelling them. It stays under the 20 second launchd and 30 second
-// Kubernetes and systemd stop timeouts so a hard stop can still return.
+// before cancelling them. Every way overload runs allows 30 seconds from
+// SIGTERM to SIGKILL (the launchd agent's ExitTimeOut, systemd's
+// TimeoutStopSec, Kubernetes' default grace period and the compose file's
+// stop_grace_period), leaving 15 seconds for cancelled jobs to return.
 const SoftStopTimeout = 15 * time.Second
 
 func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner, models reviewpkg.ModelGrants) (*river.Client[pgx.Tx], error) {

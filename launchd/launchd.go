@@ -24,6 +24,9 @@ type Agent struct {
 	Dir   string
 	Log   string
 	Env   map[string]string
+	// ExitTimeout is how long launchd waits after SIGTERM before SIGKILL;
+	// zero keeps launchd's default of 20 seconds.
+	ExitTimeout time.Duration
 }
 
 func xmlEscape(value string) string {
@@ -63,6 +66,9 @@ func (agent Agent) plist() []byte {
 	key("WorkingDirectory", agent.Dir)
 	key("StandardOutPath", agent.Log)
 	key("StandardErrorPath", agent.Log)
+	if agent.ExitTimeout > 0 {
+		out.WriteString("\t<key>ExitTimeOut</key>\n\t<integer>" + strconv.Itoa(int(agent.ExitTimeout/time.Second)) + "</integer>\n")
+	}
 	out.WriteString("\t<key>RunAtLoad</key>\n\t<true/>\n\t<key>KeepAlive</key>\n\t<true/>\n\t<key>ThrottleInterval</key>\n\t<integer>10</integer>\n\t<key>ProcessType</key>\n\t<string>Background</string>\n</dict>\n</plist>\n")
 	return out.Bytes()
 }

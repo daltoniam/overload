@@ -27,6 +27,8 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT
+# Turn a cancelled job's signal into an exit so cleanup still runs.
+trap 'exit 130' INT TERM
 password=$(openssl rand -hex 24)
 
 security create-keychain -p "$password" "$keychain" >&2
@@ -48,6 +50,9 @@ security list-keychains -d user -s "$keychain" $(security list-keychains -d user
 
 if [ -n "${MACOS_NOTARY_APPLE_ID:-}" ]; then
 	: "${MACOS_NOTARY_TEAM_ID:?}" "${MACOS_NOTARY_PASSWORD:?}"
+	# store-credentials only takes the password as --password or from an
+	# interactive prompt, so it is on this one short command line; the long
+	# notarization run reads it from the keychain instead.
 	xcrun notarytool store-credentials "${MACOS_NOTARY_PROFILE:-overload-ci}" \
 		--apple-id "$MACOS_NOTARY_APPLE_ID" --team-id "$MACOS_NOTARY_TEAM_ID" \
 		--password "$MACOS_NOTARY_PASSWORD" --keychain "$keychain" >&2

@@ -51,6 +51,7 @@ jobs:
           sudo installer -pkg dist/pkg/overload_darwin_universal.pkg -target /
           test "$(/usr/local/bin/overload version)" = 0.0.0-ci
           test "$(readlink /usr/local/bin/overload)" = ../overload/bin/overload
+          test "$(stat -f '%Sp' /usr/local/overload/bin/overload)" = -rwxr-xr-x
           test "$(stat -f '%Su:%Sg %Sp' /usr/local /usr/local/bin)" = "$before"
           test -z "$(find /usr/local/overload -name '._*')"
           test ! -e /usr/local/bin/._overload

@@ -358,7 +358,9 @@ func (inst *installation) startServices(exe string) error {
 			return err
 		}
 	}
-	agent := launchd.Agent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": servicePath}}
+	// Room for the server's soft stop of running jobs (queue.SoftStopTimeout)
+	// and the hard stop after it before launchd kills the process.
+	agent := launchd.Agent{Label: inst.label, Args: []string{exe, "serve"}, Dir: inst.home, Log: filepath.Join(logs, "overload.log"), Env: map[string]string{"OVERLOAD_CONFIG": inst.config, "PATH": servicePath}, ExitTimeout: 30 * time.Second}
 	if err := launchd.Write(agent); err != nil {
 		return err
 	}

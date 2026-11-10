@@ -2,10 +2,10 @@
 # Checks a package built by build-pkg.sh without installing it: it installs
 # only into /usr/local/overload without resetting directory permissions, the
 # payload and bill of materials hold exactly the expected root-owned entries
-# (no AppleDouble ._ files), the link script is there, and the binary is
-# universal and reports the expected version. With REQUIRE_SIGNED=1 it also
-# requires a Developer ID signature (from team MACOS_TEAM_ID when set), a
-# hardened runtime binary and a stapled ticket.
+# with the expected modes (no AppleDouble ._ files), the link script is
+# there, and the binary is universal and reports the expected version. With
+# REQUIRE_SIGNED=1 it also requires a Developer ID signature (from team
+# MACOS_TEAM_ID when set), a hardened runtime binary and a stapled ticket.
 #
 #   deploy/macos/check-pkg.sh dist/pkg/overload_darwin_universal.pkg [version]
 set -eu
@@ -31,6 +31,9 @@ grep -q 'overwrite-permissions="false"' "$work/flat/PackageInfo" ||
 entries=$(lsbom -s "$work/flat/Bom" | LC_ALL=C sort | tr '\n' ' ')
 want_entries=". ./LICENSE ./bin ./bin/overload "
 [ "$entries" = "$want_entries" ] || fail "bill of materials is [$entries], want [$want_entries]"
+modes=$(lsbom -p fm "$work/flat/Bom" | LC_ALL=C sort | tr '\t\n' '= ')
+want_modes=".=40755 ./LICENSE=100644 ./bin=40755 ./bin/overload=100755 "
+[ "$modes" = "$want_modes" ] || fail "payload modes are [$modes], want [$want_modes]"
 owners=$(lsbom -p U "$work/flat/Bom" | sort -u | tr '\n' ' ')
 [ "$owners" = "root " ] || fail "payload owners are [$owners], want root"
 archived=$(gzip -dc "$work/flat/Payload" | cpio -it --quiet | LC_ALL=C sort | tr '\n' ' ')

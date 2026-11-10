@@ -1052,8 +1052,9 @@ health with `overload healthcheck`; a container running another command
 `--no-healthcheck`. On SIGTERM it stops taking requests and gives running
 jobs 15 seconds to finish; jobs still running are then cancelled, and their
 reviews and scheduled jobs are queued again when the server next starts.
-Give it a stop timeout of at least 20 seconds (systemd and Kubernetes use 30
-by default; the compose file sets 30).
+Give it 30 seconds from SIGTERM to SIGKILL, as the launchd agent from
+`overload install`, `deploy/systemd/overload.service`, the compose file and
+the Kubernetes default do.
 
 ### Docker Compose
 
@@ -1197,6 +1198,8 @@ the GitHub release when the repository has the `MACOS_SIGN_IDENTITY` and
 `MACOS_INSTALLER_IDENTITY` variables and the `MACOS_SIGN_P12_BASE64`,
 `MACOS_INSTALLER_P12_BASE64`, `MACOS_P12_PASSWORD`, `MACOS_NOTARY_APPLE_ID`,
 `MACOS_NOTARY_TEAM_ID` and `MACOS_NOTARY_PASSWORD` secrets.
+Both certificates must belong to the team in `MACOS_NOTARY_TEAM_ID`, since
+the job checks the signatures against it.
 `deploy/macos/import-certs.sh` loads the certificates and the notary
 credentials into a throwaway keychain, which the job deletes afterwards. The
 job then requires a Developer ID signature from that team, the hardened
