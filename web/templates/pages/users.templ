@@ -1,0 +1,92 @@
+package pages
+
+import (
+	"strconv"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ Users(users []overload.User, self int64, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Users", CurrentPath: "/users"}) {
+		<div class="page-header"><div><p class="eyebrow">Access / Users</p><h1>Users</h1><p class="muted">People who have signed in with your identity provider. Roles come from the provider's groups at each sign-in; disabling someone ends their sessions at once and stops them signing in.</p></div></div>
+		<section class="panel">
+			if len(users) == 0 {
+				<div class="empty">Nobody has signed in yet.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Users</caption><thead><tr><th>Person</th><th>Role</th><th>Last sign-in</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>
+					for _, user := range users {
+						<tr>
+							<td>{ textOr(user.Email, user.Subject) }<span class="secondary-line">{ user.Name }</span></td>
+							<td><span class="badge neutral">{ user.Role }</span></td>
+							<td class="mono">{ lastLogin(user) }</td>
+							<td>
+								if user.Disabled {
+									<span class="badge failed">Disabled</span>
+								} else {
+									<span class="badge enabled">Active</span>
+								}
+							</td>
+							<td>
+								if user.ID != self {
+									<form method="post" action={ templ.URL("/users/" + strconv.FormatInt(user.ID, 10) + "/" + userAction(user.Disabled)) }><input type="hidden" name="csrf" value={ nonce }/><button class={ userButton(user.Disabled) } type="submit">{ userActionLabel(user.Disabled) }</button></form>
+								}
+							</td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ SignedOut(endSession string) {
+	@layouts.Base(layouts.PageData{Title: "Signed out", SignedOut: true}) {
+		<div class="page-header"><div><h1>Signed out</h1><p class="muted">Your overload session has ended.</p></div></div>
+		<section class="panel">
+			<div class="actions"><a class="button" href="/auth/login">Sign in again</a>
+				if endSession != "" {
+					<a class="button secondary" href={ templ.SafeURL(endSession) }>Also sign out of your identity provider</a>
+				}
+			</div>
+		</section>
+	}
+}
+
+// SignInProblem explains why signing in did not work and how to retry.
+templ SignInProblem(title, detail string) {
+	@layouts.Base(layouts.PageData{Title: title, SignedOut: true}) {
+		<div class="page-header"><div><h1>{ title }</h1><p class="muted">{ detail }</p></div></div>
+		<section class="panel">
+			<div class="actions"><a class="button" href="/auth/login">Sign in again</a></div>
+		</section>
+	}
+}
+
+func lastLogin(user overload.User) string {
+	if user.LastLoginAt == nil {
+		return "Never"
+	}
+	return user.LastLoginAt.UTC().Format("2006-01-02 15:04 UTC")
+}
+
+func userAction(disabled bool) string {
+	if disabled {
+		return "enable"
+	}
+	return "disable"
+}
+
+func userActionLabel(disabled bool) string {
+	if disabled {
+		return "Enable"
+	}
+	return "Disable"
+}
+
+func userButton(disabled bool) string {
+	if disabled {
+		return "secondary"
+	}
+	return "danger"
+}

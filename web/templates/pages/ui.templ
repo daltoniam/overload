@@ -169,8 +169,21 @@ templ ValidationError(message string) {
 	<p class="notice error">{ message }</p>
 }
 
-templ Confirmation(action string, nonce string, values map[string][]string) {
-	<div class="page-header"><div><p class="eyebrow">Confirm removal</p><h1>Delete this resource?</h1><p class="muted">This cannot be undone. Resources with dependent configuration or history cannot be removed.</p></div></div>
+// ConfirmPrompt is what a confirmation page says: the resource it acts on,
+// the impact, the confirming button and where Cancel goes.
+type ConfirmPrompt struct {
+	Eyebrow string
+	Title   string
+	Impact  string
+	Button  string
+	Cancel  string
+}
+
+// DeletePrompt confirms deleting a configuration resource.
+var DeletePrompt = ConfirmPrompt{Eyebrow: "Confirm removal", Title: "Delete this resource?", Impact: "This cannot be undone. Resources with dependent configuration or history cannot be removed.", Button: "Confirm deletion", Cancel: "/"}
+
+templ Confirmation(action string, nonce string, values map[string][]string, prompt ConfirmPrompt) {
+	<div class="page-header"><div><p class="eyebrow">{ prompt.Eyebrow }</p><h1>{ prompt.Title }</h1><p class="muted">{ prompt.Impact }</p></div></div>
 	<section class="panel danger-zone"><form method="post" action={ templ.URL(action) }>
 		<input type="hidden" name="csrf" value={ nonce }/><input type="hidden" name="confirmed" value="true"/>
 		for name, entries := range values {
@@ -180,7 +193,7 @@ templ Confirmation(action string, nonce string, values map[string][]string) {
 				}
 			}
 		}
-		<div class="actions"><a class="button secondary" href="/">Cancel</a><button class="danger" type="submit">Confirm deletion</button></div>
+		<div class="actions"><a class="button secondary" href={ templ.URL(prompt.Cancel) } autofocus>Cancel</a><button class="danger" type="submit">{ prompt.Button }</button></div>
 	</form></section>
 }
 

@@ -45,7 +45,7 @@ func registerCatalog(mux *http.ServeMux, store PolicyStore, csrf string) {
 			http.Error(w, "Unable to load models", http.StatusInternalServerError)
 			return
 		}
-		_ = pages.PolicyForm(policy, catalog.Models(), refused, csrf).Render(r.Context(), w)
+		_ = pages.PolicyForm(policy, catalog.Models(), refused, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /catalog/{id}", func(w http.ResponseWriter, r *http.Request) {
 		model, ok := catalog.Lookup(r.PathValue("id"))

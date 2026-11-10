@@ -10,6 +10,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.68.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.12.0
 	github.com/charmbracelet/openai-go v0.0.0-20260921175203-216db9e71b83
+	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/google/go-github/v75 v75.0.0
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
@@ -17,6 +18,7 @@ require (
 	github.com/riverqueue/river/riverdriver/riverpgxv5 v0.47.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/net v0.59.0
+	golang.org/x/oauth2 v0.36.0
 	sigs.k8s.io/agent-sandbox v1.0.4
 )
 
@@ -117,6 +119,7 @@ require (
 	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/ghostiam/protogetter v1.0.1 // indirect
 	github.com/go-critic/go-critic v0.15.0 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.0 // indirect
@@ -316,7 +319,6 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp/typeparams v0.0.0-20260811152304-ee035b5b010f // indirect
 	golang.org/x/mod v0.41.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect

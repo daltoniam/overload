@@ -11,6 +11,9 @@ import templruntime "github.com/a-h/templ/runtime"
 type PageData struct {
 	Title       string
 	CurrentPath string
+	// SignedOut hides the navigation, for sign-in and sign-out pages
+	// shown to someone without a session.
+	SignedOut bool
 }
 
 func Base(data PageData) templ.Component {
@@ -41,57 +44,127 @@ func Base(data PageData) templ.Component {
 		var templ_7745c5c3_Var2 string
 		templ_7745c5c3_Var2, templ_7745c5c3_Err = templ.JoinStringErrs(data.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/base.templ`, Line: 18, Col: 22}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/base.templ`, Line: 21, Col: 22}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var2))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " · overload</title><script>try { var theme = localStorage.getItem('overload-theme'); if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; } catch (_) {}</script><style>\n\t\t\t\t:root { color-scheme: light; --ink: #172635; --muted: #627282; --line: #dce4e9; --surface: #fff; --canvas: #f5f7f8; --accent: #176b66; --soft: #e6f3ef; --field: #fff; --field-line: #cbd6dd; --subtle: #f7f9fa; --badge: #eef1f4; --badge-ink: #506070; --code: #eef3f5; --placeholder: #87949f; --hover: #12534f; --button-ink: #fff; --danger: #b42334; --danger-hover: #891728; }\n\t\t\t\t@media (prefers-color-scheme: dark) { :root:not([data-theme]) { color-scheme: dark; --ink: #e6edf2; --muted: #b1c1cd; --line: #384958; --surface: #1c2a35; --canvas: #111c26; --accent: #78d5c0; --soft: #213d3d; --field: #243440; --field-line: #5a7080; --subtle: #20303b; --badge: #304451; --badge-ink: #d0dee6; --code: #304451; --placeholder: #a2b4c0; --hover: #2e8075; --button-ink: #10251f; --danger: #f18491; --danger-hover: #cc5363; } }\n\t\t\t\t:root[data-theme=\"light\"] { color-scheme: light; --ink: #172635; --muted: #627282; --line: #dce4e9; --surface: #fff; --canvas: #f5f7f8; --accent: #176b66; --soft: #e6f3ef; --field: #fff; --field-line: #cbd6dd; --subtle: #f7f9fa; --badge: #eef1f4; --badge-ink: #506070; --code: #eef3f5; --placeholder: #87949f; --hover: #12534f; --button-ink: #fff; --danger: #b42334; --danger-hover: #891728; }\n\t\t\t\t:root[data-theme=\"dark\"] { color-scheme: dark; --ink: #e6edf2; --muted: #b1c1cd; --line: #384958; --surface: #1c2a35; --canvas: #111c26; --accent: #78d5c0; --soft: #213d3d; --field: #243440; --field-line: #5a7080; --subtle: #20303b; --badge: #304451; --badge-ink: #d0dee6; --code: #304451; --placeholder: #a2b4c0; --hover: #2e8075; --button-ink: #10251f; --danger: #f18491; --danger-hover: #cc5363; }\n\t\t\t\t* { box-sizing: border-box; }\n\t\t\t\tbody { margin: 0; background: var(--canvas); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, sans-serif; }\n\t\t\t\ta { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }\n\t\t\t\t.shell { width: 100%; max-width: 1160px; margin: 0 auto; padding: 0 28px; }\n\t\t\t\t.app-shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100vh; }\n\t\t\t\t.sidebar { background: var(--surface); border-right: 1px solid var(--line); padding: 28px 18px; display: flex; flex-direction: column; gap: 24px; min-width: 0; }\n\t\t\t\t.sidebar .brand { padding: 0 10px; }\n\t\t\t\t.sidebar-details { display: contents; }\n\t\t\t\t.sidebar-details summary { display: none; }\n\t\t\t\t.sidebar-footer { margin-top: auto; padding: 0 10px; }\n\t\t\t\t.content { min-width: 0; }\n\t\t\t\t.brand { color: var(--ink); font-weight: 760; letter-spacing: -.045em; font-size: 23px; display: inline-flex; align-items: center; gap: 11px; white-space: nowrap; }\n\t\t\t\t.brand:hover { text-decoration: none; }\n\t\t\t\t.brand-mark { width: 28px; height: 28px; background: var(--accent); border-radius: 8px; color: var(--canvas); display: grid; place-items: center; font-size: 17px; font-weight: 650; letter-spacing: 0; }\n\t\t\t\tnav { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }\n\t\t\t\tnav a { color: var(--muted); border-radius: 7px; padding: 9px 12px; font-size: 14px; font-weight: 580; } .theme-toggle { white-space: nowrap; padding: 6px 9px; }\n\t\t\t\tnav a:hover { background: var(--canvas); text-decoration: none; color: var(--ink); }\n\t\t\t\tnav a[aria-current=\"page\"] { background: var(--soft); color: var(--accent); }\n\t\t\t\tmain { padding-top: 42px !important; padding-bottom: 90px !important; }\n\t\t\t\t.page-header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-end; margin-bottom: 27px; }\n\t\t\t\t.eyebrow { margin: 0 0 8px; text-transform: uppercase; letter-spacing: .11em; font-size: 11px; font-weight: 750; color: var(--accent); }\n\t\t\t\th1 { font-size: clamp(27px, 3vw, 35px); letter-spacing: -.045em; line-height: 1.16; margin: 0 0 8px; }\n\t\t\t\th2 { font-size: 20px; letter-spacing: -.025em; margin: 0 0 5px; }\n\t\t\t\th3 { font-size: 16px; margin: 0 0 8px; }\n\t\t\t\tp { margin: 0 0 16px; } .muted { color: var(--muted); }\n\t\t\t\t.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 2px 9px #1e344009; padding: 25px; margin-bottom: 18px; min-width: 0; }\n\t\t\t\t.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 19px; }\n\t\t\t\t.panel-head p { margin: 0; }\n\t\t\t\t.kicker { font-size: 12px; font-weight: 720; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 10px; }\n\t\t\t\t.badge { display: inline-block; padding: 3px 9px; border-radius: 999px; color: var(--accent); background: var(--soft); font-size: 12px; font-weight: 700; white-space: nowrap; }\n\t\t\t\t.badge.neutral { background: var(--badge); color: var(--badge-ink); }\n\t\t\t\t.grid { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(310px,1fr); gap: 20px; align-items: start; }\n\t\t\t\t.stack { display: grid; gap: 16px; min-width: 0; }\n\t\t\t\t.field { display: block; margin-bottom: 16px; } .field > span { display: block; font-weight: 650; font-size: 13px; margin-bottom: 6px; }\n\t\t\t\t.field small { display: block; color: var(--muted); margin-top: 5px; }\n\t\t\t\tinput:not([type=\"checkbox\"]), select, textarea { font: inherit; width: 100%; border: 1px solid var(--field-line); border-radius: 8px; padding: 10px 11px; background: var(--field); color: var(--ink); outline-color: var(--accent); }\n\t\t\t\ttextarea { min-height: 92px; resize: vertical; } input::placeholder, textarea::placeholder { color: var(--placeholder); }\n\t\t\t\t.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }\n\t\t\t\t.check { display: flex; gap: 9px; align-items: center; margin-bottom: 17px; font-size: 14px; }\n\t\t\t\tbutton, .button { font: inherit; display: inline-block; cursor: pointer; border-radius: 8px; border: 1px solid var(--accent); padding: 10px 15px; background: var(--accent); color: var(--button-ink); font-weight: 650; font-size: 13px; }\n\t\t\t\tbutton:hover, .button:hover { background: var(--hover); text-decoration: none; color: var(--button-ink); }\n\t\t\t\tbutton.secondary { background: var(--surface); color: var(--accent); }\n\t\t\t\tbutton.secondary:hover { background: var(--soft); }\n\t\t\t\tbutton.danger { border-color: var(--danger); background: var(--danger); color: var(--canvas); }\n\t\t\t\tbutton.danger:hover { border-color: var(--danger-hover); background: var(--danger-hover); color: var(--canvas); }\n\t\t\t\tbutton:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n\t\t\t\tcode { background: var(--code); padding: 2px 5px; border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }\n\t\t\t\tpre { background: #172635; color: #dcebe9; border-radius: 9px; padding: 14px 16px; overflow-x: auto; font-size: 12px; line-height: 1.6; }\n\t\t\t\tpre code { background: none; color: inherit; padding: 0; }\n\t\t\t\ttable { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--muted); font-size: 12px; font-weight: 700; } tbody tr:last-child td { border-bottom: 0; }\n\t\t\t\t.table-wrap { overflow-x: auto; } .empty { padding: 27px 16px; background: var(--subtle); border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }\n\t\t\t\t.profile { border: 1px solid var(--line); border-radius: 9px; padding: 16px; margin-bottom: 10px; }\n\t\t\t\t.profile:last-child { margin-bottom: 0; } .profile-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }\n\t\t\t\t.profile p { color: var(--muted); font-size: 13px; margin: 6px 0 0; overflow-wrap: anywhere; }\n\t\t\t\t.profile .subline { font-size: 12px; margin-top: 10px; }\n\t\t\t\t.agent-entry { border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; background: var(--subtle); margin-bottom: 9px; }\n\t\t\t\t.agent-entry summary { font-weight: 650; cursor: pointer; }\n\t\t\t\t.agent-entry .field { margin-top: 14px; } .agent-entry .field:last-child { margin-bottom: 0; }\n\t\t\t\t.notice { border-left: 3px solid var(--accent); padding: 12px 15px; background: var(--soft); border-radius: 0 8px 8px 0; font-size: 13px; }\n\t\t\t\tdl { display: grid; grid-template-columns: 135px 1fr; gap: 9px; } dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }\n\t\t\t\t@media (max-width: 780px) { .app-shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 18px; gap: 9px; } .sidebar .brand { padding: 0; } .sidebar-details { display: block; } .sidebar-details summary { display: list-item; cursor: pointer; color: var(--accent); font-weight: 650; } .sidebar-details:not([open]) nav { display: none; } nav { padding-top: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .sidebar-footer { margin-top: 0; padding: 0; } .grid { grid-template-columns: 1fr; } main { padding-top: 27px !important; } .page-header { align-items: flex-start; flex-direction: column; } }\n\t\t\t\t@media (max-width: 480px) { .shell { padding-left: 16px; padding-right: 16px; } .panel { padding: 18px; } .field-row { grid-template-columns: 1fr; gap: 0; } }\n\t\t\t</style><link rel=\"stylesheet\" href=\"/assets/ui.css\"></head><body hx-history=\"false\"><a class=\"skip-link\" href=\"#page-content\">Skip to content</a><div class=\"app-shell\"><aside class=\"sidebar\"><a class=\"brand\" href=\"/\"><span class=\"brand-mark\" aria-hidden=\"true\">o</span> overload</a><details class=\"sidebar-details\" open><summary>Navigation</summary><nav aria-label=\"Main navigation\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, " · overload</title><script>try { var theme = localStorage.getItem('overload-theme'); if (theme === 'light' || theme === 'dark') document.documentElement.dataset.theme = theme; } catch (_) {}</script><style>\n\t\t\t\t:root { color-scheme: light; --ink: #172635; --muted: #627282; --line: #dce4e9; --surface: #fff; --canvas: #f5f7f8; --accent: #176b66; --soft: #e6f3ef; --field: #fff; --field-line: #cbd6dd; --subtle: #f7f9fa; --badge: #eef1f4; --badge-ink: #506070; --code: #eef3f5; --placeholder: #87949f; --hover: #12534f; --button-ink: #fff; --danger: #b42334; --danger-hover: #891728; }\n\t\t\t\t@media (prefers-color-scheme: dark) { :root:not([data-theme]) { color-scheme: dark; --ink: #e6edf2; --muted: #b1c1cd; --line: #384958; --surface: #1c2a35; --canvas: #111c26; --accent: #78d5c0; --soft: #213d3d; --field: #243440; --field-line: #5a7080; --subtle: #20303b; --badge: #304451; --badge-ink: #d0dee6; --code: #304451; --placeholder: #a2b4c0; --hover: #2e8075; --button-ink: #10251f; --danger: #f18491; --danger-hover: #cc5363; } }\n\t\t\t\t:root[data-theme=\"light\"] { color-scheme: light; --ink: #172635; --muted: #627282; --line: #dce4e9; --surface: #fff; --canvas: #f5f7f8; --accent: #176b66; --soft: #e6f3ef; --field: #fff; --field-line: #cbd6dd; --subtle: #f7f9fa; --badge: #eef1f4; --badge-ink: #506070; --code: #eef3f5; --placeholder: #87949f; --hover: #12534f; --button-ink: #fff; --danger: #b42334; --danger-hover: #891728; }\n\t\t\t\t:root[data-theme=\"dark\"] { color-scheme: dark; --ink: #e6edf2; --muted: #b1c1cd; --line: #384958; --surface: #1c2a35; --canvas: #111c26; --accent: #78d5c0; --soft: #213d3d; --field: #243440; --field-line: #5a7080; --subtle: #20303b; --badge: #304451; --badge-ink: #d0dee6; --code: #304451; --placeholder: #a2b4c0; --hover: #2e8075; --button-ink: #10251f; --danger: #f18491; --danger-hover: #cc5363; }\n\t\t\t\t* { box-sizing: border-box; }\n\t\t\t\tbody { margin: 0; background: var(--canvas); color: var(--ink); font: 15px/1.55 system-ui, -apple-system, sans-serif; }\n\t\t\t\ta { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }\n\t\t\t\t.shell { width: 100%; max-width: 1160px; margin: 0 auto; padding: 0 28px; }\n\t\t\t\t.app-shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); min-height: 100vh; }\n\t\t\t\t.sidebar { background: var(--surface); border-right: 1px solid var(--line); padding: 28px 18px; display: flex; flex-direction: column; gap: 24px; min-width: 0; }\n\t\t\t\t.sidebar .brand { padding: 0 10px; }\n\t\t\t\t.sidebar-details { display: contents; }\n\t\t\t\t.sidebar-details summary { display: none; }\n\t\t\t\t.sidebar-footer { margin-top: auto; padding: 0 10px; }\n\t\t\t\t.content { min-width: 0; }\n\t\t\t\t.brand { color: var(--ink); font-weight: 760; letter-spacing: -.045em; font-size: 23px; display: inline-flex; align-items: center; gap: 11px; white-space: nowrap; }\n\t\t\t\t.brand:hover { text-decoration: none; }\n\t\t\t\t.brand-mark { width: 28px; height: 28px; background: var(--accent); border-radius: 8px; color: var(--canvas); display: grid; place-items: center; font-size: 17px; font-weight: 650; letter-spacing: 0; }\n\t\t\t\tnav { display: flex; flex-direction: column; align-items: stretch; gap: 3px; }\n\t\t\t\tnav a { color: var(--muted); border-radius: 7px; padding: 9px 12px; font-size: 14px; font-weight: 580; } .theme-toggle { white-space: nowrap; padding: 6px 9px; }\n\t\t\t\tnav a:hover { background: var(--canvas); text-decoration: none; color: var(--ink); }\n\t\t\t\tnav a[aria-current=\"page\"] { background: var(--soft); color: var(--accent); }\n\t\t\t\tmain { padding-top: 42px !important; padding-bottom: 90px !important; }\n\t\t\t\t.page-header { display: flex; justify-content: space-between; gap: 20px; align-items: flex-end; margin-bottom: 27px; }\n\t\t\t\t.eyebrow { margin: 0 0 8px; text-transform: uppercase; letter-spacing: .11em; font-size: 11px; font-weight: 750; color: var(--accent); }\n\t\t\t\th1 { font-size: clamp(27px, 3vw, 35px); letter-spacing: -.045em; line-height: 1.16; margin: 0 0 8px; }\n\t\t\t\th2 { font-size: 20px; letter-spacing: -.025em; margin: 0 0 5px; }\n\t\t\t\th3 { font-size: 16px; margin: 0 0 8px; }\n\t\t\t\tp { margin: 0 0 16px; } .muted { color: var(--muted); }\n\t\t\t\t.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 2px 9px #1e344009; padding: 25px; margin-bottom: 18px; min-width: 0; }\n\t\t\t\t.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 19px; }\n\t\t\t\t.panel-head p { margin: 0; }\n\t\t\t\t.kicker { font-size: 12px; font-weight: 720; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); margin-bottom: 10px; }\n\t\t\t\t.badge { display: inline-block; padding: 3px 9px; border-radius: 999px; color: var(--accent); background: var(--soft); font-size: 12px; font-weight: 700; white-space: nowrap; }\n\t\t\t\t.badge.neutral { background: var(--badge); color: var(--badge-ink); }\n\t\t\t\t.grid { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(310px,1fr); gap: 20px; align-items: start; }\n\t\t\t\t.stack { display: grid; gap: 16px; min-width: 0; }\n\t\t\t\t.field { display: block; margin-bottom: 16px; } .field > span { display: block; font-weight: 650; font-size: 13px; margin-bottom: 6px; }\n\t\t\t\t.field small { display: block; color: var(--muted); margin-top: 5px; }\n\t\t\t\tinput:not([type=\"checkbox\"]), select, textarea { font: inherit; width: 100%; border: 1px solid var(--field-line); border-radius: 8px; padding: 10px 11px; background: var(--field); color: var(--ink); outline-color: var(--accent); }\n\t\t\t\ttextarea { min-height: 92px; resize: vertical; } input::placeholder, textarea::placeholder { color: var(--placeholder); }\n\t\t\t\t.field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }\n\t\t\t\t.check { display: flex; gap: 9px; align-items: center; margin-bottom: 17px; font-size: 14px; }\n\t\t\t\tbutton, .button { font: inherit; display: inline-block; cursor: pointer; border-radius: 8px; border: 1px solid var(--accent); padding: 10px 15px; background: var(--accent); color: var(--button-ink); font-weight: 650; font-size: 13px; }\n\t\t\t\tbutton:hover, .button:hover { background: var(--hover); text-decoration: none; color: var(--button-ink); }\n\t\t\t\tbutton.secondary { background: var(--surface); color: var(--accent); }\n\t\t\t\tbutton.secondary:hover { background: var(--soft); }\n\t\t\t\tbutton.danger { border-color: var(--danger); background: var(--danger); color: var(--canvas); }\n\t\t\t\tbutton.danger:hover { border-color: var(--danger-hover); background: var(--danger-hover); color: var(--canvas); }\n\t\t\t\tbutton:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }\n\t\t\t\tcode { background: var(--code); padding: 2px 5px; border-radius: 4px; font-size: 12px; overflow-wrap: anywhere; }\n\t\t\t\tpre { background: #172635; color: #dcebe9; border-radius: 9px; padding: 14px 16px; overflow-x: auto; font-size: 12px; line-height: 1.6; }\n\t\t\t\tpre code { background: none; color: inherit; padding: 0; }\n\t\t\t\ttable { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; } th { color: var(--muted); font-size: 12px; font-weight: 700; } tbody tr:last-child td { border-bottom: 0; }\n\t\t\t\t.table-wrap { overflow-x: auto; } .empty { padding: 27px 16px; background: var(--subtle); border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); }\n\t\t\t\t.profile { border: 1px solid var(--line); border-radius: 9px; padding: 16px; margin-bottom: 10px; }\n\t\t\t\t.profile:last-child { margin-bottom: 0; } .profile-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }\n\t\t\t\t.profile p { color: var(--muted); font-size: 13px; margin: 6px 0 0; overflow-wrap: anywhere; }\n\t\t\t\t.profile .subline { font-size: 12px; margin-top: 10px; }\n\t\t\t\t.agent-entry { border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; background: var(--subtle); margin-bottom: 9px; }\n\t\t\t\t.agent-entry summary { font-weight: 650; cursor: pointer; }\n\t\t\t\t.agent-entry .field { margin-top: 14px; } .agent-entry .field:last-child { margin-bottom: 0; }\n\t\t\t\t.notice { border-left: 3px solid var(--accent); padding: 12px 15px; background: var(--soft); border-radius: 0 8px 8px 0; font-size: 13px; }\n\t\t\t\tdl { display: grid; grid-template-columns: 135px 1fr; gap: 9px; } dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }\n\t\t\t\t@media (max-width: 780px) { .app-shell { grid-template-columns: 1fr; } .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 14px 18px; gap: 9px; } .sidebar .brand { padding: 0; } .sidebar-details { display: block; } .sidebar-details summary { display: list-item; cursor: pointer; color: var(--accent); font-weight: 650; } .sidebar-details:not([open]) nav { display: none; } nav { padding-top: 8px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); } .sidebar-footer { margin-top: 0; padding: 0; } .grid { grid-template-columns: 1fr; } main { padding-top: 27px !important; } .page-header { align-items: flex-start; flex-direction: column; } }\n\t\t\t\t@media (max-width: 480px) { .shell { padding-left: 16px; padding-right: 16px; } .panel { padding: 18px; } .field-row { grid-template-columns: 1fr; gap: 0; } }\n\t\t\t</style><link rel=\"stylesheet\" href=\"/assets/ui.css\"></head><body hx-history=\"false\"><a class=\"skip-link\" href=\"#page-content\">Skip to content</a><div class=\"app-shell\"><aside class=\"sidebar\"><a class=\"brand\" href=\"/\"><span class=\"brand-mark\" aria-hidden=\"true\">o</span> overload</a> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = NavigationLink("/", "Overview", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+		if !data.SignedOut {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<details class=\"sidebar-details\" open><summary>Navigation</summary><nav aria-label=\"Main navigation\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/", "Overview", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/runs", "Runs", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/settings", "Models", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/configure/agents", "Agents", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/configure/repositories", "Repositories", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/configure/workflows", "Workflows", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/configure/schedules", "Schedules", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/configure/tools", "Tools", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/setup/github", "GitHub", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = NavigationLink("/webhooks", "Webhooks", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if viewer, ok := ViewerFrom(ctx); ok && viewer.IsAdmin() {
+				templ_7745c5c3_Err = NavigationLink("/users", "Users", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</nav></details>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<div class=\"sidebar-footer\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = NavigationLink("/runs", "Runs", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
+		if viewer, ok := ViewerFrom(ctx); ok && viewer.BreakGlass {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "<p class=\"secondary-line\">Break-glass access (admin)</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else if ok && !data.SignedOut {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "<form class=\"signed-in\" method=\"post\" action=\"/auth/logout\"><input type=\"hidden\" name=\"csrf\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var3 string
+			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs(viewer.CSRF)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/base.templ`, Line: 117, Col: 117}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"><span class=\"secondary-line\">Signed in as ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var4 string
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(viewer.Name)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/base.templ`, Line: 117, Col: 176}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, " (")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var5 string
+			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(viewer.Role)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/layouts/base.templ`, Line: 117, Col: 193}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, ")</span><button class=\"secondary\" type=\"submit\">Sign out</button></form>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		templ_7745c5c3_Err = NavigationLink("/settings", "Models", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/configure/agents", "Agents", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/configure/repositories", "Repositories", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/configure/workflows", "Workflows", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/configure/schedules", "Schedules", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/configure/tools", "Tools", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/setup/github", "GitHub", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = NavigationLink("/webhooks", "Webhooks", data.CurrentPath).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</nav></details><div class=\"sidebar-footer\"><label class=\"theme-control\"><span>Appearance</span><select id=\"theme-select\" aria-label=\"Color theme\"><option value=\"auto\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select></label></div></aside><div class=\"content\"><main class=\"shell\" id=\"page-content\" tabindex=\"-1\"><p id=\"ui-status\" class=\"notice error\" role=\"status\" hidden></p><div id=\"form-errors\" tabindex=\"-1\" role=\"alert\"></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "<label class=\"theme-control\"><span>Appearance</span><select id=\"theme-select\" aria-label=\"Color theme\"><option value=\"auto\">System</option><option value=\"light\">Light</option><option value=\"dark\">Dark</option></select></label></div></aside><div class=\"content\"><main class=\"shell\" id=\"page-content\" tabindex=\"-1\"><p id=\"ui-status\" class=\"notice error\" role=\"status\" hidden></p><div id=\"form-errors\" tabindex=\"-1\" role=\"alert\"></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -99,7 +172,7 @@ func Base(data PageData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</main></div></div><div id=\"modal-root\"></div></body></html>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</main></div></div><div id=\"modal-root\"></div></body></html>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

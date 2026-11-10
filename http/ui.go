@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,21 +55,35 @@ func parseUI(r *http.Request) pages.UIState {
 	return state
 }
 
+var disableUserPath = regexp.MustCompile(`^/users/[0-9]+/disable$`)
+
+// confirmPromptFor returns the confirmation a destructive form post needs
+// before it runs, if any.
+func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
+	switch {
+	case strings.HasSuffix(path, "/delete"):
+		return pages.DeletePrompt, true
+	case disableUserPath.MatchString(path):
+		return pages.ConfirmPrompt{Eyebrow: "Confirm access change", Title: "Disable this person?", Impact: "They are signed out at once and cannot sign in until an administrator enables them again.", Button: "Disable", Cancel: "/users"}, true
+	}
+	return pages.ConfirmPrompt{}, false
+}
+
 func uiMiddleware(next http.Handler, csrf string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/assets/") || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/webhooks/") || strings.Contains(r.URL.Path, "/artifacts/") || strings.HasPrefix(r.URL.Path, "/setup/") {
+		if strings.HasPrefix(r.URL.Path, "/assets/") || r.URL.Path == "/healthz" || strings.HasPrefix(r.URL.Path, "/webhooks/") || strings.Contains(r.URL.Path, "/artifacts/") || strings.HasPrefix(r.URL.Path, "/setup/") || strings.HasPrefix(r.URL.Path, "/auth/") {
 			next.ServeHTTP(w, r)
 			return
 		}
 		state := parseUI(r)
 		r = r.WithContext(pages.WithUI(r.Context(), state))
-		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/delete") {
+		if prompt, ok := confirmPromptFor(r.URL.Path); ok && r.Method == http.MethodPost {
 			if !validForm(w, r, csrf) {
 				return
 			}
 			if r.PostForm.Get("confirmed") != "true" {
 				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				_ = layouts.Base(layouts.PageData{Title: "Confirm deletion"}).Render(templ.WithChildren(r.Context(), pages.Confirmation(r.URL.Path, csrf, r.PostForm)), w)
+				_ = layouts.Base(layouts.PageData{Title: prompt.Button}).Render(templ.WithChildren(r.Context(), pages.Confirmation(r.URL.Path, formTokenFor(r, csrf), r.PostForm, prompt)), w)
 				return
 			}
 		}

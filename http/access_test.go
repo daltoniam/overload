@@ -188,7 +188,7 @@ func TestSecureRequiresAccessToken(t *testing.T) {
 	if err := ValidateAuth(); err != nil {
 		t.Fatalf("Access should replace the UI password: %v", err)
 	}
-	handler := secure(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) }))
+	handler := secure(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusTeapot) }), nil, nil, "")
 	verifierClient := fixture.server.Client()
 	originalTransport := http.DefaultTransport
 	http.DefaultTransport = verifierClient.Transport

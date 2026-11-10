@@ -24,10 +24,10 @@ func registerTunnel(mux *http.ServeMux, control TunnelControl, csrf string) {
 	render := func(w http.ResponseWriter, r *http.Request, fragment bool) {
 		w.Header().Set("Cache-Control", "no-store")
 		if fragment {
-			_ = pages.TunnelStatus(control.Status(), csrf, "").Render(r.Context(), w)
+			_ = pages.TunnelStatus(control.Status(), formTokenFor(r, csrf), "").Render(r.Context(), w)
 			return
 		}
-		_ = pages.TunnelSetup(control.Status(), csrf, "").Render(r.Context(), w)
+		_ = pages.TunnelSetup(control.Status(), formTokenFor(r, csrf), "").Render(r.Context(), w)
 	}
 	mux.HandleFunc("GET /setup/tunnel", func(w http.ResponseWriter, r *http.Request) { render(w, r, false) })
 	mux.HandleFunc("GET /setup/tunnel/status", func(w http.ResponseWriter, r *http.Request) { render(w, r, true) })

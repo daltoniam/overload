@@ -86,7 +86,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 		}
-		_ = pages.AgentForm(selected, models, starters, tools, csrf).Render(r.Context(), w)
+		_ = pages.AgentForm(selected, models, starters, tools, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("GET /configure/repositories", func(w http.ResponseWriter, r *http.Request) {
 		repos, err := store.ListRepositories(r.Context())
@@ -131,7 +131,7 @@ func registerConfiguration(mux *http.ServeMux, store ConfigurationStore, csrf st
 				return
 			}
 		}
-		_ = pages.RepositoryForm(selected, bindings, workflows, csrf).Render(r.Context(), w)
+		_ = pages.RepositoryForm(selected, bindings, workflows, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /configure/agents/{name}/delete", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
