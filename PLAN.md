@@ -179,6 +179,7 @@ overload/
   localmodels/         verified model downloads, disk accounting, llama.cpp build checks, llama-server services
   gateway/             OpenAI and Anthropic compatible model gateway: API keys, fair per-model queue, usage
   workload/            OIDC workload tokens (GitHub Actions, Kubernetes) checked against workload rules
+  checkout/            reviews of a local git checkout and the opt-in fix loop on a separate worktree
   http/                router, middleware (auth, CSRF, logging), webhook + UI handlers
   web/templates/       templ: layouts/, components/, pages/ (Switchboard pattern)
   web/static/          CSS (embedded)
@@ -1498,10 +1499,14 @@ plan and deploy/README.md.
    table, and the planted-bug test logs both counts. Follow-up: placement
    (misplaced findings) cannot be measured for cases built from commits,
    which carry no expected wording.
-9. **Local multi-agent review** (16.10): risk tier and specialist selection
+9. **Local multi-agent review** (16.10; done): risk tier and specialist selection
    by path, specialist and coordinator starter agents, a per-review budget,
    reviews of a local checkout, and an opt-in fix loop on a branch in a git
-   worktree that never pushes.
+   worktree that never pushes. The fixer's file tools cannot leave the
+   worktree or touch git's files, and git runs without hooks; its test
+   command runs on the developer's machine with a reduced environment, so
+   model-written tests are not confined. Follow-up: run fix-loop tests in a
+   sandbox.
 10. **Node inventory and cluster control** (16.4 item 4): Macs report
     hardware, runtime versions, models and health; version drift is flagged;
     model placements across nodes are recorded and an MLX launch

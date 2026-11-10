@@ -88,6 +88,37 @@ var ErrWorkflowUnavailable = errors.New("workflow unavailable")
 // PromptRevision must match the stored one, so an edit made from an older
 // copy of the instructions is refused instead of overwriting newer ones.
 func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := saveAgent(ctx, tx, agent); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// SaveCohort saves agents and a workflow that uses them in one
+// transaction, so a failure leaves none of them saved.
+func (s *Store) SaveCohort(ctx context.Context, agents []overload.AgentDefinition, workflow overload.Workflow) error {
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	for _, agent := range agents {
+		if err := saveAgent(ctx, tx, agent); err != nil {
+			return fmt.Errorf("save agent %s: %w", agent.Name, err)
+		}
+	}
+	if err := saveWorkflow(ctx, tx, workflow); err != nil {
+		return fmt.Errorf("save workflow %s: %w", workflow.Name, err)
+	}
+	return tx.Commit(ctx)
+}
+
+func saveAgent(ctx context.Context, tx pgx.Tx, agent overload.AgentDefinition) error {
 	agent.Prompt = overload.NormalizePrompt(agent.Prompt)
 	if err := agent.Validate(); err != nil {
 		return err
@@ -95,11 +126,6 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if agent.Kind == "" {
 		agent.Kind = "pr_review"
 	}
-	tx, err := s.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
 	if err := checkRevision(ctx, tx, `SELECT r.revision FROM agent_definitions a JOIN prompt_revisions r ON r.id=a.entry_prompt_revision_id WHERE a.name=$1 FOR UPDATE OF a`, agent.Name, agent.PromptRevision); err != nil {
 		return err
 	}
@@ -130,10 +156,8 @@ func (s *Store) SaveAgent(ctx context.Context, agent overload.AgentDefinition) e
 	if err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind,tool_servers) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,tool_servers=EXCLUDED.tool_servers,updated_at=now()`, agent.Name, modelID, revisionID, agent.Enabled, agent.Kind, toolData); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+	_, err = tx.Exec(ctx, `INSERT INTO agent_definitions(name,model_profile_id,entry_prompt_revision_id,enabled,kind,tool_servers) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(name) DO UPDATE SET model_profile_id=EXCLUDED.model_profile_id,entry_prompt_revision_id=EXCLUDED.entry_prompt_revision_id,enabled=EXCLUDED.enabled,kind=EXCLUDED.kind,tool_servers=EXCLUDED.tool_servers,updated_at=now()`, agent.Name, modelID, revisionID, agent.Enabled, agent.Kind, toolData)
+	return err
 }
 
 func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, error) {
@@ -163,15 +187,22 @@ func (s *Store) ListAgents(ctx context.Context) ([]overload.AgentDefinition, err
 // SaveWorkflow saves a workflow with its planner and verifier prompts.
 // Changed prompt text becomes a new revision.
 func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) error {
-	workflow.Normalize()
-	if err := workflow.Validate(); err != nil {
-		return err
-	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if err := saveWorkflow(ctx, tx, workflow); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func saveWorkflow(ctx context.Context, tx pgx.Tx, workflow overload.Workflow) error {
+	workflow.Normalize()
+	if err := workflow.Validate(); err != nil {
+		return err
+	}
 	if err := checkRevision(ctx, tx, `SELECT revision FROM workflows WHERE name=$1 FOR UPDATE`, workflow.Name, workflow.Revision); err != nil {
 		return err
 	}
@@ -186,7 +217,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths, SensitivePaths: workflow.SensitivePaths, MaxReviewTokens: workflow.MaxReviewTokens}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -205,7 +236,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if _, err := tx.Exec(ctx, `INSERT INTO workflows(name,kind,agent_names,enabled,routing) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(name) DO UPDATE SET kind=EXCLUDED.kind,agent_names=EXCLUDED.agent_names,enabled=EXCLUDED.enabled,routing=EXCLUDED.routing,revision=workflows.revision+1,updated_at=now() WHERE (workflows.kind,workflows.agent_names,workflows.enabled,workflows.routing) IS DISTINCT FROM (EXCLUDED.kind,EXCLUDED.agent_names,EXCLUDED.enabled,EXCLUDED.routing)`, workflow.Name, workflow.Kind, data, workflow.Enabled, routing); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	return nil
 }
 
 // workflowRouting is the stored form of a workflow's skip paths, sub-agent
@@ -226,6 +257,8 @@ type workflowRouting struct {
 	MaxFileChars       int                       `json:"max_file_chars,omitempty"`
 	HumanReviewPaths   []string                  `json:"human_review_paths,omitempty"`
 	ApprovePaths       []string                  `json:"approve_paths,omitempty"`
+	SensitivePaths     []string                  `json:"sensitive_paths,omitempty"`
+	MaxReviewTokens    int                       `json:"max_review_tokens,omitempty"`
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -250,6 +283,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 		}
 		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.MaxFindings = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
 		workflow.HumanReviewPaths, workflow.ApprovePaths = routing.HumanReviewPaths, routing.ApprovePaths
+		workflow.SensitivePaths, workflow.MaxReviewTokens = routing.SensitivePaths, routing.MaxReviewTokens
 		workflow.MaxSteps, workflow.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 		workflow.ReviewDecision, workflow.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 		workflow.MaxFileChars = routing.MaxFileChars
@@ -289,6 +323,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	result.ReviewDecision, result.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 	result.MaxFileChars = routing.MaxFileChars
 	result.HumanReviewPaths, result.ApprovePaths = routing.HumanReviewPaths, routing.ApprovePaths
+	result.SensitivePaths, result.MaxReviewTokens = routing.SensitivePaths, routing.MaxReviewTokens
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue

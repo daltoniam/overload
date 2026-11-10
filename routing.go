@@ -37,6 +37,10 @@ const (
 	ScopeGlobs   = "globs"
 	ScopeAlways  = "always"
 	ScopePlanned = "planned"
+	// scopeOutOfTier marks a sub-agent whose tiers exclude the pull
+	// request's (see ForTier): it claims no files and the planner cannot
+	// assign it any. It is never saved.
+	scopeOutOfTier = "out_of_tier"
 )
 
 const maxDescription = 300
@@ -49,11 +53,17 @@ type Scope struct {
 	Mode        string   `json:"mode,omitempty"`
 	Description string   `json:"description,omitempty"`
 	MaxFindings int      `json:"max_findings,omitempty"`
+	// Tiers, when set, are the risk tiers (see AssessRisk) the sub-agent
+	// reviews; pull requests of other tiers skip it.
+	Tiers []string `json:"tiers,omitempty"`
 }
 
 func (scope Scope) Validate() error {
 	if scope.MaxFindings < 0 || scope.MaxFindings > maxFindingsCap {
 		return fmt.Errorf("max findings must be between 0 and %d", maxFindingsCap)
+	}
+	if err := validateTiers(scope.Tiers); err != nil {
+		return err
 	}
 	switch scope.Mode {
 	case "", ScopeGlobs, ScopeAlways:
@@ -71,12 +81,46 @@ func (scope Scope) Validate() error {
 }
 
 func (scope Scope) empty() bool {
-	return len(scope.Paths) == 0 && scope.MaxFindings == 0 && scope.Mode == "" && scope.Description == ""
+	return len(scope.Paths) == 0 && scope.MaxFindings == 0 && scope.Mode == "" && scope.Description == "" && len(scope.Tiers) == 0
 }
 
 // Plannable reports whether the planner may assign files to the scope.
 func (scope Scope) Plannable() bool {
-	return scope.Mode != ScopeAlways
+	return scope.Mode != ScopeAlways && scope.Mode != scopeOutOfTier
+}
+
+// ExcludesTier reports whether the scope is limited to tiers other than
+// tier.
+func (scope Scope) ExcludesTier(tier string) bool {
+	return len(scope.Tiers) > 0 && !slices.Contains(scope.Tiers, tier)
+}
+
+// Tiered reports whether the workflow sizes reviews by risk tier: it has
+// sensitive paths or a sub-agent limited to tiers.
+func (workflow ResolvedWorkflow) Tiered() bool {
+	if len(workflow.SensitivePaths) > 0 {
+		return true
+	}
+	for _, agent := range workflow.Agents {
+		if len(agent.Scope.Tiers) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ForTier returns a copy of the workflow for routing a pull request of
+// tier: sub-agents whose tiers exclude it claim no files, so a main agent
+// that reviews only unclaimed files still reviews them, and the planner
+// cannot assign them any.
+func (workflow ResolvedWorkflow) ForTier(tier string) ResolvedWorkflow {
+	workflow.Agents = slices.Clone(workflow.Agents)
+	for position := 1; position < len(workflow.Agents); position++ {
+		if workflow.Agents[position].Scope.ExcludesTier(tier) {
+			workflow.Agents[position].Scope.Mode = scopeOutOfTier
+		}
+	}
+	return workflow
 }
 
 // CompileGlob turns a path glob into a matcher. `*` and `?` stay within one
@@ -123,6 +167,15 @@ func validateGlobs(globs []string) error {
 	return nil
 }
 
+// GlobSet matches paths against compiled path globs.
+type GlobSet = globSet
+
+// CompileGlobs compiles path globs (see CompileGlob).
+func CompileGlobs(globs []string) (GlobSet, error) { return compileGlobs(globs) }
+
+// Match reports whether any glob matches path.
+func (set globSet) Match(path string) bool { return set.match(path) }
+
 type globSet []*regexp.Regexp
 
 func compileGlobs(globs []string) (globSet, error) {
@@ -163,12 +216,18 @@ type AgentFiles struct {
 	OutputTokens int64    `json:"output_tokens,omitempty"`
 	Failed       string   `json:"failed,omitempty"`
 	Unreviewed   []string `json:"unreviewed,omitempty"`
+	// OutOfTier is set when the sub-agent's tiers exclude the pull
+	// request's, so it reviewed nothing.
+	OutOfTier bool `json:"out_of_tier,omitempty"`
 }
 
 // Routing records which agent reviews which changed file. Agents are in
 // workflow order, main agent first. Planner describes what the planner did,
-// and Degraded lists why a completed review is partial.
+// and Degraded lists why a completed review is partial. Tier is the pull
+// request's risk tier when the workflow has tier-limited sub-agents or
+// sensitive paths.
 type Routing struct {
+	Tier    string   `json:"tier,omitempty"`
 	Skipped []string `json:"skipped,omitempty"`
 	// TooLarge lists changed files whose diff alone exceeds the review
 	// context budget; no agent reviews them.
@@ -255,7 +314,8 @@ func (workflow ResolvedWorkflow) route(paths []string, planned []Assignment) (Ro
 		// planner that over-assigns costs time, not coverage.
 		claimed := false
 		for position := 1; position < len(workflow.Agents); position++ {
-			byGlob := workflow.Agents[position].Scope.Mode != ScopePlanned && (len(scopes[position]) == 0 || scopes[position].match(path))
+			mode := workflow.Agents[position].Scope.Mode
+			byGlob := mode != ScopePlanned && mode != scopeOutOfTier && (len(scopes[position]) == 0 || scopes[position].match(path))
 			if byGlob || extra[position][path] {
 				routing.Agents[position].Files = append(routing.Agents[position].Files, path)
 			}
@@ -562,6 +622,7 @@ func (workflow *Workflow) Normalize() {
 	workflow.SkipPaths = normalizeGlobs(workflow.SkipPaths)
 	workflow.HumanReviewPaths = normalizeGlobs(workflow.HumanReviewPaths)
 	workflow.ApprovePaths = normalizeGlobs(workflow.ApprovePaths)
+	workflow.SensitivePaths = normalizeGlobs(workflow.SensitivePaths)
 	for name, scope := range workflow.Scopes {
 		if scope.Mode == ScopeGlobs {
 			scope.Mode = ""

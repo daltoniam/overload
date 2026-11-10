@@ -539,6 +539,94 @@ overload bakeoff show 4
   reviews run in sandboxes: a case is a few files held in memory that the
   reviewer only reads, and no repository code or tool runs.
 
+## Multi-agent review on your machine
+
+A team of reviewers on one machine, with hosted or local models: a main
+reviewer, specialists limited by path and pull request size, and a
+coordinator that drops duplicates and speculation.
+
+```sh
+overload workflows starter --model opus --name review-cohort
+overload review --checkout . --base main --workflow review-cohort
+overload fix --workflow review-cohort --base main --test "make test" --rounds 3
+```
+
+- `workflows starter` saves five agents on one model connection (main,
+  security, schema, performance, tests) and a workflow with a coordinator
+  (the verifier), sensitive paths and skip paths. Edit them like any other
+  agent or workflow; give specialists other models from the Agents page. It
+  refuses to replace a workflow or agents that already exist under the same
+  names; pass `--force` to overwrite them. The agents and workflow are saved
+  together, so a failure saves none of them.
+- **Risk tiers.** A pull request is trivial up to 20 changed lines, lite up
+  to 400 and full beyond that or when it touches a workflow's sensitive
+  paths (migrations, auth, CI by default). Changed lines are added plus
+  removed lines outside skip paths. A sub-agent can be limited to tiers
+  (Pull request sizes in its scope), so a typo fix gets one reviewer and a
+  migration gets the whole cohort. A sub-agent outside the tier takes no
+  files from the main agent and the planner cannot assign it any. The run
+  shows the tier and which agents sat out.
+- **Budget.** `max_review_tokens` (Token budget per review) caps a
+  review's input and output tokens across the planner, every agent's file
+  reviews and the verifier. Calls already running when it runs out finish,
+  so a review can go over by up to one call per review running at once.
+  Files not started by then are unreviewed and findings not yet verified
+  are kept unchecked; either way the review is partial and the overload
+  check fails.
+- `review --checkout DIR --base main` reviews the committed and uncommitted
+  changes to tracked files since the branch left `main`, reading files from
+  the working tree, and prints a report; nothing is stored or posted. DIR
+  may be any directory inside the checkout. Your git settings for diff
+  output (prefixes, relative paths, text conversion, external diff tools,
+  ignored submodules) are ignored, so submodule commit updates always show.
+  Changes inside a submodule's working tree are not shown: finding them
+  would make git read the submodule's own configuration and run its filters.
+  git's clean, smudge and process filters are switched off, so no configured
+  filter program runs (a Git LFS file shows as its pointer), and symbolic
+  links that point outside the checkout are not followed, so files elsewhere
+  on the machine are never sent to a model. `--check` exits with status 1
+  when the overload check would fail, for a pre-push hook.
+- `fix` (opt-in) needs committed changes: the fix branch starts from the
+  last commit, so uncommitted changes are not part of it. It creates a
+  branch `overload/fix-<time>-<random>` in a separate worktree under
+  `.git/overload-fix/` and repeats: review, then a fixer agent (the main
+  agent's model, or `--fixer`) edits files to fix findings at or above
+  `--until` (default high), running `--test` when given, and the files the
+  fixer wrote are committed on the branch. It stops when the review is
+  clean, after `--rounds`, when the fixer changes nothing, or at
+  `--timeout` (default 4h, at most 5h). Ctrl-C stops the loop and cleans
+  up; a second Ctrl-C exits at once. When no round was committed (the
+  first review was clean, the fixer changed nothing, or the loop failed or
+  was interrupted), the branch and worktree are removed; otherwise the
+  branch is kept and the output says how to remove its worktree. Nothing
+  is pushed, and the original working tree is never touched; review the
+  branch before using it.
+- **What the fixer can do.** Its file tools only read and write files inside
+  the worktree: they refuse paths outside it, symbolic links that leave it,
+  and git's own files (`.git` at any depth, in any letter case), and they
+  never read, list or write through a symbolic link, even one that stays
+  inside the worktree (a listing marks links with @). git runs with
+  repository hooks, file system monitors, filters and commit signing turned
+  off, and git configuration inherited through environment variables is
+  ignored. After every round and after the final tests the loop checks the
+  worktree's `.git` file (which tells git where the repository is); if
+  anything changed it, the loop puts it back and stops with an error. With
+  `--test`, though, the fixer can run any code: it can edit a test or a
+  Makefile and then run the tests, which run as you, on your machine, with
+  your files and network, so they can still change anything else you can,
+  such as the original repository's git configuration. Tests get only
+  `PATH`, `HOME`, user, shell, temporary directory, locale, `TZ`, `TERM`, C
+  compiler and `GO*`/`CGO_*` variables, minus any whose name mentions a
+  token, key, secret, password or auth and any whose value is a URL with a
+  user name or password (such as `GOPROXY=https://user:token@...`); database
+  URLs, API keys and GitHub tokens are not passed. A test command that needs
+  one sets it itself, for example `--test
+  "DATABASE_URL=postgres://localhost/test make test"`; point it at a
+  throwaway database. Review findings come from pull request text, so treat
+  the fixer's changes as untrusted until a person has read them, and run
+  `fix --test` only in a checkout you would let an untrusted contributor's
+  tests run in.
+
 ## GitHub
 
 ### Pull requests without an App

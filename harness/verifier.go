@@ -39,10 +39,13 @@ func parseVerdict(text string) (verdict, error) {
 type verification struct {
 	kept, dropped []overload.Finding
 	failures      int
-	checked       []int
-	droppedBy     []int
-	inputTokens   int64
-	outputTokens  int64
+	// overBudget counts findings kept unchecked because the review's token
+	// budget ran out.
+	overBudget   int
+	checked      []int
+	droppedBy    []int
+	inputTokens  int64
+	outputTokens int64
 }
 
 // verifyFindings asks the main agent's model to keep or drop each finding
@@ -50,8 +53,9 @@ type verification struct {
 // bundle. Critical and security findings are never sent: the bundle is
 // untrusted PR text that could talk the verifier into dropping them. It never rewrites findings, so fingerprints and duplicate
 // suppression still work. A failed or invalid verdict keeps the finding and
-// counts as a failure. Only cancellation of ctx is returned as an error.
-func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, findings []overload.Finding, bundles map[string]string) (verification, error) {
+// counts as a failure. Once budget is used up, remaining findings are kept
+// unchecked. Only cancellation of ctx is returned as an error.
+func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, findings []overload.Finding, bundles map[string]string, budget *tokenBudget) (verification, error) {
 	result := verification{checked: make([]int, len(workflow.Agents)), droppedBy: make([]int, len(workflow.Agents))}
 	main := workflow.Agents[0]
 	var targets []int
@@ -70,9 +74,13 @@ func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, fin
 		return result, nil
 	}
 	verdicts := make([]*verdict, len(findings))
-	var failures atomic.Int64
+	var failures, overBudget atomic.Int64
 	var inputTokens, outputTokens atomic.Int64
 	err = forEachFile(ctx, len(targets), main.Model.Concurrency, func(ctx context.Context, position int) error {
+		if budget.exhausted() {
+			overBudget.Add(1)
+			return nil
+		}
 		finding := findings[targets[position]]
 		claim, _ := json.Marshal(struct {
 			Path       string  `json:"path"`
@@ -94,6 +102,7 @@ func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, fin
 		}
 		inputTokens.Add(response.TotalUsage.InputTokens + response.TotalUsage.CacheReadTokens)
 		outputTokens.Add(response.TotalUsage.OutputTokens)
+		budget.add(response.TotalUsage.InputTokens + response.TotalUsage.CacheReadTokens + response.TotalUsage.OutputTokens)
 		reply, err := parseVerdict(response.Response.Content.Text())
 		if err != nil {
 			failures.Add(1)
@@ -105,7 +114,7 @@ func verifyFindings(ctx context.Context, workflow overload.ResolvedWorkflow, fin
 	if err != nil {
 		return result, err
 	}
-	result.failures = int(failures.Load())
+	result.failures, result.overBudget = int(failures.Load()), int(overBudget.Load())
 	result.inputTokens, result.outputTokens = inputTokens.Load(), outputTokens.Load()
 	for index, finding := range findings {
 		reply := verdicts[index]

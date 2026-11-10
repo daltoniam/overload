@@ -89,3 +89,35 @@ func TestLocalPreviewWithFakeModel(t *testing.T) {
 		t.Fatalf("spec=%+v result=%+v sha=%s calls=%d error=%v", spec, result, sha, calls, err)
 	}
 }
+
+func TestParseReviewOptions(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		err  string
+	}{
+		{"checkout", []string{"--checkout", ".", "--workflow", "cohort"}, ""},
+		{"checkout with check", []string{"--checkout", ".", "--check", "--model", "m", "--model-url", "http://127.0.0.1:1/v1"}, ""},
+		{"pull request", []string{"--repo", "owner/name", "--pr", "1"}, ""},
+		{"checkout with extra argument", []string{"--checkout", ".", "extra"}, "usage"},
+		{"checkout with zero timeout", []string{"--checkout", ".", "--timeout", "0"}, "timeout"},
+		{"checkout with long timeout", []string{"--checkout", ".", "--timeout", "6h"}, "timeout"},
+		{"checkout with bad concurrency", []string{"--checkout", ".", "--concurrency", "-1"}, "concurrency"},
+		{"checkout workflow with model", []string{"--checkout", ".", "--workflow", "cohort", "--model", "m"}, "--workflow cannot"},
+		{"checkout workflow with profile", []string{"--checkout", ".", "--workflow", "cohort", "--profile", "p"}, "--workflow cannot"},
+		{"checkout with again", []string{"--checkout", ".", "--again"}, "--again needs --queue"},
+		{"checkout with pull request", []string{"--checkout", ".", "--repo", "owner/name"}, "cannot be combined"},
+		{"check without checkout", []string{"--repo", "owner/name", "--pr", "1", "--check"}, "--check needs --checkout"},
+		{"no target", []string{}, "usage"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseReviewOptions(test.args)
+			if test.err == "" && err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if test.err != "" && (err == nil || !strings.Contains(err.Error(), test.err)) {
+				t.Fatalf("error = %v, want %q", err, test.err)
+			}
+		})
+	}
+}

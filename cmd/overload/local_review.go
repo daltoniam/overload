@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/checkout"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/harness"
 	"github.com/daltoniam/overload/postgres"
@@ -25,6 +26,10 @@ type reviewOptions struct {
 	pr, concurrency                                         int
 	timeout                                                 time.Duration
 	queue, again                                            bool
+	// checkout and base review a local git checkout instead of a pull
+	// request; check exits non-zero when the overload check would fail.
+	checkout, base string
+	check          bool
 }
 
 func parseReviewOptions(args []string) (reviewOptions, error) {
@@ -41,12 +46,19 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 	flags.IntVar(&options.concurrency, "concurrency", 0, "changed files reviewed at once (overrides the saved model)")
 	flags.BoolVar(&options.queue, "queue", false, "queue a review on the overload server like a newly opened PR (uses the repository's binding and posting settings) instead of reviewing here")
 	flags.BoolVar(&options.again, "again", false, "with --queue: review the current head even if it was already reviewed")
+	flags.StringVar(&options.checkout, "checkout", "", "review the changes in a local git checkout instead of a pull request")
+	flags.StringVar(&options.base, "base", "main", "with --checkout: the branch the changes are measured against")
+	flags.BoolVar(&options.check, "check", false, "with --checkout: exit with status 1 when the overload check would fail")
 	if err := flags.Parse(args); err != nil {
 		return options, err
 	}
 	switch {
-	case flags.NArg() != 0 || options.repo == "" || options.pr < 1:
-		return options, errors.New("usage: overload review --repo owner/name --pr N [--workflow NAME | --profile NAME | --model MODEL --model-url URL]")
+	case options.checkout != "" && (options.repo != "" || options.pr != 0 || options.queue):
+		return options, errors.New("--checkout reviews a local checkout; it cannot be combined with --repo, --pr or --queue")
+	case options.check && options.checkout == "":
+		return options, errors.New("--check needs --checkout")
+	case flags.NArg() != 0 || (options.checkout == "" && (options.repo == "" || options.pr < 1)):
+		return options, errors.New("usage: overload review --repo owner/name --pr N | --checkout DIR [--base main] [--check] [--workflow NAME | --profile NAME | --model MODEL --model-url URL]")
 	case options.timeout < time.Second || options.timeout > 5*time.Hour:
 		return options, errors.New("review timeout must be between 1 second and 5 hours")
 	case options.concurrency < 0 || options.concurrency > overload.MaxReviewConcurrency:
@@ -115,6 +127,9 @@ func inlineReview(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), options.timeout)
 	defer cancel()
+	if options.checkout != "" {
+		return reviewCheckout(ctx, options)
+	}
 	token := github.TokenFromEnvironment()
 	if token == "" {
 		if token, err = github.TokenFromGH(ctx); err != nil {
@@ -189,6 +204,57 @@ func inlineReview(args []string) error {
 		fmt.Printf("Run %d: /runs/%d\n", runID, runID)
 	}
 	return nil
+}
+
+// errCheckFailed makes overload review --check exit non-zero.
+var errCheckFailed = errors.New("the overload check would fail")
+
+// reviewCheckout reviews a local checkout's changes and prints a report;
+// nothing is stored or posted.
+func reviewCheckout(ctx context.Context, options reviewOptions) error {
+	store, err := optionalDatabase(ctx)
+	if err != nil {
+		return err
+	}
+	if store != nil {
+		defer store.Pool.Close()
+	}
+	workflow, err := reviewWorkflow(ctx, store, options)
+	if err != nil {
+		return err
+	}
+	if options.concurrency > 0 {
+		for index := range workflow.Agents {
+			workflow.Agents[index].Model.Concurrency = options.concurrency
+		}
+	}
+	result, err := checkout.Review(ctx, options.checkout, options.base, workflow)
+	if err != nil {
+		return err
+	}
+	if err := checkout.Report(os.Stdout, workflow, result); err != nil {
+		return err
+	}
+	if options.check && checkout.Gate(workflow, result).State != overload.GateSuccess {
+		return errCheckFailed
+	}
+	return nil
+}
+
+// optionalDatabase opens the database when DATABASE_URL is set.
+func optionalDatabase(ctx context.Context) (*postgres.Store, error) {
+	if os.Getenv("DATABASE_URL") == "" {
+		return nil, nil
+	}
+	store, err := database(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.Migrate(ctx); err != nil {
+		store.Pool.Close()
+		return nil, err
+	}
+	return store, nil
 }
 
 // queueReview queues a server-side review of a pull request's current head,
