@@ -175,6 +175,8 @@ func serve() error {
 	} else if recovered > 0 {
 		slog.Info("queued runs interrupted by a restart", "runs", recovered)
 	}
+	// A signal cancels ctx, which starts River's soft stop: running jobs get
+	// queue.SoftStopTimeout to finish before their contexts are cancelled.
 	if err := client.Start(ctx); err != nil {
 		return err
 	}

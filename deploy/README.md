@@ -19,8 +19,9 @@ against `checksums.txt` and installs it into `~/.local/bin`
 (`OVERLOAD_INSTALL_DIR`, `OVERLOAD_VERSION`, `OVERLOAD_NO_BREW=1` and
 `OVERLOAD_INSTALL_ARGS` change this). It then runs `overload install`.
 Releases built with Developer ID credentials also carry a notarized
-`overload_darwin_universal.pkg` that installs `/usr/local/bin/overload`
-(see [macOS package](#macos-package)); run `overload install` after it.
+`overload_darwin_universal.pkg` that installs `/usr/local/overload` and links
+`/usr/local/bin/overload` (see [macOS package](#macos-package)); run
+`overload install` after it.
 
 `overload install`:
 
@@ -1045,8 +1046,14 @@ it does not manage services. Run that under systemd
 (`deploy/systemd/overload.service`) or a container. The app image is built
 from `deploy/images/app/Dockerfile` and published to
 `ghcr.io/daltoniam/overload` (amd64 and arm64, with an SBOM and build
-provenance) on release tags. It runs as a non-root user, checks its own
-health with `overload healthcheck`, and shuts down cleanly on SIGTERM.
+provenance) on release tags. It runs as a non-root user and checks its own
+health with `overload healthcheck`; a container running another command
+(`migrate`, a one-off CLI call) reports unhealthy, so run those with
+`--no-healthcheck`. On SIGTERM it stops taking requests and gives running
+jobs 15 seconds to finish; jobs still running are then cancelled, and their
+reviews and scheduled jobs are queued again when the server next starts.
+Give it a stop timeout of at least 20 seconds (systemd and Kubernetes use 30
+by default; the compose file sets 30).
 
 ### Docker Compose
 
@@ -1060,19 +1067,41 @@ printf 'OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\n' \
 docker compose up -d --wait
 ```
 
-The UI listens on `127.0.0.1:8082` (`OVERLOAD_PORT`) as `admin`
-(`OVERLOAD_UI_USER`) with the password from `.env`. Use letters and digits
-for the database password, since it goes into a URL. Other settings (model
-API keys, `OVERLOAD_OIDC_*`, `OVERLOAD_BASE_URL`, `OVERLOAD_ENABLE_POSTING`)
-go in `overload.env` next to the compose file. The app container has a
-read-only root, no capabilities and only `/tmp` writable; data lives in the
-`postgres_data` volume, so `docker compose down` keeps it and `down -v`
-deletes it. `OVERLOAD_IMAGE` pins a release (`ghcr.io/daltoniam/overload:0.6.3`);
-`docker compose up --build` builds from the checkout instead.
+It needs Docker Compose 2.24 or newer. The UI listens on `127.0.0.1:8082`
+(`OVERLOAD_PORT`) as `admin` (`OVERLOAD_UI_USER`) with the password from
+`.env`.
 
-`make compose-test` (and a CI job) starts the file under a throwaway project
-and port and checks health, login, `install-check`, a clean stop on SIGTERM
-and a saved model surviving the project being recreated.
+Settings live in two files next to the compose file:
+
+- `.env` holds the values the compose file itself reads:
+  `OVERLOAD_POSTGRES_PASSWORD`, `OVERLOAD_UI_PASSWORD`, `OVERLOAD_UI_USER`,
+  `OVERLOAD_BASE_URL` (the address people use, such as
+  `https://overload.example.com`), `OVERLOAD_PORT` and `OVERLOAD_IMAGE`.
+- `overload.env` (optional) holds any other overload variables: model API
+  keys, `OVERLOAD_OIDC_*`, `OVERLOAD_ENABLE_POSTING`. It cannot override
+  `DATABASE_URL`, `PGPASSWORD`, `OVERLOAD_ADDR`, `OVERLOAD_UI_USER`,
+  `OVERLOAD_UI_PASSWORD` or `OVERLOAD_BASE_URL`, which the compose file sets;
+  change those in `.env`.
+
+Postgres only reads `OVERLOAD_POSTGRES_PASSWORD` when it creates the
+`postgres_data` volume; to change it later, run `ALTER ROLE overload
+PASSWORD '...'` in the database first, then update `.env`. The app gets the
+password as `PGPASSWORD`, so it needs no escaping. The app container has a
+read-only root, no capabilities and a 2 GB `/tmp`; data lives in the
+`postgres_data` volume, so `docker compose down` keeps it and `down -v`
+deletes it. `OVERLOAD_IMAGE` pins a release
+(`ghcr.io/daltoniam/overload:0.6.3`). To build from the checkout instead,
+add `compose.build.yaml`, which tags the build `overload:local`
+(`OVERLOAD_BUILD_IMAGE`) so it is never mistaken for a published image:
+
+```sh
+docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
+```
+
+`make compose-test` (and a CI job) builds the image and starts both files
+under a throwaway project and port, checks health, login, `install-check`,
+a prompt exit on SIGTERM and a saved model surviving the project being
+recreated, then removes the project and the test image.
 
 ## Kubernetes
 
@@ -1130,11 +1159,27 @@ installs.
 
 ### macOS package
 
-`make pkg` builds `dist/pkg/overload_darwin_universal.pkg`: a universal
-(arm64 and x86_64) binary installed to `/usr/local/bin/overload`, plus a
-`.sha256` file, and checks the payload, architectures and version with
-`deploy/macos/check-pkg.sh`. After installing it, run `overload install` as
-usual. Without credentials the package is unsigned: fine for
+`make pkg` builds `dist/pkg/overload_darwin_universal.pkg`, a universal
+(arm64 and x86_64) binary, plus a `.sha256` file, and checks the package
+with `deploy/macos/check-pkg.sh`. The package installs only
+`/usr/local/overload` (`bin/overload` and `LICENSE`), so it never changes
+the owner or mode of `/usr/local` or `/usr/local/bin`, which Homebrew owns
+on Intel Macs. A post-install script then links `/usr/local/bin/overload`
+to it, creating `/usr/local/bin` if it is missing. If that name already
+belongs to something else, such as a Homebrew install of overload on an
+Intel Mac, the script leaves it alone and notes it in
+`/var/log/install.log`; run `/usr/local/overload/bin/overload` directly or
+uninstall the other copy. After installing, run `overload install` as usual.
+
+To remove the package:
+
+```sh
+sudo rm -rf /usr/local/overload
+[ "$(readlink /usr/local/bin/overload)" = ../overload/bin/overload ] && sudo rm /usr/local/bin/overload
+sudo pkgutil --forget dev.overload.pkg
+```
+
+Without credentials the package is unsigned: fine for
 `sudo installer -pkg`, but Gatekeeper blocks it when downloaded with a
 browser. With these variables `deploy/macos/build-pkg.sh` signs the binary
 with the hardened runtime, signs the package, notarizes it with `notarytool`
@@ -1144,20 +1189,23 @@ and staples the ticket:
 | --- | --- |
 | `MACOS_SIGN_IDENTITY` | `Developer ID Application: Name (TEAMID)` |
 | `MACOS_INSTALLER_IDENTITY` | `Developer ID Installer: Name (TEAMID)` |
-| `MACOS_NOTARY_PROFILE` | a `xcrun notarytool store-credentials` profile, or |
-| `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID`, `MACOS_NOTARY_PASSWORD` | an Apple ID with an app-specific password |
-| `MACOS_KEYCHAIN` | the keychain holding the identities (optional) |
+| `MACOS_NOTARY_PROFILE` | a profile saved with `xcrun notarytool store-credentials` (it prompts for the app-specific password) |
+| `MACOS_KEYCHAIN` | the keychain holding the identities and the profile (optional) |
 
 The release workflow builds the package on a macOS runner and attaches it to
 the GitHub release when the repository has the `MACOS_SIGN_IDENTITY` and
 `MACOS_INSTALLER_IDENTITY` variables and the `MACOS_SIGN_P12_BASE64`,
 `MACOS_INSTALLER_P12_BASE64`, `MACOS_P12_PASSWORD`, `MACOS_NOTARY_APPLE_ID`,
-`MACOS_NOTARY_TEAM_ID` and `MACOS_NOTARY_PASSWORD` secrets
-(`deploy/macos/import-certs.sh` loads the certificates into a throwaway
-keychain). It then requires a Developer ID signature, the hardened runtime,
-a stapled ticket and Gatekeeper approval before uploading. Without them the
-release has no package and the job says so. The macOS CI job builds the
-unsigned package, installs it and checks the installed version.
+`MACOS_NOTARY_TEAM_ID` and `MACOS_NOTARY_PASSWORD` secrets.
+`deploy/macos/import-certs.sh` loads the certificates and the notary
+credentials into a throwaway keychain, which the job deletes afterwards. The
+job then requires a Developer ID signature from that team, the hardened
+runtime, a stapled ticket and Gatekeeper approval before uploading; if Apple
+rejects the submission, the build prints the notary log. Without all of them
+the release has no package and the job says so. The macOS CI job builds the
+unsigned package, installs it, and checks the installed version, the link,
+that `/usr/local` and `/usr/local/bin` keep their owner and mode, and that no
+AppleDouble `._` files were installed.
 
 ## Release gates
 

@@ -46,8 +46,14 @@ jobs:
         run: make pkg VERSION=0.0.0-ci
       - name: Install the package
         run: |
+          sudo mkdir -p /usr/local/bin
+          before=$(stat -f '%Su:%Sg %Sp' /usr/local /usr/local/bin)
           sudo installer -pkg dist/pkg/overload_darwin_universal.pkg -target /
           test "$(/usr/local/bin/overload version)" = 0.0.0-ci
+          test "$(readlink /usr/local/bin/overload)" = ../overload/bin/overload
+          test "$(stat -f '%Su:%Sg %Sp' /usr/local /usr/local/bin)" = "$before"
+          test -z "$(find /usr/local/overload -name '._*')"
+          test ! -e /usr/local/bin/._overload
           pkgutil --pkg-info dev.overload.pkg
   compose:
     runs-on: ubuntu-latest

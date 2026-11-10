@@ -1,8 +1,11 @@
 #!/bin/sh
-# Checks a package built by build-pkg.sh without installing it: the payload
-# holds exactly the expected files, the binary is universal and runs, and
-# reports the expected version. With REQUIRE_SIGNED=1 it also requires a
-# Developer ID signature, a hardened runtime binary and a stapled ticket.
+# Checks a package built by build-pkg.sh without installing it: it installs
+# only into /usr/local/overload without resetting directory permissions, the
+# payload and bill of materials hold exactly the expected root-owned entries
+# (no AppleDouble ._ files), the link script is there, and the binary is
+# universal and reports the expected version. With REQUIRE_SIGNED=1 it also
+# requires a Developer ID signature (from team MACOS_TEAM_ID when set), a
+# hardened runtime binary and a stapled ticket.
 #
 #   deploy/macos/check-pkg.sh dist/pkg/overload_darwin_universal.pkg [version]
 set -eu
@@ -19,15 +22,26 @@ fail() {
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-pkgutil --expand-full "$pkg" "$work/expanded"
-payload=$work/expanded/Payload
-[ -d "$payload" ] || fail "no payload in the package"
-# AppleDouble entries carry extended attributes (com.apple.provenance on
-# recent macOS); the installer turns them back into attributes, not files.
-files=$(cd "$payload" && find . -type f ! -name '._*' | sed 's|^\./||' | sort | tr '\n' ' ')
-want_files="usr/local/bin/overload usr/local/share/doc/overload/LICENSE "
-[ "$files" = "$want_files" ] || fail "payload is [$files], want [$want_files]"
-binary=$payload/usr/local/bin/overload
+pkgutil --expand "$pkg" "$work/flat"
+[ -f "$work/flat/Payload" ] || fail "no payload in the package"
+grep -q 'install-location="/usr/local/overload"' "$work/flat/PackageInfo" ||
+	fail "package does not install into /usr/local/overload"
+grep -q 'overwrite-permissions="false"' "$work/flat/PackageInfo" ||
+	fail "package would reset the permissions of existing directories"
+entries=$(lsbom -s "$work/flat/Bom" | LC_ALL=C sort | tr '\n' ' ')
+want_entries=". ./LICENSE ./bin ./bin/overload "
+[ "$entries" = "$want_entries" ] || fail "bill of materials is [$entries], want [$want_entries]"
+owners=$(lsbom -p U "$work/flat/Bom" | sort -u | tr '\n' ' ')
+[ "$owners" = "root " ] || fail "payload owners are [$owners], want root"
+archived=$(gzip -dc "$work/flat/Payload" | cpio -it --quiet | LC_ALL=C sort | tr '\n' ' ')
+[ "$archived" = "$want_entries" ] || fail "payload is [$archived], want [$want_entries]"
+scripts=$(cd "$work/flat/Scripts" && find . -type f | LC_ALL=C sort | tr '\n' ' ')
+[ "$scripts" = "./postinstall " ] || fail "scripts are [$scripts], want [./postinstall ]"
+[ -x "$work/flat/Scripts/postinstall" ] || fail "postinstall is not executable"
+
+mkdir "$work/payload"
+(cd "$work/payload" && gzip -dc "$work/flat/Payload" | cpio -id --quiet)
+binary=$work/payload/bin/overload
 archs=$(lipo -archs "$binary")
 for arch in arm64 x86_64; do
 	case " $archs " in
@@ -45,6 +59,10 @@ fi
 if [ "${REQUIRE_SIGNED:-}" = 1 ]; then
 	pkgutil --check-signature "$pkg" | grep -q 'Developer ID Installer' || fail "package is not signed with a Developer ID Installer certificate"
 	codesign --display --verbose=2 "$binary" 2>&1 | grep -q 'Authority=Developer ID Application' || fail "binary is not signed with a Developer ID Application certificate"
+	if [ -n "${MACOS_TEAM_ID:-}" ]; then
+		codesign --display --verbose=2 "$binary" 2>&1 | grep -qx "TeamIdentifier=$MACOS_TEAM_ID" || fail "binary is not signed by team $MACOS_TEAM_ID"
+		pkgutil --check-signature "$pkg" | grep -q "Developer ID Installer: .*($MACOS_TEAM_ID)" || fail "package is not signed by team $MACOS_TEAM_ID"
+	fi
 	codesign --display --verbose=2 "$binary" 2>&1 | grep -q 'flags=.*runtime' || fail "binary does not use the hardened runtime"
 	xcrun stapler validate "$pkg" || fail "package has no stapled notarization ticket"
 	spctl --assess --type install "$pkg" || fail "Gatekeeper rejects the package"

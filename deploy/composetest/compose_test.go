@@ -22,9 +22,11 @@ import (
 type project struct {
 	t       *testing.T
 	name    string
-	file    string
+	files   []string
 	envFile string
 }
+
+const testImage = "overload-app:compose-test"
 
 func TestComposeControlPlane(t *testing.T) {
 	if os.Getenv("OVERLOAD_COMPOSE_TEST") != "1" {
@@ -40,11 +42,12 @@ func TestComposeControlPlane(t *testing.T) {
 	port := freePort(t)
 	user, password := "admin", secret(t)
 	envFile := filepath.Join(t.TempDir(), "compose.env")
-	env := fmt.Sprintf("OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\nOVERLOAD_PORT=%d\nOVERLOAD_IMAGE=overload-app:compose-test\n", secret(t), password, port)
+	env := fmt.Sprintf("OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\nOVERLOAD_PORT=%d\nOVERLOAD_BUILD_IMAGE=%s\n", secret(t), password, port, testImage)
 	if err := os.WriteFile(envFile, []byte(env), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	p := &project{t: t, name: "overload-compose-test-" + secret(t)[:8], file: filepath.Join(root, "deploy", "compose", "compose.yaml"), envFile: envFile}
+	composeDir := filepath.Join(root, "deploy", "compose")
+	p := &project{t: t, name: "overload-compose-test-" + secret(t)[:8], files: []string{filepath.Join(composeDir, "compose.yaml"), filepath.Join(composeDir, "compose.build.yaml")}, envFile: envFile}
 	t.Cleanup(func() {
 		if os.Getenv("OVERLOAD_COMPOSE_KEEP") == "1" {
 			t.Logf("keeping compose project %s", p.name)
@@ -52,6 +55,9 @@ func TestComposeControlPlane(t *testing.T) {
 		}
 		if out, err := p.run("down", "--volumes", "--remove-orphans"); err != nil {
 			t.Logf("compose down: %v\n%s", err, out)
+		}
+		if out, err := exec.Command("docker", "image", "rm", testImage).CombinedOutput(); err != nil {
+			t.Logf("remove image: %v\n%s", err, out)
 		}
 	})
 	p.up("--build")
@@ -69,7 +75,7 @@ func TestComposeControlPlane(t *testing.T) {
 	p.must("exec", "-T", "overload", "/usr/local/bin/overload", "install-check")
 	p.must("exec", "-T", "overload", "/usr/local/bin/overload", "settings", "set", "--name", "compose-test-model", "--url", "http://model.invalid/v1", "--model", "test-model", "--default")
 
-	// A stop sends SIGTERM; the server should shut down cleanly rather than
+	// A stop sends SIGTERM; an idle server should exit at once rather than
 	// be killed when the grace period runs out.
 	started := time.Now()
 	p.must("stop", "--timeout", "30", "overload")
@@ -124,7 +130,11 @@ func (p *project) must(args ...string) string {
 }
 
 func (p *project) run(args ...string) (string, error) {
-	cmd := exec.Command("docker", append([]string{"compose", "--project-name", p.name, "--file", p.file, "--env-file", p.envFile}, args...)...)
+	compose := []string{"compose", "--project-name", p.name, "--env-file", p.envFile}
+	for _, file := range p.files {
+		compose = append(compose, "--file", file)
+	}
+	cmd := exec.Command("docker", append(compose, args...)...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
