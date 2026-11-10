@@ -310,7 +310,7 @@ func WorkloadRuleForm(rule overload.WorkloadRule, nonce string) templ.Component 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</code>. Kubernetes: the cluster's service account issuer, whose discovery document overload must be able to read.</small></label> <label class=\"field\"><span>Audience</span><input name=\"audience\" required value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, "</code>. Kubernetes: the cluster's service account issuer, whose discovery document and keys overload must be able to read over https with a certificate it trusts.</small></label> <label class=\"field\"><span>Audience</span><input name=\"audience\" required value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -323,20 +323,20 @@ func WorkloadRuleForm(rule overload.WorkloadRule, nonce string) templ.Component 
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\"><small>The audience the job requests its token for, usually this overload's address.</small></label> <label class=\"field\"><span>Claim conditions</span><textarea name=\"conditions\" rows=\"5\" required placeholder=\"repository=acme/payments&#10;ref=refs/heads/main\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\"><small>The audience the job requests its token for, usually this overload's address.</small></label> <label class=\"field\"><span>Claim conditions</span><textarea name=\"conditions\" rows=\"5\" required aria-describedby=\"conditions-help\" placeholder=\"repository_owner_id=1234567&#10;repository=acme/payments&#10;job_workflow_ref=acme/payments/.github/workflows/review.yml@refs/pull/*/merge\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var19 string
 			templ_7745c5c3_Var19, templ_7745c5c3_Err = templ.JoinStringErrs(conditionsText(rule.Conditions, "\n"))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 44, Col: 201}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 44, Col: 326}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var19))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "</textarea><small>One <code>claim=pattern</code> per line; all must match. <code>*</code> matches within one path segment. GitHub rules must match <code>repository</code> or <code>repository_owner</code>; consider <code>job_workflow_ref</code> and <code>environment</code> too. A GitHub job can only request reviews of its own repository.</small></label><fieldset class=\"field\"><legend>Scopes</legend> <label class=\"check\"><input type=\"checkbox\" name=\"scopes\" value=\"reviews\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 26, "</textarea><small id=\"conditions-help\">One <code>claim=pattern</code> per line; all must match. <code>*</code> matches within one path segment. GitHub rules must name one owner without wildcards; prefer <code>repository_owner_id</code> or <code>repository_id</code>, which survive renames and cannot be reclaimed by someone else, and narrow further with <code>job_workflow_ref</code> or <code>environment</code>. Pull request jobs have <code>ref=refs/pull/N/merge</code>, not the branch, and jobs for pull requests from forks get no token. A GitHub job can only request reviews of its own repository; a token without a <code>repository</code> claim, such as a Kubernetes one, can request reviews of any repository.</small></label><fieldset class=\"field\"><legend>Scopes</legend> <label class=\"check\"><input type=\"checkbox\" name=\"scopes\" value=\"reviews\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -371,14 +371,14 @@ func WorkloadRuleForm(rule overload.WorkloadRule, nonce string) templ.Component 
 				return templ_7745c5c3_Err
 			}
 			if rule.Name != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "<section class=\"panel\"><h2>Delete rule</h2><p class=\"muted\">Tokens this rule trusted are refused at once.</p><form method=\"post\" action=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "<section class=\"panel\"><h2>Delete rule</h2><p class=\"muted\">Tokens this rule trusted are refused within seconds.</p><form method=\"post\" action=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var20 templ.SafeURL
 				templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/configure/workloads/" + rule.Name + "/delete"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 53, Col: 199}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 53, Col: 206}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 				if templ_7745c5c3_Err != nil {
@@ -391,7 +391,7 @@ func WorkloadRuleForm(rule overload.WorkloadRule, nonce string) templ.Component 
 				var templ_7745c5c3_Var21 string
 				templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(nonce)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 53, Col: 248}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/workloads.templ`, Line: 53, Col: 255}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 				if templ_7745c5c3_Err != nil {

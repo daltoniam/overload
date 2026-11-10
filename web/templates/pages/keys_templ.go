@@ -443,12 +443,12 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<div class=\"table-wrap\"><table><caption class=\"sr-only\">Usage by person and model</caption><thead><tr>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<div class=\"table-wrap\"><table><caption class=\"sr-only\">Usage by caller and model</caption><thead><tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				if all {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<th>Person</th>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<th>Caller</th>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -468,9 +468,9 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 							return templ_7745c5c3_Err
 						}
 						var templ_7745c5c3_Var21 string
-						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(textOr(total.UserEmail, "shared keys"))
+						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(usageCaller(total))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 114, Col: 52}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 114, Col: 32}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 						if templ_7745c5c3_Err != nil {
@@ -568,6 +568,18 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 		}
 		return nil
 	})
+}
+
+// usageCaller names who made the calls in a usage row: a person, a
+// workload (its rules and repository), or keys that belong to no one.
+func usageCaller(total overload.UsageTotal) string {
+	switch {
+	case total.UserEmail != "":
+		return total.UserEmail
+	case total.Workload != "":
+		return "Workload " + total.Workload
+	}
+	return "shared keys"
 }
 
 // RevokeImpact names a key and what revoking it does.

@@ -57,9 +57,14 @@ func parseUI(r *http.Request) pages.UIState {
 
 var disableUserPath = regexp.MustCompile(`^/users/[0-9]+/disable$`)
 
+var deleteWorkloadRulePath = regexp.MustCompile(`^/configure/workloads/([^/]+)/delete$`)
+
 // confirmPromptFor returns the confirmation a destructive form post needs
 // before it runs, if any.
 func confirmPromptFor(path string) (pages.ConfirmPrompt, bool) {
+	if match := deleteWorkloadRulePath.FindStringSubmatch(path); match != nil {
+		return pages.ConfirmPrompt{Eyebrow: "Workloads / Delete", Title: "Delete workload rule " + match[1] + "?", Impact: "Automation this rule trusted can no longer request reviews or call models with its tokens. Jobs that rely on it start failing within seconds.", Button: "Delete rule", Cancel: "/configure/workloads/" + match[1]}, true
+	}
 	switch {
 	case strings.HasSuffix(path, "/delete"):
 		return pages.DeletePrompt, true

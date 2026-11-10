@@ -11,3 +11,7 @@ CREATE TABLE IF NOT EXISTS workload_rules (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Gateway calls made with a workload token name the matched rules and the
+-- token's repository here instead of an API key or person.
+ALTER TABLE model_usage ADD COLUMN IF NOT EXISTS workload text;

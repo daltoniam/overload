@@ -11,6 +11,16 @@ import (
 // GitHubActionsIssuer issues GitHub Actions OIDC tokens.
 const GitHubActionsIssuer = "https://token.actions.githubusercontent.com"
 
+// IsGitHubActionsIssuer reports whether issuer is GitHub Actions, including
+// an enterprise's own issuer under it (GitHubActionsIssuer/<slug>), where
+// every job of every repository can get a token just the same.
+func IsGitHubActionsIssuer(issuer string) bool {
+	return issuer == GitHubActionsIssuer || strings.HasPrefix(issuer, GitHubActionsIssuer+"/")
+}
+
+// ErrWorkloadRuleExists means a new rule reuses an existing rule's name.
+var ErrWorkloadRuleExists = errors.New("a workload rule with this name already exists")
+
 // WorkloadRule trusts OIDC tokens from automation, such as GitHub Actions
 // jobs or Kubernetes service accounts, whose claims match Conditions. Each
 // condition is a claim name and a pattern (path.Match syntax, so `*` does
@@ -25,11 +35,15 @@ type WorkloadRule struct {
 }
 
 // Validate checks a rule before it is saved. A rule must narrow the tokens
-// it trusts: GitHub rules must name a repository or owner, since every
-// GitHub Actions job can get a token from the same issuer.
+// it trusts: GitHub rules must pin one owner, since every GitHub Actions
+// job anywhere can get a token from the same issuer.
 func (rule WorkloadRule) Validate() error {
 	if !settingName.MatchString(rule.Name) {
 		return errors.New("invalid rule name")
+	}
+	// The rule form lives at /configure/workloads/new.
+	if rule.Name == "new" {
+		return errors.New(`"new" is reserved; choose another rule name`)
 	}
 	parsed, err := url.Parse(rule.Issuer)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
@@ -49,8 +63,8 @@ func (rule WorkloadRule) Validate() error {
 			return fmt.Errorf("condition %s: invalid pattern", claim)
 		}
 	}
-	if rule.Issuer == GitHubActionsIssuer && rule.Conditions["repository"] == "" && rule.Conditions["repository_owner"] == "" {
-		return errors.New("GitHub Actions rules must match repository or repository_owner")
+	if IsGitHubActionsIssuer(rule.Issuer) && !rule.pinsGitHubOwner() {
+		return errors.New("GitHub Actions rules must name one owner without wildcards: match repository_owner_id, repository_id, repository_owner or repository (owner/name)")
 	}
 	if len(rule.Scopes) == 0 {
 		return errors.New("choose at least one scope")
@@ -62,6 +76,22 @@ func (rule WorkloadRule) Validate() error {
 	}
 	return nil
 }
+
+// pinsGitHubOwner reports whether a condition limits the rule to a single
+// repository owner. Wildcards in the owner part, as in `*/*` or
+// repository_owner=`*`, would trust every GitHub repository.
+func (rule WorkloadRule) pinsGitHubOwner() bool {
+	for _, claim := range []string{"repository_owner_id", "repository_id", "repository_owner"} {
+		if pattern := rule.Conditions[claim]; pattern != "" && literal(pattern) {
+			return true
+		}
+	}
+	owner, _, _ := strings.Cut(rule.Conditions["repository"], "/")
+	return owner != "" && literal(owner)
+}
+
+// literal reports whether a pattern matches only itself.
+func literal(pattern string) bool { return !strings.ContainsAny(pattern, `*?[\`) }
 
 // Matches reports whether claims satisfy every condition. Claims that are
 // not strings never match.

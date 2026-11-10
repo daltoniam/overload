@@ -83,8 +83,11 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 
 // Usage is one model call through the gateway.
 type Usage struct {
-	KeyID        int64
-	UserID       int64
+	KeyID  int64
+	UserID int64
+	// Workload names the workload rules and repository of a call made
+	// with a workload token instead of a key.
+	Workload     string
 	Model        string
 	Endpoint     string
 	Status       int
@@ -96,7 +99,9 @@ type Usage struct {
 
 // UsageTotal sums gateway calls for one person and model.
 type UsageTotal struct {
-	UserEmail    string
+	UserEmail string
+	// Workload is set for calls made with workload tokens.
+	Workload     string
 	Model        string
 	Calls        int64
 	InputTokens  int64

@@ -40,7 +40,31 @@ type RunReader interface {
 
 type PRIngest func(context.Context, string, string, []byte, github.PullRequestEvent) (bool, error)
 
-func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
+// Option configures Handler.
+type Option func(*handlerOptions)
+
+type handlerOptions struct {
+	ingest            PRIngest
+	workloadTransport http.RoundTripper
+}
+
+// WithPRIngest hands pull request webhooks to ingest instead of only
+// recording them.
+func WithPRIngest(ingest PRIngest) Option {
+	return func(options *handlerOptions) { options.ingest = ingest }
+}
+
+// WithWorkloadTransport sets how workload token issuers are reached; tests
+// point it at a fake issuer.
+func WithWorkloadTransport(transport http.RoundTripper) Option {
+	return func(options *handlerOptions) { options.workloadTransport = transport }
+}
+
+func Handler(reader RunReader, opts ...Option) http.Handler {
+	var options handlerOptions
+	for _, option := range opts {
+		option(&options)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", assets.Handler()))
 	var nonce [32]byte
@@ -259,8 +283,8 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 				return
 			}
 			action, repoName = parsed.Action, parsed.Repository.FullName
-			if len(ingest) > 0 {
-				_, err = ingest[0](r.Context(), deliveryID, action, body, parsed)
+			if options.ingest != nil {
+				_, err = options.ingest(r.Context(), deliveryID, action, body, parsed)
 				if err != nil {
 					http.Error(w, "Unable to ingest delivery", http.StatusInternalServerError)
 					return
@@ -291,8 +315,8 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	}
 	var verifier *workload.Verifier
 	if rules, ok := reader.(WorkloadRuleStore); ok {
-		registerWorkloads(mux, rules, csrf)
-		verifier = workload.NewVerifier(rules, workloadClient)
+		verifier = workload.NewVerifier(rules, options.workloadTransport)
+		registerWorkloads(mux, rules, verifier, csrf)
 	}
 	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
 	routes := http.NewServeMux()
@@ -306,7 +330,7 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	}
 	if queuer, ok := reader.(ReviewQueuer); ok {
 		keys, _ := reader.(apiKeyAuthenticator)
-		routes.Handle("/api/reviews", api(reviewAPI(queuer, keys, verifier)))
+		routes.Handle("/api/reviews", api(reviewAPI(queuer, keys, verifier, newRerunLimiter(rerunsPerHour, time.Hour))))
 	}
 	return routes
 }

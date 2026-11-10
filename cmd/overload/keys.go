@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -81,7 +82,7 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		if flags.NArg() != 0 {
 			return usage
 		}
-		key, secret, err := store.CreateAPIKey(ctx, 0, *name, strings.Split(*scopes, ","), time.Duration(*days)*24*time.Hour)
+		key, secret, err := store.CreateAPIKey(ctx, 0, *name, parseScopes(*scopes), time.Duration(*days)*24*time.Hour)
 		if err != nil {
 			return err
 		}
@@ -105,4 +106,16 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 	default:
 		return usage
 	}
+}
+
+// parseScopes reads a comma-separated scope list, ignoring spaces, empty
+// entries and repeats, so "models, reviews" means what it says.
+func parseScopes(list string) []string {
+	var scopes []string
+	for _, scope := range strings.Split(list, ",") {
+		if scope = strings.TrimSpace(scope); scope != "" && !slices.Contains(scopes, scope) {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
 }

@@ -139,15 +139,19 @@ func (s *Store) RecordUsage(ctx context.Context, usage overload.Usage) error {
 	if usage.UserID != 0 {
 		user = &usage.UserID
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO model_usage (api_key_id, user_id, model, endpoint, status, input_tokens, output_tokens, queue_ms, duration_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, key, user, usage.Model, usage.Endpoint, usage.Status, usage.InputTokens, usage.OutputTokens, usage.QueueTime.Milliseconds(), usage.Duration.Milliseconds())
+	var workload *string
+	if usage.Workload != "" {
+		workload = &usage.Workload
+	}
+	_, err := s.Pool.Exec(ctx, `INSERT INTO model_usage (api_key_id, user_id, workload, model, endpoint, status, input_tokens, output_tokens, queue_ms, duration_ms) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`, key, user, workload, usage.Model, usage.Endpoint, usage.Status, usage.InputTokens, usage.OutputTokens, usage.QueueTime.Milliseconds(), usage.Duration.Milliseconds())
 	return err
 }
 
-// UsageTotals sums gateway calls since since by person and model:
+// UsageTotals sums gateway calls since since by person, workload and model:
 // everyone's when all is set, otherwise userID's.
 func (s *Store) UsageTotals(ctx context.Context, since time.Time, userID int64, all bool) ([]overload.UsageTotal, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT COALESCE(u.email, ''), m.model, count(*), sum(m.input_tokens), sum(m.output_tokens), sum(m.duration_ms) / 60000.0 FROM model_usage m LEFT JOIN users u ON u.id = m.user_id
-		WHERE m.created_at >= $1 AND ($3 OR COALESCE(m.user_id, 0) = $2) GROUP BY 1, 2 ORDER BY 1, 2`, since, userID, all)
+	rows, err := s.Pool.Query(ctx, `SELECT COALESCE(u.email, ''), COALESCE(m.workload, ''), m.model, count(*), sum(m.input_tokens), sum(m.output_tokens), sum(m.duration_ms) / 60000.0 FROM model_usage m LEFT JOIN users u ON u.id = m.user_id
+		WHERE m.created_at >= $1 AND ($3 OR COALESCE(m.user_id, 0) = $2) GROUP BY 1, 2, 3 ORDER BY 1, 2, 3`, since, userID, all)
 	if err != nil {
 		return nil, fmt.Errorf("usage totals: %w", err)
 	}
@@ -155,7 +159,7 @@ func (s *Store) UsageTotals(ctx context.Context, since time.Time, userID int64, 
 	var totals []overload.UsageTotal
 	for rows.Next() {
 		var total overload.UsageTotal
-		if err := rows.Scan(&total.UserEmail, &total.Model, &total.Calls, &total.InputTokens, &total.OutputTokens, &total.Minutes); err != nil {
+		if err := rows.Scan(&total.UserEmail, &total.Workload, &total.Model, &total.Calls, &total.InputTokens, &total.OutputTokens, &total.Minutes); err != nil {
 			return nil, err
 		}
 		totals = append(totals, total)

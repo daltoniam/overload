@@ -43,6 +43,9 @@ func TestRunKeys(t *testing.T) {
 	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "models,reviews"}, &out); err != nil || !slices.Equal(store.keys[len(store.keys)-1].Scopes, []string{overload.ScopeModels, overload.ScopeReviews}) {
 		t.Fatalf("create with both scopes: %v", err)
 	}
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", " models, reviews,,models "}, &out); err != nil || !slices.Equal(store.keys[len(store.keys)-1].Scopes, []string{overload.ScopeModels, overload.ScopeReviews}) {
+		t.Fatalf("create with spaced, repeated scopes: %v %v", err, store.keys[len(store.keys)-1].Scopes)
+	}
 	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "admin"}, &out); err == nil {
 		t.Fatal("created a key with an unknown scope")
 	}
