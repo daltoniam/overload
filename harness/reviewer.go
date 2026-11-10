@@ -97,7 +97,17 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		return overload.ReviewResult{}, err
 	}
 	changed := parsed.paths()
-	routing, reviewable, routeErr := routeFiles(workflow, parsed)
+	// The tier is known before routing and planning, so sub-agents it
+	// excludes neither claim files from the main agent nor get planned ones.
+	routed, tier := workflow, ""
+	if workflow.Tiered() {
+		if tier, err = riskTier(workflow, parsed); err != nil {
+			return overload.ReviewResult{}, err
+		}
+		routed = workflow.ForTier(tier)
+	}
+	routing, reviewable, routeErr := routeFiles(routed, parsed)
+	routing.Tier = tier
 	result = overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"workflow": workflow.Name, "workflow_revision": workflow.Revision, "agents": len(workflow.Agents), "total_files": len(changed), "skipped_files": len(routing.Skipped), "reviewed_files": 0}}
 	defer func() {
 		result.Metrics["routing"] = routing
@@ -108,20 +118,26 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	if routeErr != nil {
 		return result, routeErr
 	}
-	if workflow.PlannerPrompt != nil && workflow.HasPlannableAgents() && len(reviewable) > len(routing.Skipped) {
+	budget := &tokenBudget{limit: int64(workflow.MaxReviewTokens)}
+	if routed.PlannerPrompt != nil && routed.HasPlannableAgents() && len(reviewable) > len(routing.Skipped) {
 		var usage plannerUsage
 		tooLarge := routing.TooLarge
-		if routing, usage, err = planRouting(ctx, workflow, parsed, reviewable, routing); err != nil {
+		if routing, usage, err = planRouting(ctx, routed, parsed, reviewable, routing); err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
-		routing.TooLarge = tooLarge
+		routing.TooLarge, routing.Tier = tooLarge, tier
+		budget.add(usage.inputTokens + usage.outputTokens)
 		result.Metrics["planner_input_tokens"], result.Metrics["planner_output_tokens"] = usage.inputTokens, usage.outputTokens
 		result.Metrics["input_tokens"], result.Metrics["output_tokens"] = usage.inputTokens, usage.outputTokens
 	}
 	if len(routing.TooLarge) > 0 {
 		routing.Degraded = append(routing.Degraded, fmt.Sprintf("%d files were too large to review: %s", len(routing.TooLarge), strings.Join(routing.TooLarge, ", ")))
 	}
-	applyRiskTier(workflow, parsed, &routing)
+	for index := 1; index < len(workflow.Agents); index++ {
+		if tier != "" && workflow.Agents[index].Scope.ExcludesTier(tier) {
+			routing.Agents[index].OutOfTier = true
+		}
+	}
 	paths := reviewablePaths(reviewable, routing.Skipped)
 	batches := makeReviewBatches(parsed, repo, paths, workflow.FileCharBudget())
 	fileIndex := make(map[string]int, len(paths))
@@ -142,18 +158,17 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	}
 	groupOf, groups := scheduleReviews(workflow, routing, fileIndex)
 	runs := newAgentRuns(len(workflow.Agents), len(batches))
-	var spent atomic.Int64
 	err = runGroups(ctx, groups, func(ctx context.Context, task reviewTask) error {
 		if runs.failed[task.agent].Load() >= maxFileFailures {
 			return nil
 		}
-		if budget := int64(workflow.MaxReviewTokens); budget > 0 && spent.Load() >= budget {
-			message := fmt.Sprintf("the review's token budget of %d was used up", budget)
+		if budget.exhausted() {
+			message := fmt.Sprintf("the review's token budget of %d was used up", budget.limit)
 			runs.failures[task.agent].CompareAndSwap(nil, &message)
 			return nil
 		}
 		outcome, err := reviewFile(ctx, agents[task.agent], plans[task.agent], batches[task.file], paths[task.file], parsed.patchFor(paths[task.file]))
-		spent.Add(outcome.inputTokens + outcome.outputTokens)
+		budget.add(outcome.inputTokens + outcome.outputTokens)
 		if err != nil {
 			if ctx.Err() != nil {
 				return err
@@ -197,7 +212,7 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		for index, path := range paths {
 			bundles[path] = batches[index]
 		}
-		verified, err := verifyFindings(ctx, workflow, result.Findings, bundles)
+		verified, err := verifyFindings(ctx, workflow, result.Findings, bundles, budget)
 		if err != nil {
 			return result, fmt.Errorf("review incomplete: %w", err)
 		}
@@ -211,6 +226,9 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 		result.Metrics["verifier_dropped"] = len(verified.dropped)
 		if verified.failures > 0 {
 			routing.Degraded = append(routing.Degraded, fmt.Sprintf("verifier could not check %d findings; they were kept", verified.failures))
+		}
+		if verified.overBudget > 0 {
+			routing.Degraded = append(routing.Degraded, fmt.Sprintf("the review's token budget of %d was used up before the verifier checked %d findings; they were kept", budget.limit, verified.overBudget))
 		}
 	}
 	result.Findings, result.Dropped = limitFindings(result.Findings, result.Dropped, workflow.FindingLimit())
@@ -226,43 +244,58 @@ func (Reviewer) Review(ctx context.Context, spec overload.ReviewSpec, repo fs.FS
 	return result, nil
 }
 
-// applyRiskTier sets the pull request's risk tier when the workflow uses
-// one (sensitive paths, or sub-agents limited to tiers) and takes files
-// away from sub-agents whose tiers exclude it. The main agent always
-// reviews.
-func applyRiskTier(workflow overload.ResolvedWorkflow, parsed reviewDiff, routing *overload.Routing) {
-	tiered := len(workflow.SensitivePaths) > 0
-	for _, agent := range workflow.Agents {
-		tiered = tiered || len(agent.Scope.Tiers) > 0
+// tokenBudget is a review's token budget across the planner, file reviews
+// and the verifier. Calls already running when it runs out finish, so a
+// review can overshoot by up to one call per concurrent review.
+type tokenBudget struct {
+	limit int64
+	spent atomic.Int64
+}
+
+func (budget *tokenBudget) add(tokens int64) {
+	if budget != nil {
+		budget.spent.Add(tokens)
 	}
-	if !tiered {
-		return
+}
+
+// exhausted reports whether a budget was set and used up.
+func (budget *tokenBudget) exhausted() bool {
+	return budget != nil && budget.limit > 0 && budget.spent.Load() >= budget.limit
+}
+
+// riskTier is the pull request's risk tier: its changed lines outside skip
+// paths, and whether it touches a sensitive path.
+func riskTier(workflow overload.ResolvedWorkflow, parsed reviewDiff) (string, error) {
+	skip, err := overload.CompileGlobs(workflow.SkipPaths)
+	if err != nil {
+		return "", err
 	}
 	sensitive, err := overload.CompileGlobs(workflow.SensitivePaths)
 	if err != nil {
-		return
+		return "", err
 	}
 	lines, touched := 0, false
-	for _, path := range routing.ChangedFiles() {
-		if slices.Contains(routing.Skipped, path) {
+	for _, path := range parsed.paths() {
+		if skip.Match(path) {
 			continue
 		}
 		lines += changedLines(parsed.patchFor(path))
 		touched = touched || sensitive.Match(path)
 	}
-	routing.Tier = overload.AssessRisk(lines, touched)
-	for index := 1; index < len(workflow.Agents); index++ {
-		if tiers := workflow.Agents[index].Scope.Tiers; len(tiers) > 0 && !slices.Contains(tiers, routing.Tier) {
-			routing.Agents[index].Files, routing.Agents[index].Planned, routing.Agents[index].OutOfTier = []string{}, nil, true
-		}
-	}
+	return overload.AssessRisk(lines, touched), nil
 }
 
-// changedLines counts added and removed lines in a file's patch.
+// changedLines counts added and removed lines in a file's patch. Only lines
+// after the first hunk header are content, so a removed line reading
+// "-- comment" or an added "++x" counts while the ---/+++ file headers do
+// not.
 func changedLines(patch string) int {
-	count := 0
-	for _, line := range strings.Split(patch, "\n") {
-		if (strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++")) || (strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "---")) {
+	count, inHunks := 0, false
+	for line := range strings.SplitSeq(patch, "\n") {
+		switch {
+		case strings.HasPrefix(line, "@@"):
+			inHunks = true
+		case inHunks && (strings.HasPrefix(line, "+") || strings.HasPrefix(line, "-")):
 			count++
 		}
 	}

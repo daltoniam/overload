@@ -1502,7 +1502,11 @@ plan and deploy/README.md.
 9. **Local multi-agent review** (16.10; done): risk tier and specialist selection
    by path, specialist and coordinator starter agents, a per-review budget,
    reviews of a local checkout, and an opt-in fix loop on a branch in a git
-   worktree that never pushes.
+   worktree that never pushes. The fixer's file tools cannot leave the
+   worktree or touch git's files, and git runs without hooks; its test
+   command runs on the developer's machine with a reduced environment, so
+   model-written tests are not confined. Follow-up: run fix-loop tests in a
+   sandbox.
 10. **Node inventory and cluster control** (16.4 item 4): Macs report
     hardware, runtime versions, models and health; version drift is flagged;
     model placements across nodes are recorded and an MLX launch

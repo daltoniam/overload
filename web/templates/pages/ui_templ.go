@@ -753,7 +753,7 @@ func WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefinitio
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "\" placeholder=\"No limit\"><small>Input and output tokens across every agent. Files not started when it runs out are left unreviewed, so the review is partial and the overload check fails.</small></label> <label class=\"field\"><span>Findings posted per review</span><input type=\"number\" name=\"max_findings\" min=\"0\" max=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "\" placeholder=\"No limit\"><small>Input and output tokens across the planner, every agent and the verifier. Calls already running when it runs out finish, so a review can go over by up to one call per review running at once. Files not started are left unreviewed and findings not yet verified are kept unchecked, so the review is partial and the overload check fails.</small></label> <label class=\"field\"><span>Findings posted per review</span><input type=\"number\" name=\"max_findings\" min=\"0\" max=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

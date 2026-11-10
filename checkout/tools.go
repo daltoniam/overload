@@ -4,13 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
 	"charm.land/fantasy"
@@ -61,21 +66,64 @@ func stringArgument(arguments map[string]any, name string) (string, error) {
 }
 
 // workPath cleans a model-supplied path relative to the worktree and
-// refuses git's own files; os.Root refuses anything outside it.
+// refuses git's own files at any depth; os.Root refuses anything outside
+// the worktree.
 func workPath(raw string) (string, error) {
 	cleaned := path.Clean(strings.TrimPrefix(strings.ReplaceAll(raw, "\\", "/"), "./"))
 	if cleaned == "" || cleaned == "." {
 		return ".", nil
 	}
-	if !fs.ValidPath(cleaned) || cleaned == ".git" || strings.HasPrefix(cleaned, ".git/") {
+	if !fs.ValidPath(cleaned) {
 		return "", fmt.Errorf("%q is not a path inside the checkout", raw)
+	}
+	for component := range strings.SplitSeq(cleaned, "/") {
+		if isGitName(component) {
+			return "", fmt.Errorf("%q is not a path inside the checkout", raw)
+		}
 	}
 	return cleaned, nil
 }
 
+// ignoredInGitNames are code points macOS file systems drop from names, so
+// ".g\u200cit" names the same file as ".git"; git refuses them for the same
+// reason.
+var ignoredInGitNames = strings.NewReplacer("\u200c", "", "\u200d", "", "\u200e", "", "\u200f", "", "\u202a", "", "\u202b", "", "\u202c", "", "\u202d", "", "\u202e", "", "\u206a", "", "\u206b", "", "\u206c", "", "\u206d", "", "\u206e", "", "\u206f", "", "\ufeff", "")
+
+// isGitName reports whether a path component could name a .git file or
+// directory on a case-insensitive file system (macOS by default), where
+// ".GIT" is ".git". Writing one would let a fixer point git at a
+// repository it controls, with configuration that runs programs.
+func isGitName(component string) bool {
+	name := strings.TrimRight(ignoredInGitNames.Replace(component), ". ")
+	return strings.EqualFold(name, ".git") || strings.EqualFold(name, "git~1")
+}
+
+// writtenPaths records the files a fixer wrote, so only those are
+// committed and build output left by tests is not.
+type writtenPaths struct {
+	mu    sync.Mutex
+	paths map[string]bool
+}
+
+func (written *writtenPaths) add(name string) {
+	written.mu.Lock()
+	defer written.mu.Unlock()
+	if written.paths == nil {
+		written.paths = map[string]bool{}
+	}
+	written.paths[name] = true
+}
+
+func (written *writtenPaths) list() []string {
+	written.mu.Lock()
+	defer written.mu.Unlock()
+	return slices.Sorted(maps.Keys(written.paths))
+}
+
 // fixerTools gives a fixer read and write access to the worktree only, and
-// lets it run the configured test command.
-func fixerTools(root *os.Root, dir, testCommand string) []fantasy.AgentTool {
+// lets it run the configured test command. Files it writes are recorded in
+// written.
+func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) []fantasy.AgentTool {
 	stringProp := func(description string) map[string]any {
 		return map[string]any{"type": "string", "description": description}
 	}
@@ -119,9 +167,11 @@ func fixerTools(root *os.Root, dir, testCommand string) []fantasy.AgentTool {
 					return "", err
 				}
 			}
+			// An existing file keeps its mode; 0o644 applies to new files.
 			if err := root.WriteFile(name, []byte(content), 0o644); err != nil {
 				return "", err
 			}
+			written.add(name)
 			return "Wrote " + name, nil
 		}},
 		&localTool{info: fantasy.ToolInfo{Name: "list_files", Description: "List a directory of the checkout.", Parameters: map[string]any{"path": stringProp("Directory relative to the repository root; empty for the root")}}, run: func(_ context.Context, arguments map[string]any) (string, error) {
@@ -136,7 +186,7 @@ func fixerTools(root *os.Root, dir, testCommand string) []fantasy.AgentTool {
 			}
 			var lines []string
 			for _, entry := range entries {
-				if entry.Name() == ".git" {
+				if isGitName(entry.Name()) {
 					continue
 				}
 				suffix := ""
@@ -166,22 +216,61 @@ func fixerTools(root *os.Root, dir, testCommand string) []fantasy.AgentTool {
 	return tools
 }
 
+// testEnvironmentNames are the variables tests run with. Tests in a fixer
+// worktree may be model-written, so database URLs, API keys and tokens in
+// the developer's environment are not passed; a test command that needs
+// one sets it itself.
+var testEnvironmentNames = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TZ", "TERM", "CC", "CXX", "PKG_CONFIG_PATH"}
+
+// testEnvironmentPrefixes are toolchain and locale variable families tests
+// keep, unless their names suggest a secret.
+var testEnvironmentPrefixes = []string{"LC_", "GO", "CGO_"}
+
+func testEnvironment(environment []string) []string {
+	var kept []string
+	for _, variable := range environment {
+		name, _, _ := strings.Cut(variable, "=")
+		upper := strings.ToUpper(name)
+		secret := strings.Contains(upper, "TOKEN") || strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "AUTH")
+		allowed := slices.Contains(testEnvironmentNames, name) || slices.ContainsFunc(testEnvironmentPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) })
+		if allowed && !secret {
+			kept = append(kept, variable)
+		}
+	}
+	return kept
+}
+
 // RunTests runs command with sh in dir and reports whether it passed, with
-// the end of its output.
+// the end of its output. The command runs in its own process group so a
+// timeout or interrupt stops everything it started, and with the reduced
+// environment of testEnvironment.
 func RunTests(ctx context.Context, dir, command string) (bool, string) {
 	ctx, cancel := context.WithTimeout(ctx, testTimeout)
 	defer cancel()
 	process := exec.CommandContext(ctx, "sh", "-c", command)
 	process.Dir = dir
+	process.Env = testEnvironment(os.Environ())
+	process.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	process.Cancel = func() error { return syscall.Kill(-process.Process.Pid, syscall.SIGKILL) }
+	// Output goes to a buffer, so Wait would otherwise block until every
+	// process holding the pipe exits.
+	process.WaitDelay = 5 * time.Second
 	var output bytes.Buffer
 	process.Stdout, process.Stderr = &output, &output
 	err := process.Run()
+	if process.Process != nil {
+		// Background processes the tests left behind die with the group.
+		_ = syscall.Kill(-process.Process.Pid, syscall.SIGKILL)
+	}
 	text := output.String()
 	if len(text) > maxTestOutput {
 		text = "[earlier output not shown]\n" + text[len(text)-maxTestOutput:]
 	}
 	if err != nil && ctx.Err() != nil {
-		return false, text + "\n[stopped after " + testTimeout.String() + "]"
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, text + "\n[stopped after " + testTimeout.String() + "]"
+		}
+		return false, text + "\n[stopped]"
 	}
 	return err == nil, text
 }

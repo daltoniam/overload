@@ -17,6 +17,12 @@ type fakeStarterStore struct {
 func (store *fakeStarterStore) ListReviewSettings(context.Context) ([]overload.ReviewSettings, error) {
 	return []overload.ReviewSettings{{Name: "flint"}}, nil
 }
+func (store *fakeStarterStore) ListAgents(context.Context) ([]overload.AgentDefinition, error) {
+	return store.agents, nil
+}
+func (store *fakeStarterStore) ListWorkflows(context.Context) ([]overload.Workflow, error) {
+	return store.workflows, nil
+}
 func (store *fakeStarterStore) SaveAgent(_ context.Context, agent overload.AgentDefinition) error {
 	if err := agent.Validate(); err != nil {
 		return err
@@ -47,5 +53,19 @@ func TestStarterCohort(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "overload review --checkout") {
 		t.Fatalf("output = %s", out.String())
+	}
+	if err := createStarterCohort(context.Background(), store, []string{"--model", "flint", "--name", "team"}, &out); err == nil || !strings.Contains(err.Error(), "already exist") {
+		t.Fatalf("a rerun replaced the cohort: %v", err)
+	}
+	if err := createStarterCohort(context.Background(), store, []string{"--model", "flint", "--name", "team", "--force"}, &out); err != nil || len(store.agents) != 10 || len(store.workflows) != 2 {
+		t.Fatalf("--force: %v, agents %d workflows %d", err, len(store.agents), len(store.workflows))
+	}
+}
+
+func TestStarterCohortValidatesBeforeSaving(t *testing.T) {
+	store := &fakeStarterStore{}
+	err := createStarterCohort(context.Background(), store, []string{"--model", "flint", "--name", "other", "--max-review-tokens", "-1"}, &bytes.Buffer{})
+	if err == nil || len(store.agents) != 0 || len(store.workflows) != 0 {
+		t.Fatalf("invalid cohort: %v, saved %d agents", err, len(store.agents))
 	}
 }

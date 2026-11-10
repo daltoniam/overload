@@ -50,6 +50,8 @@ type Toolset struct {
 	record   func(ToolEvent)
 }
 
+const toolLimitMessage = "Tool call limit reached for this run. Stop calling tools and write your final answer now."
+
 var toolNameUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 // ConnectTools opens an MCP session to each server and lists its tools.
@@ -95,9 +97,27 @@ func ConnectTools(ctx context.Context, servers []overload.ToolServer, sessionID 
 func (set *Toolset) Tools() []fantasy.AgentTool { return set.tools }
 
 // NewLocalToolset wraps tools that run in this process, such as a fixer's
-// file tools, so RunAgent can offer them like MCP tools.
-func NewLocalToolset(tools []fantasy.AgentTool) *Toolset {
-	return &Toolset{tools: tools, maxCalls: 1 << 30}
+// file tools, so RunAgent can offer them like MCP tools; maxCalls caps the
+// run's tool calls.
+func NewLocalToolset(tools []fantasy.AgentTool, maxCalls int) *Toolset {
+	set := &Toolset{maxCalls: int64(maxCalls)}
+	for _, tool := range tools {
+		set.tools = append(set.tools, &localTool{AgentTool: tool, set: set})
+	}
+	return set
+}
+
+// localTool counts a local tool's calls against its toolset's limit.
+type localTool struct {
+	fantasy.AgentTool
+	set *Toolset
+}
+
+func (tool *localTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
+	if tool.set.calls.Add(1) > tool.set.maxCalls {
+		return fantasy.NewTextErrorResponse(toolLimitMessage), nil
+	}
+	return tool.AgentTool.Run(ctx, call)
 }
 
 // Calls reports how many tool calls the run made.
@@ -233,7 +253,7 @@ func (tool *mcpTool) Run(ctx context.Context, call fantasy.ToolCall) (fantasy.To
 
 func (tool *mcpTool) call(ctx context.Context, call fantasy.ToolCall) fantasy.ToolResponse {
 	if tool.set.calls.Add(1) > tool.set.maxCalls {
-		return fantasy.NewTextErrorResponse("Tool call limit reached for this run. Stop calling tools and write your final answer now.")
+		return fantasy.NewTextErrorResponse(toolLimitMessage)
 	}
 	arguments := map[string]any{}
 	if strings.TrimSpace(call.Input) != "" {

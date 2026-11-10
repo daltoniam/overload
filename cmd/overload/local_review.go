@@ -55,10 +55,9 @@ func parseReviewOptions(args []string) (reviewOptions, error) {
 	switch {
 	case options.checkout != "" && (options.repo != "" || options.pr != 0 || options.queue):
 		return options, errors.New("--checkout reviews a local checkout; it cannot be combined with --repo, --pr or --queue")
-	case options.checkout != "":
-	case options.check:
+	case options.check && options.checkout == "":
 		return options, errors.New("--check needs --checkout")
-	case flags.NArg() != 0 || options.repo == "" || options.pr < 1:
+	case flags.NArg() != 0 || (options.checkout == "" && (options.repo == "" || options.pr < 1)):
 		return options, errors.New("usage: overload review --repo owner/name --pr N | --checkout DIR [--base main] [--check] [--workflow NAME | --profile NAME | --model MODEL --model-url URL]")
 	case options.timeout < time.Second || options.timeout > 5*time.Hour:
 		return options, errors.New("review timeout must be between 1 second and 5 hours")
