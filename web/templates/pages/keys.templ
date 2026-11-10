@@ -23,6 +23,9 @@ type KeysPage struct {
 	CanCreate bool
 	Endpoint  string
 	Created   *NewKey
+	// ListFailed marks a page showing only a just-created key because the
+	// rest of the list could not be loaded.
+	ListFailed bool
 	Now       time.Time
 }
 
@@ -46,6 +49,9 @@ templ APIKeys(page KeysPage, nonce string) {
 			</form></section>
 		}
 		<section class="panel"><h2>{ keysHeading(page.All) }</h2>
+			if page.ListFailed {
+				<p class="notice error" role="status">Your other keys could not be loaded. Reload the page to see them.</p>
+			}
 			if len(page.Keys) == 0 {
 				<div class="empty">No API keys yet.</div>
 			} else {

@@ -117,7 +117,7 @@ func TestKeysPagesAndGatewayRoute(t *testing.T) {
 		t.Fatalf("created page: %v %s", created.Header(), created.Body.String())
 	}
 	store.listErr = errors.New("database unavailable")
-	if again := post("/keys", url.Values{"csrf": {csrf}, "name": {"ci"}, "scopes": {"models"}, "days": {"30"}}, http.StatusOK); !strings.Contains(again.Body.String(), "ovl_test_secret") {
+	if again := post("/keys", url.Values{"csrf": {csrf}, "name": {"ci"}, "scopes": {"models"}, "days": {"30"}}, http.StatusOK); !strings.Contains(again.Body.String(), "ovl_test_secret") || !strings.Contains(again.Body.String(), "Your other keys could not be loaded") {
 		t.Fatal("the new key's secret was lost when the list failed to load")
 	}
 	store.listErr, store.keys = nil, store.keys[:1]

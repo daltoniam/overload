@@ -96,8 +96,10 @@ func registerKeys(mux *http.ServeMux, store KeyStore, csrf string) {
 			slog.Warn("listing API keys after creating one failed", "error", err)
 			keys = []overload.APIKey{key}
 		}
+		page := keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret})
+		page.ListFailed = err != nil
 		w.Header().Set("Cache-Control", "no-store")
-		_ = pages.APIKeys(keysPage(r.Context(), keys, all, &pages.NewKey{Key: key, Secret: secret}), formTokenFor(r, csrf)).Render(r.Context(), w)
+		_ = pages.APIKeys(page, formTokenFor(r, csrf)).Render(r.Context(), w)
 	})
 	mux.HandleFunc("POST /keys/{id}/revoke", func(w http.ResponseWriter, r *http.Request) {
 		if !validForm(w, r, csrf) {
