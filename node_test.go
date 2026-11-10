@@ -106,6 +106,23 @@ func TestPlacement(t *testing.T) {
 	if command := served.Command("hosts.json"); !strings.HasSuffix(command, "--host 10.0.0.5 --port 9000 --pipeline") || served.BaseURL() != "http://10.0.0.5:9000/v1" {
 		t.Fatalf("command = %s, base %s", command, served.BaseURL())
 	}
+	quoted := placement
+	quoted.Python = "/Users/ann/My Envs/mlx/bin/python"
+	if command := quoted.Command("/tmp/it's here/hosts.json"); !strings.Contains(command, `--hostfile '/tmp/it'\''s here/hosts.json' -- '/Users/ann/My Envs/mlx/bin/python' -m mlx_lm.server`) {
+		t.Fatalf("command = %s", command)
+	}
+	for _, test := range []struct{ host, want string }{
+		{"0.0.0.0", "http://192.168.1.10:8080/v1"},
+		{"::", "http://192.168.1.10:8080/v1"},
+		{"10.0.0.5", "http://10.0.0.5:8080/v1"},
+		{"fd00::5", "http://[fd00::5]:8080/v1"},
+	} {
+		bound := placement
+		bound.Host = test.host
+		if got := bound.BaseURL(); got != test.want || !strings.Contains(bound.Command("hosts.json"), "--host "+shellQuote(test.host)+" ") {
+			t.Errorf("%s: base %s, command %s", test.host, got, bound.Command("hosts.json"))
+		}
+	}
 	for name, change := range map[string]func(*Placement){
 		"one node":      func(p *Placement) { p.Nodes, p.RDMA = p.Nodes[:1], p.RDMA[:1] },
 		"five nodes":    func(p *Placement) { p.Nodes = []string{"a", "b", "c", "d", "e"} },

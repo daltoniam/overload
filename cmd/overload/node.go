@@ -74,7 +74,7 @@ func manageNode(args []string) error {
 		}
 		ctx := context.Background()
 		for {
-			err := sendReport(ctx, http.DefaultClient, target, key, collectReport(ctx, systemProbe, *name, *python))
+			err := sendReport(ctx, &http.Client{}, target, key, collectReport(ctx, systemProbe, *name, *python))
 			if *every <= 0 {
 				return err
 			}
@@ -158,7 +158,13 @@ func loopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// sendReport posts report to target. Redirects are never followed: Go keeps
+// the Authorization header on a redirect to the same host, even from https
+// to http, which would send the key unencrypted.
 func sendReport(ctx context.Context, client *http.Client, target, key string, report overload.NodeReport) error {
+	noRedirects := *client
+	noRedirects.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	client = &noRedirects
 	body, err := json.Marshal(report)
 	if err != nil {
 		return err
@@ -176,6 +182,9 @@ func sendReport(ctx context.Context, client *http.Client, target, key string, re
 		return err
 	}
 	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		return fmt.Errorf("overload answered %s redirecting to %q; the report was not sent there, so set --server to overload's address", response.Status, response.Header.Get("Location"))
+	}
 	if response.StatusCode != http.StatusNoContent {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
 		return fmt.Errorf("overload answered %s: %s", response.Status, strings.TrimSpace(string(message)))

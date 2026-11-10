@@ -117,8 +117,14 @@ func (placement Placement) ServePort() int {
 
 // BaseURL is the OpenAI-compatible endpoint the cluster serves once
 // started, to save as a model in overload.
+// A Host of 0.0.0.0 or :: binds every interface but is not an address
+// anyone can connect to, so the first node's Rank0IP is advertised instead.
 func (placement Placement) BaseURL() string {
-	return "http://" + net.JoinHostPort(placement.ServeHost(), strconv.Itoa(placement.ServePort())) + "/v1"
+	host := placement.ServeHost()
+	if ip := net.ParseIP(host); ip != nil && ip.IsUnspecified() {
+		host = placement.Rank0IP
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(placement.ServePort())) + "/v1"
 }
 
 // Hostfile is the JSON hostfile for mlx.launch --backend jaccl.
@@ -160,5 +166,20 @@ func (placement Placement) Command(hostfile string) string {
 	if placement.Mode == PlacementPipeline {
 		command = append(command, "--pipeline")
 	}
-	return strings.Join(command, " ")
+	quoted := make([]string, len(command))
+	for index, arg := range command {
+		quoted[index] = shellQuote(arg)
+	}
+	return strings.Join(quoted, " ")
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_./:=@%+,-]+$`)
+
+// shellQuote quotes arg for a POSIX shell, leaving simple words bare so
+// the usual command stays readable.
+func shellQuote(arg string) string {
+	if shellSafe.MatchString(arg) {
+		return arg
+	}
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }

@@ -226,3 +226,37 @@ func TestSendReport(t *testing.T) {
 		t.Fatalf("send with a bad key: %v", err)
 	}
 }
+
+func TestSendReportNeverFollowsRedirects(t *testing.T) {
+	var leaked []string
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = append(leaked, r.URL.Path+" "+r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer plain.Close()
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/to-http":
+			http.Redirect(w, r, plain.URL+"/api/nodes", http.StatusTemporaryRedirect)
+		case "/moved":
+			http.Redirect(w, r, "/elsewhere/api/nodes", http.StatusPermanentRedirect)
+		default:
+			leaked = append(leaked, r.URL.Path+" "+r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer secure.Close()
+	report := overload.NodeReport{Name: "studio-1", OS: "darwin"}
+	for _, test := range []struct{ path, location string }{
+		{"/to-http", plain.URL + "/api/nodes"},
+		{"/moved", "/elsewhere/api/nodes"},
+	} {
+		err := sendReport(context.Background(), secure.Client(), secure.URL+test.path, "ovl_node", report)
+		if err == nil || !strings.Contains(err.Error(), test.location) {
+			t.Errorf("%s: %v", test.path, err)
+		}
+	}
+	if len(leaked) != 0 {
+		t.Fatalf("followed a redirect: %v", leaked)
+	}
+}
