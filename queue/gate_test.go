@@ -11,6 +11,9 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertest"
 )
 
 const (
@@ -122,4 +125,52 @@ func TestFinishReviewGatesOnTheHostDiff(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("a posted review queues a post job with bounded attempts", func(t *testing.T) {
+		t.Setenv("OVERLOAD_ENABLE_POSTING", "1")
+		var runID int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, installation_id) VALUES ($1, 10, $2, $3, 'webhook', 'running', false, $4) RETURNING id`, repoID, sha, strings.Repeat("a", 40), installationID).Scan(&runID); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = store.Pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'post_review' AND (args->>'run_id')::bigint = $1`, runID)
+		})
+		client, err := river.NewClient(riverpgxv5.New(store.Pool), &river.Config{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		statuses := &fakeStatus{}
+		worker := &ReviewWorker{Store: store, Status: statuses}
+		result := overload.ReviewResult{Findings: []overload.Finding{}, Metrics: map[string]any{"routing": overload.Routing{Agents: []overload.AgentFiles{{Agent: "main", Files: []string{"a.go"}}}}}}
+		spec := overload.ReviewSpec{Diff: readableDiff, Workflow: overload.ResolvedWorkflow{Name: "w", Kind: "pr_review"}}
+		if err := worker.finishReview(rivertest.WorkContext(ctx, client), overload.Run{ID: runID, PRNumber: 10}, repo, spec, result, sha); err != nil {
+			t.Fatal(err)
+		}
+		var attempts int
+		if err := store.Pool.QueryRow(ctx, `SELECT max_attempts FROM river_job WHERE kind = 'post_review' AND (args->>'run_id')::bigint = $1`, runID).Scan(&attempts); err != nil || attempts != postgres.PostMaxAttempts {
+			t.Fatalf("post job max_attempts %d (%v), want %d", attempts, err, postgres.PostMaxAttempts)
+		}
+		if len(statuses.states) != 0 {
+			t.Fatalf("the review set a status before posting: %v", statuses.states)
+		}
+	})
+
+	t.Run("an interrupted review reports an error status", func(t *testing.T) {
+		var runID int64
+		if err := store.Pool.QueryRow(ctx, `INSERT INTO runs (repository_id, pr_number, head_sha, base_sha, trigger, status, dry_run, installation_id) VALUES ($1, 11, $2, $3, 'webhook', 'running', false, $4) RETURNING id`, repoID, sha, strings.Repeat("a", 40), installationID).Scan(&runID); err != nil {
+			t.Fatal(err)
+		}
+		statuses := &fakeStatus{}
+		worker := &ReviewWorker{Store: store, Status: statuses}
+		if err := worker.Work(ctx, &river.Job[postgres.ReviewArgs]{Args: postgres.ReviewArgs{RunID: runID}}); err != nil {
+			t.Fatal(err)
+		}
+		var status, code string
+		if err := store.Pool.QueryRow(ctx, `SELECT status, error_code FROM runs WHERE id=$1`, runID).Scan(&status, &code); err != nil || status != "failed" || code != "review_interrupted" {
+			t.Fatalf("run %q %q %v", status, code, err)
+		}
+		if fmt.Sprint(statuses.states) != "[error]" || !strings.Contains(statuses.descriptions[0], "Review interrupted") {
+			t.Fatalf("commit statuses %v %v, want one error so the check does not stay pending", statuses.states, statuses.descriptions)
+		}
+	})
 }

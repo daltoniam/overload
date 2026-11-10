@@ -121,7 +121,7 @@ func (s *Store) FailPost(ctx context.Context, runID int64, reason string) error 
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	command, err := tx.Exec(ctx, `UPDATE runs SET post_status = 'post_failed', gate = jsonb_build_object('state', 'failure', 'human_files', COALESCE(gate->'human_files', '[]'::jsonb)) WHERE id = $1 AND posted_at IS NULL AND post_status = 'queued'`, runID)
+	command, err := tx.Exec(ctx, `UPDATE runs SET post_status = 'post_failed', gate = jsonb_build_object('state', 'failure', 'human_files', COALESCE(gate->'human_files', '[]'::jsonb)) || CASE WHEN gate ? 'held' THEN jsonb_build_object('held', gate->'held') ELSE '{}'::jsonb END WHERE id = $1 AND posted_at IS NULL AND post_status = 'queued'`, runID)
 	if err != nil || command.RowsAffected() == 0 {
 		return err
 	}

@@ -44,7 +44,14 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		if _, err := tx.Exec(ctx, `UPDATE runs SET status='failed',error_code='review_interrupted',error_message='Review worker stopped before completion',finished_at=now() WHERE id=$1`, runID); err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		// The earlier attempt may have stopped after setting a pending
+		// status (or rolled back its verdict), which would otherwise stay
+		// pending forever.
+		reportStatus(ctx, w.Store, w.Status, runID, statusError, "Review interrupted; review the pull request again")
+		return nil
 	}
 	if status != "queued" {
 		return nil

@@ -26,6 +26,7 @@ type fakePoster struct {
 	dismissed  []int64
 	dismissErr error
 	findErr    error
+	findPanic  bool
 }
 
 type fakeStatus struct {
@@ -65,6 +66,9 @@ func (poster *fakePoster) FindReview(_ context.Context, installationID int64, _ 
 	}
 	if poster.findErr != nil {
 		return 0, poster.findErr
+	}
+	if poster.findPanic {
+		panic("lookup crashed")
 	}
 	return poster.existing, nil
 }
@@ -483,6 +487,35 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		}
 		if fmt.Sprint(statuses.states[before:]) != "[failure]" || !strings.Contains(statuses.descriptions[before], "could not finish posting") {
 			t.Fatalf("commit statuses %v %v", statuses.states[before:], statuses.descriptions[before:])
+		}
+	})
+
+	t.Run("a panicking last attempt still gives up and keeps the held mark", func(t *testing.T) {
+		pr++
+		runID := insertRun(pr, postgres.TriggerAPI, `{"review_decision":"approve"}`, reviewedA)
+		if _, err := store.Pool.Exec(ctx, `UPDATE runs SET gate = '{"state":"failure","human_files":["auth/a.go"],"held":true}' WHERE id=$1`, runID); err != nil {
+			t.Fatal(err)
+		}
+		before := len(statuses.states)
+		job := &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: postgres.PostMaxAttempts, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: runID}}
+		err := (&PostWorker{Store: store, Poster: &fakePoster{findPanic: true}, Status: statuses}).Work(ctx, job)
+		if err == nil || !strings.Contains(err.Error(), "panicked") {
+			t.Fatalf("panic not turned into an error: %v", err)
+		}
+		var postStatus, gate string
+		if err := store.Pool.QueryRow(ctx, `SELECT post_status, gate::text FROM runs WHERE id=$1`, runID).Scan(&postStatus, &gate); err != nil || postStatus != "post_failed" {
+			t.Fatalf("post status %q %v", postStatus, err)
+		}
+		var recorded struct {
+			State      string   `json:"state"`
+			HumanFiles []string `json:"human_files"`
+			Held       bool     `json:"held"`
+		}
+		if err := json.Unmarshal([]byte(gate), &recorded); err != nil || recorded.State != "failure" || !recorded.Held || fmt.Sprint(recorded.HumanFiles) != "[auth/a.go]" {
+			t.Fatalf("recorded verdict %s %v", gate, err)
+		}
+		if fmt.Sprint(statuses.states[before:]) != "[failure]" {
+			t.Fatalf("commit statuses %v", statuses.states[before:])
 		}
 	})
 

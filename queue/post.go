@@ -47,11 +47,22 @@ type PostWorker struct {
 // post is given up with a failing verdict and status, so the run does not
 // stay waiting to be posted and holding back automated re-reviews.
 func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostReviewArgs]) error {
-	err := w.post(ctx, job.Args.RunID)
+	err := w.postRecovering(ctx, job.Args.RunID)
 	if err != nil && job.Attempt >= job.MaxAttempts {
 		w.giveUp(context.WithoutCancel(ctx), job.Args.RunID, err)
 	}
 	return err
+}
+
+// postRecovering posts a run's review, turning a panic into an error so a
+// panicking last attempt still gives up instead of leaving the post queued.
+func (w *PostWorker) postRecovering(ctx context.Context, runID int64) (err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("post review panicked: %v", recovered)
+		}
+	}()
+	return w.post(ctx, runID)
 }
 
 func (w *PostWorker) giveUp(ctx context.Context, runID int64, cause error) {
