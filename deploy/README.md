@@ -654,6 +654,98 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
   Access guards the hostname, add a bypass policy for `/v1/*` at the edge,
   or agents cannot reach the gateway.
 
+## Workload identity
+
+Automation can request reviews and call models with its own short-lived
+OIDC token instead of a stored secret. Under Workloads, an admin adds rules
+naming the token issuer, the audience, claim conditions (all must match;
+`*` matches within one path segment, so it never crosses a `/`) and scopes
+(`reviews`, `models`). Tokens are verified against the issuer's published
+keys, and only issuers some enabled rule names are ever contacted; each
+issuer's discovery document is read again daily, so moved keys are picked
+up. Rule changes apply at once on the replica that saved them and within a
+few seconds on others.
+
+Shared issuers (GitHub Actions, gitlab.com, Buildkite, a cluster serving
+many namespaces) issue tokens to everyone who uses them, so every rule
+must pin something only you control: at least one condition without
+wildcards, such as GitLab's `namespace_path` or Buildkite's
+`organization_slug`. The pinned value must identify you: conditions on
+the standard claims (`iss`, `aud`, `exp`, `iat`, `nbf`, `jti`, `azp`) are
+refused, since every token for the rule's issuer and audience shares
+them. A Kubernetes `sub` may end in a wildcard after a fixed namespace
+(`system:serviceaccount:ci:*`), but not `system:serviceaccount:*:*`.
+GitHub rules have a stricter check, below.
+
+GitHub Actions (issuer `https://token.actions.githubusercontent.com`, or
+an enterprise's own issuer under it): every job on GitHub can get a token
+from this issuer, so a rule must pin one owner without wildcards. Prefer
+`repository_owner_id` or `repository_id` (shown in the token, and in
+`https://api.github.com/repos/OWNER/NAME`), which survive renames and
+cannot be taken over by someone who registers a freed name;
+`repository_owner` or `repository` (`owner/name`, with a literal owner)
+also work. Narrow further with `job_workflow_ref` or `environment`. Jobs
+triggered by `pull_request` have `ref` set to `refs/pull/N/merge`, not the
+branch, so a `ref=refs/heads/main` condition never matches them; match the
+workflow file instead, for example
+`job_workflow_ref=acme/api/.github/workflows/review.yml@refs/pull/*/merge`.
+GitHub gives no OIDC token to workflows run for pull requests from forks,
+so those are still reviewed through the webhook or the Review button.
+
+```yaml
+on: pull_request
+permissions:
+  id-token: write
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          token=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://overload.example.com" | jq -r .value)
+          curl -sf -X POST https://overload.example.com/api/reviews \
+            -H "Authorization: Bearer $token" \
+            -d '{"repository":"${{ github.repository }}","pull_request":${{ github.event.number }}}'
+```
+
+`POST /api/reviews` with `{"repository": "owner/name", "pull_request": N}`
+queues a review of the pull request's current head, as the Review button
+does, and answers 202 with the run ID. It accepts a workload token with
+the `reviews` scope or an API key with that scope. A token that names a
+repository (every GitHub Actions token does) can only request reviews of
+that repository; a token without a `repository` claim, such as a
+Kubernetes one, can request reviews of any repository, so give the
+`reviews` scope only to service accounts you trust that far. Adding
+`"again": true` reviews a commit that was already reviewed; each caller
+(a person, a shared key, or a workload's rules and repository) may do
+that 10 times an hour on each overload server. Requesting a review never approves anything by
+itself; the review's own result decides. Answers: 401 for a missing or
+invalid credential, 403 for a valid one that may not make the request,
+409 when the pull request cannot be reviewed (closed, draft, unknown
+repository), 429 past the re-review limit, and 503 when overload cannot
+check the credential or queue the review right now.
+
+Workload tokens with the `models` scope can also call the model gateway.
+Their calls appear on the Usage page under the rule names and repository.
+
+Kubernetes service accounts work the same way with the cluster's
+service-account issuer as the rule's issuer (projected tokens with an
+audience of overload's address). Match `sub`
+(`system:serviceaccount:<namespace>:<name>`, or
+`system:serviceaccount:<namespace>:*` for a whole namespace). overload must be able to
+read the issuer's discovery document and keys over https:
+
+- Managed clusters (EKS, GKE, AKS) publish a public issuer URL with a
+  public certificate; use it as is.
+- Otherwise the keys are served by the API server, which needs the
+  `system:service-account-issuer-discovery` role bound to unauthenticated
+  users, and its certificate is usually signed by the cluster's private
+  CA. overload trusts only the system's certificate authorities, so mount
+  a bundle holding the system CAs plus the cluster CA (the `ca.crt` in any
+  service account token volume) and point `SSL_CERT_FILE` at it. Setting
+  `SSL_CERT_FILE` to the cluster CA alone would stop overload trusting
+  GitHub and hosted models.
+
 ## Linux servers
 
 `overload install` on Linux writes the configuration and database (with

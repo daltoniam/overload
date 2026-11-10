@@ -7,9 +7,8 @@ import (
 	"time"
 )
 
-// API key scopes. ScopeModels calls models through the gateway.
-// ScopeReviews is reserved for requesting pull request reviews; no endpoint
-// accepts it yet, so keys cannot be created with it.
+// API key scopes. ScopeModels calls models through the gateway;
+// ScopeReviews requests pull request reviews through /api/reviews.
 const (
 	ScopeModels  = "models"
 	ScopeReviews = "reviews"
@@ -72,8 +71,8 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 		return errors.New("choose at least one scope")
 	}
 	for _, scope := range scopes {
-		if scope != ScopeModels {
-			return errors.New("the only scope is models")
+		if scope != ScopeModels && scope != ScopeReviews {
+			return errors.New("scopes are models and reviews")
 		}
 	}
 	if lifetime < time.Hour || lifetime > MaxAPIKeyLifetime {
@@ -84,8 +83,11 @@ func ValidateAPIKey(name string, scopes []string, lifetime time.Duration) error 
 
 // Usage is one model call through the gateway.
 type Usage struct {
-	KeyID        int64
-	UserID       int64
+	KeyID  int64
+	UserID int64
+	// Workload names the workload rules and repository of a call made
+	// with a workload token instead of a key.
+	Workload     string
 	Model        string
 	Endpoint     string
 	Status       int
@@ -97,7 +99,9 @@ type Usage struct {
 
 // UsageTotal sums gateway calls for one person and model.
 type UsageTotal struct {
-	UserEmail    string
+	UserEmail string
+	// Workload is set for calls made with workload tokens.
+	Workload     string
 	Model        string
 	Calls        int64
 	InputTokens  int64

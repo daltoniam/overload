@@ -43,6 +43,7 @@ templ APIKeys(page KeysPage, nonce string) {
 				<label class="field"><span>Name</span><input name="name" required maxlength="100" placeholder="laptop claude code"/></label>
 				<fieldset class="field"><legend>Scopes</legend>
 					<label class="check"><input type="checkbox" name="scopes" value="models" checked/> Call models</label>
+					<label class="check"><input type="checkbox" name="scopes" value="reviews"/> Request pull request reviews</label>
 				</fieldset>
 				<label class="field"><span>Expires after (days)</span><input name="days" type="number" min="1" max="365" required value="90"/></label>
 				<div class="actions"><button type="submit">Create key</button></div>
@@ -102,15 +103,15 @@ templ Usage(totals []overload.UsageTotal, all bool) {
 			if len(totals) == 0 {
 				<div class="empty">No gateway calls in the last 30 days.</div>
 			} else {
-				<div class="table-wrap"><table><caption class="sr-only">Usage by person and model</caption><thead><tr>
+				<div class="table-wrap"><table><caption class="sr-only">Usage by caller and model</caption><thead><tr>
 					if all {
-						<th>Person</th>
+						<th>Caller</th>
 					}
 					<th>Model</th><th>Calls</th><th>Input tokens</th><th>Output tokens</th><th>Model minutes</th></tr></thead><tbody>
 					for _, total := range totals {
 						<tr>
 							if all {
-								<td>{ textOr(total.UserEmail, "shared keys") }</td>
+								<td>{ usageCaller(total) }</td>
 							}
 							<td><code>{ total.Model }</code></td><td>{ strconv.FormatInt(total.Calls, 10) }</td><td>{ strconv.FormatInt(total.InputTokens, 10) }</td><td>{ strconv.FormatInt(total.OutputTokens, 10) }</td><td>{ fmt.Sprintf("%.1f", total.Minutes) }</td>
 						</tr>
@@ -119,6 +120,18 @@ templ Usage(totals []overload.UsageTotal, all bool) {
 			}
 		</section>
 	}
+}
+
+// usageCaller names who made the calls in a usage row: a person, a
+// workload (its rules and repository), or keys that belong to no one.
+func usageCaller(total overload.UsageTotal) string {
+	switch {
+	case total.UserEmail != "":
+		return total.UserEmail
+	case total.Workload != "":
+		return "Workload " + total.Workload
+	}
+	return "shared keys"
 }
 
 // RevokeImpact names a key and what revoking it does.

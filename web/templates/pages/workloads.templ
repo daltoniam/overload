@@ -1,0 +1,65 @@
+package pages
+
+import (
+	"sort"
+	"strings"
+
+	"github.com/daltoniam/overload"
+	"github.com/daltoniam/overload/web/templates/layouts"
+)
+
+templ WorkloadRules(rules []overload.WorkloadRule) {
+	@layouts.Base(layouts.PageData{Title: "Workload identity", CurrentPath: "/configure/workloads"}) {
+		<div class="page-header"><div><p class="eyebrow">Access / Workloads</p><h1>Workload identity</h1><p class="muted">Let automation such as GitHub Actions jobs or Kubernetes service accounts request reviews or call models with their own short-lived OIDC tokens, instead of a stored secret. A token is accepted only when an enabled rule names its issuer and audience and every claim condition matches.</p></div><a class="button" href="/configure/workloads/new">New rule</a></div>
+		<section class="panel">
+			if len(rules) == 0 {
+				<div class="empty">No workload rules. <a href="/configure/workloads/new">Trust a GitHub repository's workflows</a> to request reviews from CI.</div>
+			} else {
+				<div class="table-wrap"><table><caption class="sr-only">Workload rules</caption><thead><tr><th>Rule</th><th>Issuer</th><th>Conditions</th><th>Scopes</th><th>Status</th></tr></thead><tbody>
+					for _, rule := range rules {
+						<tr>
+							<td><a href={ templ.URL("/configure/workloads/" + rule.Name) }>{ rule.Name }</a><span class="secondary-line mono">{ rule.Audience }</span></td>
+							<td class="mono">{ rule.Issuer }</td>
+							<td class="mono">{ conditionsText(rule.Conditions, ", ") }</td>
+							<td>{ strings.Join(rule.Scopes, ", ") }</td>
+							<td><span class="badge neutral">{ enabledLabel(rule.Enabled) }</span></td>
+						</tr>
+					}
+				</tbody></table></div>
+			}
+		</section>
+	}
+}
+
+templ WorkloadRuleForm(rule overload.WorkloadRule, nonce string) {
+	@layouts.Base(layouts.PageData{Title: "Workload rule", CurrentPath: "/configure/workloads"}) {
+		<div class="page-header"><div><p class="eyebrow"><a href="/configure/workloads">Workloads</a> / Edit</p><h1>{ textOr(rule.Name, "New workload rule") }</h1></div><a href="/configure/workloads">All rules</a></div>
+		<section class="panel"><form method="post" action="/configure/workloads"><input type="hidden" name="csrf" value={ nonce }/>
+			if rule.Name != "" {
+				<input type="hidden" name="existing" value={ rule.Name }/>
+			}
+			<label class="field"><span>Name</span><input name="name" required maxlength="64" pattern="[a-zA-Z0-9][a-zA-Z0-9_-]*" value={ rule.Name } readonly?={ rule.Name != "" } placeholder="acme-ci"/></label>
+			<label class="field"><span>Issuer</span><input name="issuer" type="url" required value={ rule.Issuer }/><small>GitHub Actions: <code>{ overload.GitHubActionsIssuer }</code>. Kubernetes: the cluster's service account issuer, whose discovery document and keys overload must be able to read over https with a certificate it trusts.</small></label>
+			<label class="field"><span>Audience</span><input name="audience" required value={ rule.Audience }/><small>The audience the job requests its token for, usually this overload's address.</small></label>
+			<label class="field"><span>Claim conditions</span><textarea name="conditions" rows="5" required aria-describedby="conditions-help" placeholder="repository_owner_id=1234567&#10;repository=acme/payments&#10;job_workflow_ref=acme/payments/.github/workflows/review.yml@refs/pull/*/merge">{ conditionsText(rule.Conditions, "\n") }</textarea><small id="conditions-help">One <code>claim=pattern</code> per line; all must match. <code>*</code> matches within one path segment. GitHub rules must name one owner without wildcards; prefer <code>repository_owner_id</code> or <code>repository_id</code>, which survive renames and cannot be reclaimed by someone else, and narrow further with <code>job_workflow_ref</code> or <code>environment</code>. Other issuers need at least one condition without wildcards; a Kubernetes <code>sub</code> may end in <code>*</code> after a fixed namespace. Pull request jobs have <code>ref=refs/pull/N/merge</code>, not the branch, and jobs for pull requests from forks get no token. A GitHub job can only request reviews of its own repository; a token without a <code>repository</code> claim, such as a Kubernetes one, can request reviews of any repository.</small></label>
+			<fieldset class="field"><legend>Scopes</legend>
+				<label class="check"><input type="checkbox" name="scopes" value="reviews" checked?={ contains(rule.Scopes, "reviews") }/> Request pull request reviews</label>
+				<label class="check"><input type="checkbox" name="scopes" value="models" checked?={ contains(rule.Scopes, "models") }/> Call models through the gateway</label>
+			</fieldset>
+			<label class="check"><input type="checkbox" name="enabled" value="true" checked?={ rule.Enabled }/> Enabled</label>
+			<div class="actions"><button type="submit">Save rule</button><a class="button secondary" href="/configure/workloads">Cancel</a></div>
+		</form></section>
+		if rule.Name != "" {
+			<section class="panel"><h2>Delete rule</h2><p class="muted">Tokens this rule trusted are refused within seconds.</p><form method="post" action={ templ.URL("/configure/workloads/" + rule.Name + "/delete") }><input type="hidden" name="csrf" value={ nonce }/><button class="danger" type="submit">Delete rule</button></form></section>
+		}
+	}
+}
+
+func conditionsText(conditions map[string]string, separator string) string {
+	lines := make([]string, 0, len(conditions))
+	for claim, pattern := range conditions {
+		lines = append(lines, claim+"="+pattern)
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, separator)
+}

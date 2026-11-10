@@ -40,8 +40,14 @@ func TestRunKeys(t *testing.T) {
 	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--days", "30"}, &out); err != nil || !strings.Contains(out.String(), "ovl_abc_secret") || store.keys[0].UserID != 0 || !slices.Equal(store.keys[0].Scopes, []string{overload.ScopeModels}) {
 		t.Fatalf("create: %v %s", err, out.String())
 	}
-	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "reviews"}, &out); err == nil {
-		t.Fatal("offered the reviews scope, which nothing accepts yet")
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "models,reviews"}, &out); err != nil || !slices.Equal(store.keys[len(store.keys)-1].Scopes, []string{overload.ScopeModels, overload.ScopeReviews}) {
+		t.Fatalf("create with both scopes: %v", err)
+	}
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", " models, reviews,,models "}, &out); err != nil || !slices.Equal(store.keys[len(store.keys)-1].Scopes, []string{overload.ScopeModels, overload.ScopeReviews}) {
+		t.Fatalf("create with spaced, repeated scopes: %v %v", err, store.keys[len(store.keys)-1].Scopes)
+	}
+	if err := runKeys(ctx, store, []string{"create", "--name", "ci", "--scopes", "admin"}, &out); err == nil {
+		t.Fatal("created a key with an unknown scope")
 	}
 	if err := runKeys(ctx, store, []string{"create", "--name", "x", "--days", "500"}, &out); err == nil {
 		t.Fatal("created a key that lasts 500 days")

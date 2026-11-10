@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -40,7 +41,7 @@ func manageKeys(args []string) error {
 // without OIDC sign-in and for automation; people create their own keys on
 // the API keys page.
 func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) error {
-	usage := errors.New("usage: overload keys list | create --name NAME [--days 90] | revoke ID")
+	usage := errors.New("usage: overload keys list | create --name NAME [--scopes models,reviews] [--days 90] | revoke ID")
 	if len(args) == 0 {
 		return usage
 	}
@@ -74,13 +75,14 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 		flags := flag.NewFlagSet("keys create", flag.ContinueOnError)
 		name := flags.String("name", "", "what the key is for")
 		days := flags.Int("days", 90, "days until the key expires (1 to 365)")
+		scopes := flags.String("scopes", overload.ScopeModels, "comma-separated scopes: models, reviews")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if flags.NArg() != 0 {
 			return usage
 		}
-		key, secret, err := store.CreateAPIKey(ctx, 0, *name, []string{overload.ScopeModels}, time.Duration(*days)*24*time.Hour)
+		key, secret, err := store.CreateAPIKey(ctx, 0, *name, parseScopes(*scopes), time.Duration(*days)*24*time.Hour)
 		if err != nil {
 			return err
 		}
@@ -104,4 +106,16 @@ func runKeys(ctx context.Context, store keyAdmin, args []string, out io.Writer) 
 	default:
 		return usage
 	}
+}
+
+// parseScopes reads a comma-separated scope list, ignoring spaces, empty
+// entries and repeats, so "models, reviews" means what it says.
+func parseScopes(list string) []string {
+	var scopes []string
+	for _, scope := range strings.Split(list, ",") {
+		if scope = strings.TrimSpace(scope); scope != "" && !slices.Contains(scopes, scope) {
+			scopes = append(scopes, scope)
+		}
+	}
+	return scopes
 }

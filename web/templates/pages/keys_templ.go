@@ -137,7 +137,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"> <label class=\"field\"><span>Name</span><input name=\"name\" required maxlength=\"100\" placeholder=\"laptop claude code\"></label><fieldset class=\"field\"><legend>Scopes</legend> <label class=\"check\"><input type=\"checkbox\" name=\"scopes\" value=\"models\" checked> Call models</label></fieldset><label class=\"field\"><span>Expires after (days)</span><input name=\"days\" type=\"number\" min=\"1\" max=\"365\" required value=\"90\"></label><div class=\"actions\"><button type=\"submit\">Create key</button></div></form></section>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"> <label class=\"field\"><span>Name</span><input name=\"name\" required maxlength=\"100\" placeholder=\"laptop claude code\"></label><fieldset class=\"field\"><legend>Scopes</legend> <label class=\"check\"><input type=\"checkbox\" name=\"scopes\" value=\"models\" checked> Call models</label> <label class=\"check\"><input type=\"checkbox\" name=\"scopes\" value=\"reviews\"> Request pull request reviews</label></fieldset><label class=\"field\"><span>Expires after (days)</span><input name=\"days\" type=\"number\" min=\"1\" max=\"365\" required value=\"90\"></label><div class=\"actions\"><button type=\"submit\">Create key</button></div></form></section>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -149,7 +149,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(keysHeading(page.All))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 51, Col: 52}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 52, Col: 52}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -179,7 +179,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var8 string
 					templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(overload.APIKeyListLimit))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 59, Col: 88}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 60, Col: 88}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 					if templ_7745c5c3_Err != nil {
@@ -212,7 +212,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var9 string
 					templ_7745c5c3_Var9, templ_7745c5c3_Err = templ.JoinStringErrs(key.Name)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 68, Col: 21}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 69, Col: 21}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var9))
 					if templ_7745c5c3_Err != nil {
@@ -225,7 +225,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var10 string
 					templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(key.Prefix)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 68, Col: 69}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 69, Col: 69}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
 					if templ_7745c5c3_Err != nil {
@@ -243,7 +243,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 						var templ_7745c5c3_Var11 string
 						templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(textOr(key.UserEmail, "shared"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 70, Col: 45}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 71, Col: 45}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 						if templ_7745c5c3_Err != nil {
@@ -261,7 +261,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var12 string
 					templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(strings.Join(key.Scopes, ", "))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 72, Col: 43}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 73, Col: 43}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
 					if templ_7745c5c3_Err != nil {
@@ -274,7 +274,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var13 string
 					templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(key.ExpiresAt.UTC().Format("2006-01-02"))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 73, Col: 66}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 74, Col: 66}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 					if templ_7745c5c3_Err != nil {
@@ -287,7 +287,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 					var templ_7745c5c3_Var14 string
 					templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(lastUsed(key))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 74, Col: 39}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 75, Col: 39}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 					if templ_7745c5c3_Err != nil {
@@ -326,7 +326,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 						var templ_7745c5c3_Var15 templ.SafeURL
 						templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(templ.URL("/keys/" + strconv.FormatInt(key.ID, 10) + "/revoke"))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 87, Col: 101}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 88, Col: 101}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 						if templ_7745c5c3_Err != nil {
@@ -339,7 +339,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 						var templ_7745c5c3_Var16 string
 						templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(RevokeImpact(key))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 87, Col: 172}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 88, Col: 172}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 						if templ_7745c5c3_Err != nil {
@@ -352,7 +352,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 						var templ_7745c5c3_Var17 string
 						templ_7745c5c3_Var17, templ_7745c5c3_Err = templ.JoinStringErrs(nonce)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 87, Col: 221}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 88, Col: 221}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var17))
 						if templ_7745c5c3_Err != nil {
@@ -365,7 +365,7 @@ func APIKeys(page KeysPage, nonce string) templ.Component {
 						var templ_7745c5c3_Var18 string
 						templ_7745c5c3_Var18, templ_7745c5c3_Err = templ.JoinStringErrs("Revoke " + key.Name)
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 87, Col: 295}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 88, Col: 295}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var18))
 						if templ_7745c5c3_Err != nil {
@@ -443,12 +443,12 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<div class=\"table-wrap\"><table><caption class=\"sr-only\">Usage by person and model</caption><thead><tr>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 41, "<div class=\"table-wrap\"><table><caption class=\"sr-only\">Usage by caller and model</caption><thead><tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				if all {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<th>Person</th>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 42, "<th>Caller</th>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -468,9 +468,9 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 							return templ_7745c5c3_Err
 						}
 						var templ_7745c5c3_Var21 string
-						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(textOr(total.UserEmail, "shared keys"))
+						templ_7745c5c3_Var21, templ_7745c5c3_Err = templ.JoinStringErrs(usageCaller(total))
 						if templ_7745c5c3_Err != nil {
-							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 113, Col: 52}
+							return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 114, Col: 32}
 						}
 						_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var21))
 						if templ_7745c5c3_Err != nil {
@@ -488,7 +488,7 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					var templ_7745c5c3_Var22 string
 					templ_7745c5c3_Var22, templ_7745c5c3_Err = templ.JoinStringErrs(total.Model)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 115, Col: 30}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 116, Col: 30}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var22))
 					if templ_7745c5c3_Err != nil {
@@ -501,7 +501,7 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					var templ_7745c5c3_Var23 string
 					templ_7745c5c3_Var23, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(total.Calls, 10))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 115, Col: 84}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 116, Col: 84}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var23))
 					if templ_7745c5c3_Err != nil {
@@ -514,7 +514,7 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					var templ_7745c5c3_Var24 string
 					templ_7745c5c3_Var24, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(total.InputTokens, 10))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 115, Col: 137}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 116, Col: 137}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var24))
 					if templ_7745c5c3_Err != nil {
@@ -527,7 +527,7 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					var templ_7745c5c3_Var25 string
 					templ_7745c5c3_Var25, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.FormatInt(total.OutputTokens, 10))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 115, Col: 191}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 116, Col: 191}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var25))
 					if templ_7745c5c3_Err != nil {
@@ -540,7 +540,7 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 					var templ_7745c5c3_Var26 string
 					templ_7745c5c3_Var26, templ_7745c5c3_Err = templ.JoinStringErrs(fmt.Sprintf("%.1f", total.Minutes))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 115, Col: 238}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `web/templates/pages/keys.templ`, Line: 116, Col: 238}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var26))
 					if templ_7745c5c3_Err != nil {
@@ -568,6 +568,18 @@ func Usage(totals []overload.UsageTotal, all bool) templ.Component {
 		}
 		return nil
 	})
+}
+
+// usageCaller names who made the calls in a usage row: a person, a
+// workload (its rules and repository), or keys that belong to no one.
+func usageCaller(total overload.UsageTotal) string {
+	switch {
+	case total.UserEmail != "":
+		return total.UserEmail
+	case total.Workload != "":
+		return "Workload " + total.Workload
+	}
+	return "shared keys"
 }
 
 // RevokeImpact names a key and what revoking it does.

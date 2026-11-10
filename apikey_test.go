@@ -35,7 +35,8 @@ func TestValidateAPIKey(t *testing.T) {
 		{"valid", "laptop", []string{ScopeModels}, 24 * time.Hour, true},
 		{"no name", " ", []string{ScopeModels}, 24 * time.Hour, false},
 		{"no scope", "laptop", nil, 24 * time.Hour, false},
-		{"reviews not accepted yet", "laptop", []string{ScopeReviews}, 24 * time.Hour, false},
+		{"reviews", "laptop", []string{ScopeModels, ScopeReviews}, 24 * time.Hour, true},
+		{"unknown scope", "laptop", []string{"admin"}, 24 * time.Hour, false},
 		{"too long", "laptop", []string{ScopeModels}, MaxAPIKeyLifetime + time.Hour, false},
 	} {
 		if err := ValidateAPIKey(test.key, test.scopes, test.lifetime); (err == nil) != test.valid {

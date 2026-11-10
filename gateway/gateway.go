@@ -38,6 +38,9 @@ type Caller struct {
 	UserID int64
 	// Name identifies the caller for fair queueing and logs.
 	Name string
+	// Workload names the workload rules (and repository) a caller with a
+	// workload token matched, for usage records.
+	Workload string
 }
 
 const (
@@ -60,14 +63,31 @@ const (
 type Gateway struct {
 	store    Store
 	upstream *modelproxy.Upstream
+	extra    []Authenticator
 
 	mu     sync.Mutex
 	queues map[string]*fairQueue
 }
 
-// New returns a gateway over store.
-func New(store Store) *Gateway {
-	return &Gateway{store: store, upstream: modelproxy.NewUpstream("overload-gateway"), queues: map[string]*fairQueue{}}
+// Authenticator turns a request's credentials into a caller allowed to
+// call models; ok is false when the request carries none it recognizes. An
+// error wrapping ErrNotAllowed means the credentials are valid but may not
+// call models, and ErrCannotAuthenticate that they could not be checked;
+// any other error rejects the credentials with its message.
+type Authenticator func(r *http.Request) (caller Caller, ok bool, err error)
+
+var (
+	// ErrNotAllowed marks valid credentials that may not call models.
+	ErrNotAllowed = errors.New("not allowed to call models")
+	// ErrCannotAuthenticate marks credentials that could not be checked,
+	// such as when the database or a token issuer is down.
+	ErrCannotAuthenticate = errors.New("unable to check the credentials; retry later")
+)
+
+// New returns a gateway over store. extra authenticators (workload tokens)
+// are tried before API keys.
+func New(store Store, extra ...Authenticator) *Gateway {
+	return &Gateway{store: store, upstream: modelproxy.NewUpstream("overload-gateway"), extra: extra, queues: map[string]*fairQueue{}}
 }
 
 func (gateway *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -88,9 +108,9 @@ func (gateway *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// bearer returns the credential from Authorization: Bearer or x-api-key.
-// The scheme is case-insensitive, as HTTP requires.
-func bearer(r *http.Request) string {
+// Credential returns the credential from Authorization: Bearer or
+// x-api-key. The scheme is case-insensitive, as HTTP requires.
+func Credential(r *http.Request) string {
 	if scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " "); ok && strings.EqualFold(scheme, "Bearer") {
 		return strings.TrimSpace(token)
 	}
@@ -104,7 +124,22 @@ type denial struct {
 }
 
 func (gateway *Gateway) authenticate(r *http.Request) (Caller, *denial) {
-	secret := bearer(r)
+	for _, authenticator := range gateway.extra {
+		caller, ok, err := authenticator(r)
+		if errors.Is(err, ErrNotAllowed) {
+			return Caller{}, &denial{http.StatusForbidden, "permission_error", err.Error()}
+		}
+		if errors.Is(err, ErrCannotAuthenticate) {
+			return Caller{}, &denial{http.StatusServiceUnavailable, "api_error", ErrCannotAuthenticate.Error()}
+		}
+		if err != nil {
+			return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", err.Error()}
+		}
+		if ok {
+			return caller, nil
+		}
+	}
+	secret := Credential(r)
 	if secret == "" {
 		return Caller{}, &denial{http.StatusUnauthorized, "authentication_error", "send an overload API key as a bearer token or x-api-key"}
 	}
@@ -277,7 +312,7 @@ func (gateway *Gateway) forward(w http.ResponseWriter, r *http.Request, caller C
 	}
 	defer release()
 	queued := time.Since(started)
-	usage := overload.Usage{KeyID: caller.KeyID, UserID: caller.UserID, Model: name, Endpoint: r.URL.Path, QueueTime: queued}
+	usage := overload.Usage{KeyID: caller.KeyID, UserID: caller.UserID, Workload: caller.Workload, Model: name, Endpoint: r.URL.Path, QueueTime: queued}
 	status, counted := gateway.call(ctx, w, r, setting, body, stream && provider == overload.ProviderOpenAICompat && !clientWantsUsage)
 	usage.Status, usage.InputTokens, usage.OutputTokens, usage.Duration = status, counted.input, counted.output, time.Since(started)-queued
 	if err := gateway.store.RecordUsage(context.WithoutCancel(r.Context()), usage); err != nil {

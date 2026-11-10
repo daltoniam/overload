@@ -23,7 +23,7 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	if err != nil || !strings.HasPrefix(secret, key.Prefix+"_") || key.Name != "laptop" {
 		t.Fatalf("create: %+v %q %v", key, secret, err)
 	}
-	for _, scope := range []string{"admin", overload.ScopeReviews} {
+	for _, scope := range []string{"admin", ""} {
 		if _, _, err := store.CreateAPIKey(ctx, user.ID, "x", []string{scope}, time.Hour); err == nil {
 			t.Fatalf("created a key with the %s scope", scope)
 		}
@@ -70,6 +70,12 @@ func TestAPIKeysAndUsage(t *testing.T) {
 	totals, err := store.UsageTotals(ctx, time.Now().Add(-time.Hour), user.ID, false)
 	if err != nil || len(totals) != 1 || totals[0].InputTokens != 10 || totals[0].Minutes < 2.9 || totals[0].UserEmail != "a@example.com" {
 		t.Fatalf("totals: %+v %v", totals, err)
+	}
+	if err := store.RecordUsage(ctx, overload.Usage{Workload: "ci acme/agents", Model: "flint", Endpoint: "/v1/chat/completions", Status: 200, InputTokens: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if totals, err := store.UsageTotals(ctx, time.Now().Add(-time.Hour), 0, true); err != nil || len(totals) != 2 || totals[0].Workload != "ci acme/agents" || totals[0].InputTokens != 7 || totals[1].UserEmail != "a@example.com" {
+		t.Fatalf("totals with a workload: %+v %v", totals, err)
 	}
 	if err := store.SetUserDisabled(ctx, user.ID, true); err != nil {
 		t.Fatal(err)

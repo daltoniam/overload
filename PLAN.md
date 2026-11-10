@@ -178,6 +178,7 @@ overload/
   catalog/             model catalog (provenance, licences, settings, evals) and the model policy
   localmodels/         verified model downloads, disk accounting, llama.cpp build checks, llama-server services
   gateway/             OpenAI and Anthropic compatible model gateway: API keys, fair per-model queue, usage
+  workload/            OIDC workload tokens (GitHub Actions, Kubernetes) checked against workload rules
   http/                router, middleware (auth, CSRF, logging), webhook + UI handlers
   web/templates/       templ: layouts/, components/, pages/ (Switchboard pattern)
   web/static/          CSS (embedded)
@@ -1453,17 +1454,25 @@ plan and deploy/README.md.
 5. **Per-user API keys and the model gateway** (16.4 item 2, 16.7; done): hashed,
    scoped, expiring keys; OpenAI and Anthropic compatible endpoints in front
    of saved models, with the origin policy, a fair per-model queue and usage
-   in tokens and minutes per user. Keys have one scope (`models`) until
-   phase 6 adds `reviews`. Follow-ups: reviews and the gateway count model
+   in tokens and minutes per user. Follow-ups: reviews and the gateway count model
    slots separately, so sharing one queue with the review harness is still
    to do; usage rows (`model_usage`) are kept indefinitely, and a retention
    job should roll rows older than about 13 months into monthly totals per
    person and model before deleting them; models saved with the Responses
    API are served through Chat Completions only; key revocation on leaving
    the provider waits for SCIM.
-6. **Workload identity** (16.7 Workloads): GitHub Actions and Kubernetes
+6. **Workload identity** (16.7 Workloads; done): GitHub Actions and Kubernetes
    service-account tokens accepted under a claim policy, so CI can request a
-   review or call the gateway without a stored secret.
+   review or call the gateway without a stored secret. GitHub rules must pin
+   one owner and other rules a condition without wildcards; issuers are
+   discovered once a day, keys refetched at most once a minute, and rules
+   cached for a few seconds; gateway usage records the matched rules and
+   repository. Follow-ups: issuers with a private CA rely
+   on the system trust store (`SSL_CERT_FILE`) rather than a per-rule CA
+   bundle; the limit on forced re-reviews is counted per server, not
+   across replicas; and workload tokens can request reviews and call
+   models but cannot yet trigger agents or workflows (16.7 names agents
+   too).
 7. **The review bot as a merge gate** (16.4 item 7, 16.7): the commit
    status never passes a review that did not finish or skipped files;
    protected paths that always need a human; bot approval limited to named

@@ -22,6 +22,7 @@ import (
 	"github.com/daltoniam/overload/web/assets"
 	"github.com/daltoniam/overload/web/templates/layouts"
 	"github.com/daltoniam/overload/web/templates/pages"
+	"github.com/daltoniam/overload/workload"
 )
 
 type RunReader interface {
@@ -39,7 +40,31 @@ type RunReader interface {
 
 type PRIngest func(context.Context, string, string, []byte, github.PullRequestEvent) (bool, error)
 
-func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
+// Option configures Handler.
+type Option func(*handlerOptions)
+
+type handlerOptions struct {
+	ingest            PRIngest
+	workloadTransport http.RoundTripper
+}
+
+// WithPRIngest hands pull request webhooks to ingest instead of only
+// recording them.
+func WithPRIngest(ingest PRIngest) Option {
+	return func(options *handlerOptions) { options.ingest = ingest }
+}
+
+// WithWorkloadTransport sets how workload token issuers are reached; tests
+// point it at a fake issuer.
+func WithWorkloadTransport(transport http.RoundTripper) Option {
+	return func(options *handlerOptions) { options.workloadTransport = transport }
+}
+
+func Handler(reader RunReader, opts ...Option) http.Handler {
+	var options handlerOptions
+	for _, option := range opts {
+		option(&options)
+	}
 	mux := http.NewServeMux()
 	mux.Handle("GET /assets/", http.StripPrefix("/assets/", assets.Handler()))
 	var nonce [32]byte
@@ -258,8 +283,8 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 				return
 			}
 			action, repoName = parsed.Action, parsed.Repository.FullName
-			if len(ingest) > 0 {
-				_, err = ingest[0](r.Context(), deliveryID, action, body, parsed)
+			if options.ingest != nil {
+				_, err = options.ingest(r.Context(), deliveryID, action, body, parsed)
 				if err != nil {
 					http.Error(w, "Unable to ingest delivery", http.StatusInternalServerError)
 					return
@@ -288,22 +313,37 @@ func Handler(reader RunReader, ingest ...PRIngest) http.Handler {
 	if keys, ok := reader.(KeyStore); ok {
 		registerKeys(mux, keys, csrf)
 	}
-	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
-	store, ok := reader.(gateway.Store)
-	if !ok {
-		return ui
+	var verifier *workload.Verifier
+	if rules, ok := reader.(WorkloadRuleStore); ok {
+		verifier = workload.NewVerifier(rules, options.workloadTransport)
+		registerWorkloads(mux, rules, verifier, csrf)
 	}
-	api := gateway.New(store)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, "/v1/") {
-			ui.ServeHTTP(w, r)
-			return
+	ui := secure(uiMiddleware(mux, csrf), auth, authErr, csrf)
+	routes := http.NewServeMux()
+	routes.Handle("/", ui)
+	if store, ok := reader.(gateway.Store); ok {
+		var extra []gateway.Authenticator
+		if verifier != nil {
+			extra = append(extra, workloadModels(verifier))
 		}
-		// The gateway skips the UI's host check: it reads no cookies, only
-		// bearer keys, so a rebound or unexpected host gains nothing, and
-		// in-cluster agents call it by the service name.
+		routes.Handle("/v1/", api(gateway.New(store, extra...)))
+	}
+	if queuer, ok := reader.(ReviewQueuer); ok {
+		keys, _ := reader.(apiKeyAuthenticator)
+		routes.Handle("/api/reviews", api(reviewAPI(queuer, keys, verifier, newRerunLimiter(rerunsPerHour, time.Hour))))
+	}
+	return routes
+}
+
+// api serves machine endpoints, which authenticate with API keys or
+// workload tokens instead of a browser sign-in. They skip the UI's host
+// check: they read no cookies, only bearer credentials, so a rebound or
+// unexpected host gains nothing, and in-cluster callers use the service
+// name.
+func api(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		api.ServeHTTP(w, r)
+		next.ServeHTTP(w, r)
 	})
 }
 

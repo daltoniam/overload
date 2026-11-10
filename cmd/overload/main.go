@@ -177,7 +177,7 @@ func serve() error {
 	if err := validateServeAddress(addr, os.Getenv("OVERLOAD_UI_INSECURE") == "1"); err != nil {
 		return err
 	}
-	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{Store: store, tunnel: newTunnel(store, addr), jobs: client}, func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
+	server := &http.Server{Addr: addr, Handler: httpapi.Handler(serverStore{Store: store, tunnel: newTunnel(store, addr), jobs: client}, httpapi.WithPRIngest(func(ctx context.Context, deliveryID, action string, payload []byte, event github.PullRequestEvent) (bool, error) {
 		return store.IngestPR(ctx, client, postgres.PullRequestDelivery{
 			DeliveryID:     deliveryID,
 			Action:         action,
@@ -190,7 +190,7 @@ func serve() error {
 			Eligible:       github.ShouldReview(event),
 			Payload:        payload,
 		})
-	}), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Minute, WriteTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
+	})), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: time.Minute, WriteTimeout: time.Minute, IdleTimeout: 2 * time.Minute}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -230,6 +230,16 @@ func (store serverStore) RequestReview(ctx context.Context, repositoryID int64, 
 	if repository == "" {
 		return 0, fmt.Errorf("%w: unknown repository", queue.ErrReviewNotQueued)
 	}
+	reader, err := queue.AppClient(ctx, store.Store)
+	if err != nil {
+		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
+	}
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again)
+}
+
+// QueueReviewByName queues a review of a pull request's current head for
+// the review API.
+func (store serverStore) QueueReviewByName(ctx context.Context, repository string, number int, again bool) (int64, error) {
 	reader, err := queue.AppClient(ctx, store.Store)
 	if err != nil {
 		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
