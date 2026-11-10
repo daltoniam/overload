@@ -32,8 +32,12 @@ type PullRequestDelivery struct {
 	// "opened" binding and is recorded with the manual trigger.
 	Manual bool
 	// Again reviews a head that already has a completed review; a review
-	// that is still queued or running is never duplicated.
+	// that is still queued, running or being posted is never duplicated.
 	Again bool
+	// ByAutomation marks a manual review requested by an API key or a
+	// workload token rather than a person. It is recorded with the api
+	// trigger and cannot clear an earlier failing verdict on the commit.
+	ByAutomation bool
 }
 
 // ManualReviewAction is the binding action a manual review uses: the same
@@ -124,9 +128,12 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	defer func() { _ = tx.Rollback(ctx) }()
 	var deliveryRow int64
 	digest := sha256.Sum256(delivery.Payload)
-	source, trigger := "github", "webhook"
+	source, trigger := "github", TriggerWebhook
 	if delivery.Manual {
-		source, trigger = "manual", "manual"
+		source, trigger = "manual", TriggerManual
+		if delivery.ByAutomation {
+			trigger = TriggerAPI
+		}
 	}
 	err = tx.QueryRow(ctx, `INSERT INTO webhook_deliveries (delivery_id, event, action, repository_full_name, payload, outcome, payload_sha256, source) VALUES ($1, 'pull_request', $2, $3, $4, 'skipped', $5, $6) ON CONFLICT DO NOTHING RETURNING id`, delivery.DeliveryID, delivery.Action, delivery.RepoName, delivery.Payload, hex.EncodeToString(digest[:]), source).Scan(&deliveryRow)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -170,7 +177,13 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if delivery.Manual && delivery.Again {
 		statuses = []string{"queued", "running"}
 	}
-	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND status = ANY($4) ORDER BY id DESC LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA, statuses).Scan(&existing)
+	// A review still being posted has not recorded its verdict yet, so an
+	// automated review of the head waits for it, or it could miss a
+	// failure it must not clear. A person's review is never held by an
+	// earlier verdict, so it does not wait; the older post is then skipped
+	// as an earlier review of the same commit.
+	waitForPost := trigger != TriggerManual
+	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND (status = ANY($4) OR ($5 AND status = 'completed' AND post_status = 'queued')) ORDER BY id DESC LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA, statuses, waitForPost).Scan(&existing)
 	if err == nil {
 		return skip(skipAlreadyReviewed, &existing)
 	}
@@ -211,7 +224,10 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 		return false, err
 	}
 	queuedMessage := "Review queued"
-	if delivery.Manual {
+	switch {
+	case delivery.ByAutomation:
+		queuedMessage = "Review queued through the review API"
+	case delivery.Manual:
 		queuedMessage = "Review queued by hand"
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'queued', $2)`, runID, queuedMessage); err != nil {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -175,6 +176,27 @@ type Routing struct {
 	Agents   []AgentFiles `json:"agents"`
 	Planner  string       `json:"planner,omitempty"`
 	Degraded []string     `json:"degraded,omitempty"`
+}
+
+// UnreviewedFiles lists changed files that some review could not cover:
+// files too large to review, and files an agent was given but did not
+// review. Skipped files are left out on purpose.
+func (routing Routing) UnreviewedFiles() []string {
+	lists := [][]string{routing.TooLarge}
+	for _, agent := range routing.Agents {
+		lists = append(lists, agent.Unreviewed)
+	}
+	return uniqueSorted(lists...)
+}
+
+// uniqueSorted merges path lists into one sorted list without repeats.
+func uniqueSorted(lists ...[]string) []string {
+	var merged []string
+	for _, list := range lists {
+		merged = append(merged, list...)
+	}
+	slices.Sort(merged)
+	return slices.Compact(merged)
 }
 
 // FileReviews is the number of (agent, file) reviews the routing needs.
@@ -538,6 +560,8 @@ func (workflow *Workflow) Normalize() {
 		workflow.MainReviews = ""
 	}
 	workflow.SkipPaths = normalizeGlobs(workflow.SkipPaths)
+	workflow.HumanReviewPaths = normalizeGlobs(workflow.HumanReviewPaths)
+	workflow.ApprovePaths = normalizeGlobs(workflow.ApprovePaths)
 	for name, scope := range workflow.Scopes {
 		if scope.Mode == ScopeGlobs {
 			scope.Mode = ""

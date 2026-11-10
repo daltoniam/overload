@@ -525,6 +525,86 @@ the pull request is not posted again, even if its line moved. Model text is
 stripped of links, images, HTML and @mentions before it is stored, because
 the model reads untrusted pull request content.
 
+### The review as a merge gate
+
+Overload sets an `overload` commit status on every reviewed head (with the
+GitHub App's "Commit statuses: write" permission), and with a review
+decision of request changes or approve it posts `REQUEST_CHANGES` or
+`APPROVE` reviews. The status is built to be a required check:
+
+- It fails when the review requested changes, and when any changed file was
+  not reviewed: too large for the model's context, assigned to an agent
+  that failed, or missing from the review's routing. The changed files are
+  read from the pull request diff on the overload server, not taken from
+  the sandbox's report. A review that never finishes leaves the status
+  pending or sets an error; nothing that did not finish passes. Files on
+  the workflow's skip paths are excluded on purpose. Deleted, binary and
+  mode-only files, and the old names of renamed files, have no lines to
+  review, so they do not fail the check, but the path rules below still
+  apply to them.
+- It is computed the same way when posting is off, so it can gate merges
+  before comments are turned on; the description then says "Would approve"
+  or "Would request changes" and "not posted".
+- When the same commit is reviewed again, only the newest review posts and
+  sets the status, so an older verdict that finishes later cannot replace
+  it. A failing verdict is sticky: a re-review of the same commit that was
+  requested through the review API (an API key or a workload token) can
+  add to it but cannot clear it, approve, or withdraw overload's request
+  for changes; the first such review says why. Only a re-review a person
+  starts from the Review button or `overload review --queue --again` can
+  clear it. An automated re-review waits until the earlier review of the
+  commit has been posted; a person's does not, and the older post is then
+  skipped. A post that still fails after its last retry (about an hour and
+  a half) is marked `post_failed`, records a failing verdict and fails the
+  check, so it never keeps re-reviews waiting.
+- When the changed files of a review are unknown, the check fails and the
+  review says so, even with no findings. Reviews finished before this
+  version did not record their changed files, so any still waiting to be
+  posted at upgrade time fail this way until the pull request is reviewed
+  again.
+- **Human review paths** (workflow setting `human_review_paths`, globs such
+  as `auth/**`, `**/migrations/**`, `.github/**`): a pull request touching
+  them, including deleting them or renaming files into or out of them, is
+  never approved by overload, and the review lists them whenever the set
+  of such files differs from overload's last posted review. They match
+  without regard to case, and a bare name such as `auth` also covers every
+  file in an `auth` folder at any depth.
+- **Approve only these paths** (`approve_paths`, used only with
+  `review_decision` approve): overload approves only when every changed
+  file matches these low-risk globs, such as `docs/**`, including skipped,
+  deleted and binary files and both names of a rename; other pull requests
+  get comments. Matching here is case sensitive. Overload never approves a
+  review in which no file was reviewed, such as one whose files were all
+  skipped.
+- When a later review does not approve (it requests changes, comments, or
+  is partial), overload dismisses its own earlier approval, so a stale
+  approval never keeps counting. If GitHub refuses the dismissal, the
+  check fails ("Could not withdraw overload's earlier approval") and the
+  dismissal is retried.
+- Pull request text stays untrusted: models only produce findings, and the
+  decision comes from finding severities and the rules above.
+
+Recipe for a protected branch (Settings, Branches or Rules):
+
+1. Require status checks to pass, select `overload`, and set its expected
+   source to the overload GitHub App ("Any source" lets anyone who can
+   write commit statuses, such as a CI token with `statuses: write`, pass
+   the check). Require branches to be up to date, so the check is for the
+   head being merged.
+2. Require a pull request review, and turn on "Dismiss stale pull request
+   approvals when new commits are pushed", so no approval, overload's or a
+   person's, carries over to code it did not see. If "Restrict who can
+   dismiss pull request reviews" is on, add the overload GitHub App to the
+   allowed list, or overload cannot withdraw its own approval and the
+   check stays failing.
+3. Add a `CODEOWNERS` file naming people for the same sensitive paths as
+   `human_review_paths`, with "Require review from Code Owners" on.
+   Overload never approves those pull requests, so a person always has to.
+4. Decide whether overload's approval may count. Check in a test repository
+   whether your plan counts a GitHub App's approval toward the required
+   reviews; if it does and you want bot-only merges, limit them with
+   `approve_paths`, otherwise keep `review_decision` at request changes.
+
 ## Signing in
 
 A single-user install signs in with the generated Basic Auth login. Teams
@@ -558,8 +638,7 @@ Register `<base>/auth/callback` as the client's redirect URI and
 How it works:
 
 - Sign-in uses the authorization code flow with PKCE, and checks the
-  `state` (bound to the browser by a `__Host-` cookie over https, so a
-  sibling subdomain cannot plant one) and `nonce`. ID tokens are
+  `state` (bound to the browser by a cookie) and `nonce`. ID tokens are
   verified against the provider's discovery document and keys. A sign-in
   started at another address (such as `127.0.0.1`) is sent to the base URL
   first, since its cookie must reach the callback. At most 10,000
@@ -659,92 +738,68 @@ export ANTHROPIC_BASE_URL=https://overload.example.com ANTHROPIC_API_KEY=ovl_...
 Automation can request reviews and call models with its own short-lived
 OIDC token instead of a stored secret. Under Workloads, an admin adds rules
 naming the token issuer, the audience, claim conditions (all must match;
-`*` matches within one path segment, so it never crosses a `/`) and scopes
-(`reviews`, `models`). Tokens are verified against the issuer's published
-keys, and only issuers some enabled rule names are ever contacted; each
-issuer's discovery document is read again daily, so moved keys are picked
-up. Rule changes apply at once on the replica that saved them and within a
-few seconds on others.
+`*` matches within one path segment) and scopes (`reviews`, `models`).
+Tokens are verified against the issuer's published keys, and only issuers
+some enabled rule names are ever contacted.
 
-Shared issuers (GitHub Actions, gitlab.com, Buildkite, a cluster serving
-many namespaces) issue tokens to everyone who uses them, so every rule
-must pin something only you control: at least one condition without
-wildcards, such as GitLab's `namespace_path` or Buildkite's
-`organization_slug`. The pinned value must identify you: conditions on
-the standard claims (`iss`, `aud`, `exp`, `iat`, `nbf`, `jti`, `azp`) are
-refused, since every token for the rule's issuer and audience shares
-them. A Kubernetes `sub` may end in a wildcard after a fixed namespace
-(`system:serviceaccount:ci:*`), but not `system:serviceaccount:*:*`.
-GitHub rules have a stricter check, below.
-
-GitHub Actions (issuer `https://token.actions.githubusercontent.com`, or
-an enterprise's own issuer under it): every job on GitHub can get a token
-from this issuer, so a rule must pin one owner without wildcards. Prefer
-`repository_owner_id` or `repository_id` (shown in the token, and in
-`https://api.github.com/repos/OWNER/NAME`), which survive renames and
-cannot be taken over by someone who registers a freed name;
-`repository_owner` or `repository` (`owner/name`, with a literal owner)
-also work. Narrow further with `job_workflow_ref` or `environment`. Jobs
-triggered by `pull_request` have `ref` set to `refs/pull/N/merge`, not the
-branch, so a `ref=refs/heads/main` condition never matches them; match the
-workflow file instead, for example
-`job_workflow_ref=acme/api/.github/workflows/review.yml@refs/pull/*/merge`.
-GitHub gives no OIDC token to workflows run for pull requests from forks,
-so those are still reviewed through the webhook or the Review button.
+GitHub Actions (issuer `https://token.actions.githubusercontent.com`): a
+rule must match `repository` or `repository_owner`; add `ref`,
+`environment` or `job_workflow_ref` to narrow it further.
 
 ```yaml
-on: pull_request
-permissions:
-  id-token: write
+name: overload review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 jobs:
   review:
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write
     steps:
-      - run: |
-          token=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+      - env:
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          token=$(curl -sfH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://overload.example.com" | jq -r .value)
           curl -sf -X POST https://overload.example.com/api/reviews \
             -H "Authorization: Bearer $token" \
-            -d '{"repository":"${{ github.repository }}","pull_request":${{ github.event.number }}}'
+            -d "{\"repository\":\"$REPOSITORY\",\"pull_request\":$PULL_REQUEST}"
 ```
+
+A `pull_request_target` job runs with the base repository's permissions
+and secrets, so it must never check out or run the pull request's code:
+no `actions/checkout` of the head, no build or test steps. It only asks
+overload for a review, and overload reads the pull request itself.
 
 `POST /api/reviews` with `{"repository": "owner/name", "pull_request": N}`
 queues a review of the pull request's current head, as the Review button
 does, and answers 202 with the run ID. It accepts a workload token with
 the `reviews` scope or an API key with that scope. A token that names a
 repository (every GitHub Actions token does) can only request reviews of
-that repository; a token without a `repository` claim, such as a
-Kubernetes one, can request reviews of any repository, so give the
-`reviews` scope only to service accounts you trust that far. Adding
-`"again": true` reviews a commit that was already reviewed; each caller
-(a person, a shared key, or a workload's rules and repository) may do
-that 10 times an hour on each overload server. Requesting a review never approves anything by
-itself; the review's own result decides. Answers: 401 for a missing or
-invalid credential, 403 for a valid one that may not make the request,
-409 when the pull request cannot be reviewed (closed, draft, unknown
-repository), 429 past the re-review limit, and 503 when overload cannot
-check the credential or queue the review right now.
+that repository. Requesting a review never approves anything by itself;
+the review's own result decides, and a review requested this way cannot
+clear an earlier failing verdict on the same commit (see the merge gate
+above). Workload tokens with the `models` scope can also call the model
+gateway.
 
-Workload tokens with the `models` scope can also call the model gateway.
-Their calls appear on the Usage page under the rule names and repository.
+Do not give the `reviews` scope to `pull_request` jobs. They run the
+workflow file from the pull request itself, so its author can change what
+the job sends, for example asking for review after review of the same
+commit with `"again": true`. Use a `pull_request_target` workflow, which
+runs the default branch's file, and narrow the rule's `job_workflow_ref`
+to that file on the default branch (such as
+`owner/name/.github/workflows/review.yml@refs/heads/main`), or require an
+`environment` with required reviewers.
 
 Kubernetes service accounts work the same way with the cluster's
 service-account issuer as the rule's issuer (projected tokens with an
-audience of overload's address). Match `sub`
-(`system:serviceaccount:<namespace>:<name>`, or
-`system:serviceaccount:<namespace>:*` for a whole namespace). overload must be able to
-read the issuer's discovery document and keys over https:
-
-- Managed clusters (EKS, GKE, AKS) publish a public issuer URL with a
-  public certificate; use it as is.
-- Otherwise the keys are served by the API server, which needs the
-  `system:service-account-issuer-discovery` role bound to unauthenticated
-  users, and its certificate is usually signed by the cluster's private
-  CA. overload trusts only the system's certificate authorities, so mount
-  a bundle holding the system CAs plus the cluster CA (the `ca.crt` in any
-  service account token volume) and point `SSL_CERT_FILE` at it. Setting
-  `SSL_CERT_FILE` to the cluster CA alone would stop overload trusting
-  GitHub and hosted models.
+audience of overload's address); overload must be able to read that
+issuer's discovery document, which on most clusters needs the
+`system:service-account-issuer-discovery` role bound to unauthenticated
+users or a public issuer URL. Match `sub`
+(`system:serviceaccount:<namespace>:<name>`).
 
 ## Linux servers
 

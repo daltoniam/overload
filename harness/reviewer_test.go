@@ -247,3 +247,11 @@ func firstBatch(patch string, repo fs.FS) (string, error) {
 	}
 	return makeReviewBatches(parsed, repo, parsed.paths()[:1], overload.DefaultLocalFileChars)[0], nil
 }
+
+func TestParseReviewDiffRejectsUnnamedSections(t *testing.T) {
+	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n" +
+		"diff --git a/x b/y\nold mode 100644\nnew mode 100755\n"
+	if _, err := parseReviewDiff(patch); err == nil || !strings.Contains(err.Error(), "names no file") {
+		t.Fatalf("a section the merge gate cannot read was reviewed: %v", err)
+	}
+}

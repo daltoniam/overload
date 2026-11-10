@@ -186,7 +186,7 @@ func (s *Store) SaveWorkflow(ctx context.Context, workflow overload.Workflow) er
 	if err != nil {
 		return err
 	}
-	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars}
+	stored := workflowRouting{Scopes: workflow.Scopes, SkipPaths: workflow.SkipPaths, MainReviews: workflow.MainReviews, MaxFileReviews: workflow.MaxFileReviews, MaxFindings: workflow.MaxFindings, MaxSteps: workflow.MaxSteps, TimeoutMinutes: workflow.TimeoutMinutes, ReviewDecision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, MaxFileChars: workflow.MaxFileChars, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths}
 	for _, prompt := range []struct {
 		text, kind string
 		id         *int64
@@ -224,6 +224,8 @@ type workflowRouting struct {
 	ReviewDecision     string                    `json:"review_decision,omitempty"`
 	BlockSeverity      string                    `json:"block_severity,omitempty"`
 	MaxFileChars       int                       `json:"max_file_chars,omitempty"`
+	HumanReviewPaths   []string                  `json:"human_review_paths,omitempty"`
+	ApprovePaths       []string                  `json:"approve_paths,omitempty"`
 }
 
 func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) {
@@ -247,6 +249,7 @@ func (s *Store) ListWorkflows(ctx context.Context) ([]overload.Workflow, error) 
 			return nil, err
 		}
 		workflow.Scopes, workflow.SkipPaths, workflow.MainReviews, workflow.MaxFileReviews, workflow.MaxFindings = routing.Scopes, routing.SkipPaths, routing.MainReviews, routing.MaxFileReviews, routing.MaxFindings
+		workflow.HumanReviewPaths, workflow.ApprovePaths = routing.HumanReviewPaths, routing.ApprovePaths
 		workflow.MaxSteps, workflow.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 		workflow.ReviewDecision, workflow.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 		workflow.MaxFileChars = routing.MaxFileChars
@@ -285,6 +288,7 @@ func resolveWorkflow(ctx context.Context, q querier, name string) (overload.Reso
 	result.MaxSteps, result.TimeoutMinutes = routing.MaxSteps, routing.TimeoutMinutes
 	result.ReviewDecision, result.BlockSeverity = routing.ReviewDecision, routing.BlockSeverity
 	result.MaxFileChars = routing.MaxFileChars
+	result.HumanReviewPaths, result.ApprovePaths = routing.HumanReviewPaths, routing.ApprovePaths
 	for id, target := range map[int64]**overload.PromptTemplate{routing.PlannerRevisionID: &result.PlannerPrompt, routing.VerifierRevisionID: &result.VerifierPrompt} {
 		if id == 0 {
 			continue

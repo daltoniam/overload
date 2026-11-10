@@ -114,6 +114,9 @@ templ WorkflowAgents(workflow overload.Workflow, agents []overload.AgentDefiniti
 					<option value={ severity } selected?={ blockSeverity(workflow) == severity }>{ severity } and above</option>
 				}
 			</select><small>Findings at this severity or above request changes. Issues already reported on earlier commits that are still present keep counting.</small></label>
+			<label class="field"><span>Human review paths</span><textarea name="human_review_paths" rows="3" class="short" placeholder="auth/**&#10;**/migrations/**&#10;.github/**">{ strings.Join(workflow.HumanReviewPaths, "\n") }</textarea><small>Sensitive files that always need a person, matched without regard to case; a bare name such as auth also covers everything in an auth folder. A pull request touching them, including deleting or renaming them, is never approved by overload, and the review lists them. Pair this with CODEOWNERS so GitHub requires those people.</small></label>
+			<label class="field approve-only"><span>Approve only these paths</span><textarea name="approve_paths" rows="3" class="short" placeholder="docs/**&#10;**/*.md">{ strings.Join(workflow.ApprovePaths, "\n") }</textarea><small>Used only when the decision approves. Overload approves only pull requests whose changed files all match these low-risk paths, including skipped, deleted and binary files; others get comments. Empty allows approval for any files.</small></label>
+			<p class="muted">The overload commit status never passes a review that left files unreviewed (too large, or an agent failed), so it is safe to make it a required check. When you require it, set the overload GitHub App as its expected source, so nobody else with access to commit statuses can pass it.</p>
 		</fieldset>
 	} else {
 		<fieldset class="tree-node"><legend>Limits for agents with tools</legend>

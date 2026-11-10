@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 )
@@ -18,18 +17,18 @@ type StatusSetter interface {
 	SetStatus(ctx context.Context, installationID int64, repository, sha, state, description, targetURL string) error
 }
 
-// Commit status states.
+// Commit status states set outside a review's merge gate (see
+// overload.GateOutcome).
 const (
 	statusPending = "pending"
-	statusSuccess = "success"
-	statusFailure = "failure"
 	statusError   = "error"
 )
 
 // reportStatus sets the commit status for a run, best effort: a review or
 // post never fails because its status could not be set. Runs of dry-run
 // repositories, local reviews and runs without an App installation get no
-// status.
+// status, nor does a run with a newer review of the same commit, so an
+// older verdict finishing last cannot replace the newer one.
 func reportStatus(ctx context.Context, store *postgres.Store, setter StatusSetter, runID int64, state, description string) {
 	target, ok := statusTarget(ctx, store, runID)
 	if !ok {
@@ -42,13 +41,23 @@ func reportStatus(ctx context.Context, store *postgres.Store, setter StatusSette
 		}
 		setter = client
 	}
-	err := setter.SetStatus(context.WithoutCancel(ctx), target.installation, target.repository, target.sha, state, description, runURL(runID))
+	err := setter.SetStatus(context.WithoutCancel(ctx), target.installation, target.repository, target.sha, state, statusDescription(description), runURL(runID))
 	switch {
 	case errors.Is(err, github.ErrStatusForbidden):
 		slog.Warn("commit status not set; grant the GitHub App \"Commit statuses: write\"", "run_id", runID, "repository", target.repository)
 	case err != nil:
 		slog.Warn("commit status not set", "run_id", runID, "repository", target.repository, "error", err)
 	}
+}
+
+// statusDescription shortens a description to the 140 characters GitHub
+// accepts.
+func statusDescription(description string) string {
+	const limit = 140
+	if runes := []rune(description); len(runes) > limit {
+		return string(runes[:limit-1]) + "…"
+	}
+	return description
 }
 
 type statusRun struct {
@@ -61,8 +70,11 @@ func statusTarget(ctx context.Context, store *postgres.Store, runID int64) (stat
 	var target statusRun
 	var installation *int64
 	var dryRun bool
-	err := store.Pool.QueryRow(ctx, `SELECT repo.full_name, r.head_sha, r.installation_id, r.dry_run OR repo.dry_run FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.kind = 'pr_review'`, runID).Scan(&target.repository, &target.sha, &installation, &dryRun)
-	if err != nil || installation == nil || *installation == 0 || dryRun || target.sha == "" {
+	var rerun bool
+	err := store.Pool.QueryRow(ctx, `SELECT repo.full_name, r.head_sha, r.installation_id, r.dry_run OR repo.dry_run,
+EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.head_sha = r.head_sha AND n.id > r.id AND n.kind = 'pr_review' AND NOT n.dry_run AND n.status IN ('queued', 'running', 'completed'))
+FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.kind = 'pr_review'`, runID).Scan(&target.repository, &target.sha, &installation, &dryRun, &rerun)
+	if err != nil || installation == nil || *installation == 0 || dryRun || rerun || target.sha == "" {
 		return target, false
 	}
 	target.installation = *installation
@@ -77,23 +89,4 @@ func runURL(runID int64) string {
 		return ""
 	}
 	return fmt.Sprintf("%s/runs/%d", base, runID)
-}
-
-// finalStatus describes a posted review as a commit status: failure when
-// the review requested changes, success otherwise. A partial review (some
-// files could not be reviewed) says so.
-func finalStatus(event string, findings int, partial bool) (string, string) {
-	state, description := statusSuccess, fmt.Sprintf("%d issue(s) noted as comments", findings)
-	switch {
-	case event == overload.ReviewRequestChanges:
-		state, description = statusFailure, "Changes requested: blocking issues found"
-	case event == overload.ReviewApprove:
-		description = "Approved"
-	case findings == 0:
-		description = "No issues found"
-	}
-	if partial {
-		description = "Partial review, some files not reviewed. " + description
-	}
-	return state, description
 }

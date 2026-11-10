@@ -1473,10 +1473,20 @@ plan and deploy/README.md.
    across replicas; and workload tokens can request reviews and call
    models but cannot yet trigger agents or workflows (16.7 names agents
    too).
-7. **The review bot as a merge gate** (16.4 item 7, 16.7): the commit
-   status never passes a review that did not finish or skipped files;
-   protected paths that always need a human; bot approval limited to named
-   low-risk paths; a documented branch-protection recipe.
+7. **The review bot as a merge gate** (16.4 item 7, 16.7; done): the commit
+   status never passes a review that did not finish or skipped files, with
+   the changed files read from the diff on the host rather than trusted
+   from the sandbox; protected paths that always need a human, matched
+   against every changed name (deleted, binary and both names of a
+   rename); bot approval limited to named low-risk paths and withdrawn
+   when a later review does not approve; a failing verdict that a re-review
+   of the same commit requested through the API cannot clear (only a
+   person's re-review can); a documented branch-protection recipe that
+   pins the status to the overload GitHub App. Follow-up: blocking
+   findings still count on later commits only when a review finds them
+   again, so a no-op commit can re-roll the model; keeping them until the
+   lines they point to change or a person dismisses them needs per-finding
+   resolution state, line tracking across commits and a dismiss action.
 8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.

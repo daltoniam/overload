@@ -234,17 +234,18 @@ func (store serverStore) RequestReview(ctx context.Context, repositoryID int64, 
 	if err != nil {
 		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
 	}
-	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again)
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again, false)
 }
 
 // QueueReviewByName queues a review of a pull request's current head for
-// the review API.
+// the review API. Its callers are API keys and workload tokens, not people
+// at the UI or CLI.
 func (store serverStore) QueueReviewByName(ctx context.Context, repository string, number int, again bool) (int64, error) {
 	reader, err := queue.AppClient(ctx, store.Store)
 	if err != nil {
 		return 0, fmt.Errorf("%w: the GitHub App is not set up", queue.ErrReviewNotQueued)
 	}
-	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again)
+	return queue.QueueManualReview(ctx, store.Store, store.jobs, reader, repository, number, again, true)
 }
 
 // RunScheduleNow queues a schedule's workflow on this server's job queue.

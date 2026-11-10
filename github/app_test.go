@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,7 +220,7 @@ func TestSetWebhookURL(t *testing.T) {
 	}
 }
 
-func TestChangesRequestedAndDismissOnlyOwnReviews(t *testing.T) {
+func TestStandingReviewsAndDismissOnlyOwnReviews(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
@@ -234,7 +235,7 @@ func TestChangesRequestedAndDismissOnlyOwnReviews(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"token":"installation-token","expires_at":"2099-01-01T00:00:00Z"}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/api/pulls/5/reviews":
-			_, _ = w.Write([]byte(`[{"id":1,"user":{"login":"mallory"},"state":"CHANGES_REQUESTED"},{"id":2,"user":{"login":"overload-test[bot]"},"state":"COMMENTED"},{"id":3,"user":{"login":"overload-test[bot]"},"state":"CHANGES_REQUESTED"},{"id":4,"user":{"login":"overload-test[bot]"},"state":"DISMISSED"}]`))
+			_, _ = w.Write([]byte(`[{"id":1,"user":{"login":"mallory"},"state":"CHANGES_REQUESTED"},{"id":2,"user":{"login":"overload-test[bot]"},"state":"COMMENTED"},{"id":3,"user":{"login":"overload-test[bot]"},"state":"CHANGES_REQUESTED"},{"id":4,"user":{"login":"overload-test[bot]"},"state":"DISMISSED"},{"id":5,"user":{"login":"overload-test[bot]"},"state":"APPROVED"},{"id":6,"user":{"login":"mallory"},"state":"APPROVED"}]`))
 		case r.Method == http.MethodPut && r.URL.Path == "/repos/acme/api/pulls/5/reviews/3/dismissals":
 			var body struct {
 				Message string `json:"message"`
@@ -253,9 +254,9 @@ func TestChangesRequestedAndDismissOnlyOwnReviews(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.baseURL = server.URL
-	ids, err := client.ChangesRequested(context.Background(), 7, "acme/api", 5)
-	if err != nil || len(ids) != 1 || ids[0] != 3 {
-		t.Fatalf("ids=%v err=%v; want only overload's own standing request", ids, err)
+	standing, err := client.StandingReviews(context.Background(), 7, "acme/api", 5)
+	if want := []StandingReview{{ID: 3, State: ReviewStateChangesRequested}, {ID: 5, State: ReviewStateApproved}}; err != nil || fmt.Sprint(standing) != fmt.Sprint(want) {
+		t.Fatalf("standing=%v err=%v; want only overload's own standing request and approval %v", standing, err, want)
 	}
 	if err := client.DismissReview(context.Background(), 7, "acme/api", 5, 3, "nothing blocking"); err != nil || dismissed != "3" || message != "nothing blocking" {
 		t.Fatalf("dismiss: %v %q %q", err, dismissed, message)

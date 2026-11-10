@@ -44,7 +44,14 @@ func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewA
 		if _, err := tx.Exec(ctx, `UPDATE runs SET status='failed',error_code='review_interrupted',error_message='Review worker stopped before completion',finished_at=now() WHERE id=$1`, runID); err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
+		if err := tx.Commit(ctx); err != nil {
+			return err
+		}
+		// The earlier attempt may have stopped after setting a pending
+		// status (or rolled back its verdict), which would otherwise stay
+		// pending forever.
+		reportStatus(ctx, w.Store, w.Status, runID, statusError, "Review interrupted; review the pull request again")
+		return nil
 	}
 	if status != "queued" {
 		return nil
@@ -164,6 +171,7 @@ func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message s
 
 func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoName string, spec overload.ReviewSpec, result overload.ReviewResult, sha string) error {
 	runID := run.ID
+	files := recordGateFiles(spec.Diff, &result)
 	data, err := json.Marshal(spec)
 	if err != nil {
 		return err
@@ -213,18 +221,70 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	if _, err := finalTx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'completed', $2)`, runID, message); err != nil {
 		return err
 	}
+	// A review that is not posted gets its verdict in the transaction that
+	// completes it, so a completed run always has one for later reviews of
+	// the commit to be held by; a run that is posted records it then.
+	var gate overload.Gate
+	if !plan.enqueue {
+		history, err := postgres.LoadGateHistory(ctx, finalTx, runID)
+		if err != nil {
+			return err
+		}
+		input := gateInput(spec.Workflow, result, files)
+		input.NotPosted, input.HeldFailure = true, history.HeldFailure
+		gate = overload.GateOutcome(input)
+		if err := postgres.RecordGate(ctx, finalTx, runID, gate); err != nil {
+			return err
+		}
+	}
 	if err := finalTx.Commit(ctx); err != nil {
 		return err
 	}
 	if !plan.enqueue {
-		degraded, _ := result.Metrics["degraded"].(bool)
-		state, description := finalStatus(overload.ReviewComment, len(result.Findings), degraded)
-		if plan.postStatus != "" {
-			description += " (not posted: posting is off)"
-		}
-		reportStatus(ctx, w.Store, w.Status, runID, state, description)
+		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 	}
 	return nil
+}
+
+// gateFilesMetric is the run metric holding the changed files the host read
+// from the diff, which the post worker gates on.
+const gateFilesMetric = "gate_files"
+
+// recordGateFiles reads the changed files from the diff the host fetched,
+// rather than trusting the sandbox's report of them, and stores them on the
+// result's metrics. A diff that cannot be read leaves them unknown, which
+// fails the gate.
+func recordGateFiles(patch string, result *overload.ReviewResult) *overload.GateFiles {
+	if result.Metrics == nil {
+		result.Metrics = map[string]any{}
+	}
+	files, err := overload.GateFilesFromDiff(patch)
+	if err != nil {
+		delete(result.Metrics, gateFilesMetric)
+		return nil
+	}
+	result.Metrics[gateFilesMetric] = files
+	return &files
+}
+
+// gateInput reads a finished review's merge gate inputs from its pinned
+// workflow and result, with the changed files read on the host.
+func gateInput(workflow overload.ResolvedWorkflow, result overload.ReviewResult, files *overload.GateFiles) overload.GateInput {
+	degraded, _ := result.Metrics["degraded"].(bool)
+	var routing overload.Routing
+	switch value := result.Metrics["routing"].(type) {
+	case overload.Routing:
+		routing = value
+	default:
+		if data, err := json.Marshal(value); err == nil {
+			_ = json.Unmarshal(data, &routing)
+		}
+	}
+	severities := make([]string, 0, len(result.Findings))
+	for _, finding := range result.Findings {
+		severities = append(severities, finding.Severity)
+	}
+	return overload.GateInput{Decision: workflow.ReviewDecision, BlockSeverity: workflow.BlockSeverity, HumanReviewPaths: workflow.HumanReviewPaths, ApprovePaths: workflow.ApprovePaths, SkipPaths: workflow.SkipPaths, Files: files, Routing: routing, Degraded: degraded, Severities: severities}
 }
 
 type postingPlan struct {

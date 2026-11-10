@@ -80,7 +80,7 @@ func TestQueueManualReview(t *testing.T) {
 	}
 	head := strings.Repeat("c", 40)
 	reader := &fakePRReader{pr: &gh.PullRequest{Number: gh.Ptr(296), State: gh.Ptr("open"), Head: &gh.PullRequestBranch{SHA: gh.Ptr(head)}, Base: &gh.PullRequestBranch{SHA: gh.Ptr(strings.Repeat("a", 40)), Repo: &gh.Repository{ID: gh.Ptr(id % 1_000_000_000)}}}}
-	queue := func() (int64, error) { return QueueManualReview(ctx, store, client, reader, repo, 296, false) }
+	queue := func() (int64, error) { return QueueManualReview(ctx, store, client, reader, repo, 296, false, false) }
 
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "not enabled") {
 		t.Fatalf("disabled repository: %v", err)
@@ -106,15 +106,65 @@ func TestQueueManualReview(t *testing.T) {
 	if !errors.Is(err, ErrReviewNotQueued) || again != runID || !strings.Contains(err.Error(), "already has run") {
 		t.Fatalf("second request for the same head: %d %v", again, err)
 	}
-	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "still queued or running") {
+	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, false); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "still queued, running or being posted") {
 		t.Fatalf("again while the first is queued: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed' WHERE id=$1`, runID); err != nil {
 		t.Fatal(err)
 	}
-	second, err := QueueManualReview(ctx, store, client, reader, repo, 296, true)
+	second, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, false)
 	if err != nil || second == runID || second == 0 {
 		t.Fatalf("review again after completion: %d %v", second, err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed', post_status='queued' WHERE id=$1`, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, true); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "being posted") {
+		t.Fatalf("again while the earlier review is being posted, so its verdict is not recorded yet: %v", err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET post_status='posted' WHERE id=$1`, second); err != nil {
+		t.Fatal(err)
+	}
+	automated, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, true)
+	if err != nil {
+		t.Fatalf("review again through the API: %v", err)
+	}
+	if err := store.Pool.QueryRow(ctx, `SELECT trigger FROM runs WHERE id=$1`, automated).Scan(&trigger); err != nil || trigger != postgres.TriggerAPI {
+		t.Fatalf("a review requested through the API is recorded as %q (%v), so it could clear a failing verdict", trigger, err)
+	}
+	// A post that keeps failing holds back automation, never a person.
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed', post_status='queued' WHERE id=$1`, automated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, true); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "being posted") {
+		t.Fatalf("automation did not wait for a post in progress: %v", err)
+	}
+	person, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, false)
+	if err != nil || person == automated {
+		t.Fatalf("a stuck post blocked a person's review: %d %v", person, err)
+	}
+	// Requests to review the same commit again at the same moment queue it
+	// once: ingest takes a per pull request lock before its checks.
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed', post_status='posted' WHERE id=$1`, person); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 6)
+	for index := range 6 {
+		go func() {
+			_, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, index%2 == 0)
+			results <- err
+		}()
+	}
+	queued := 0
+	for range 6 {
+		if err := <-results; err == nil {
+			queued++
+		} else if !errors.Is(err, ErrReviewNotQueued) {
+			t.Fatal(err)
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("%d concurrent requests to review the same commit again were queued, want 1", queued)
 	}
 	reader.pr.Draft = gh.Ptr(true)
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "draft") {
@@ -124,7 +174,7 @@ func TestQueueManualReview(t *testing.T) {
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("closed: %v", err)
 	}
-	if _, err := QueueManualReview(ctx, store, client, reader, "nobody/nothing", 1, false); !errors.Is(err, ErrReviewNotQueued) {
+	if _, err := QueueManualReview(ctx, store, client, reader, "nobody/nothing", 1, false, false); !errors.Is(err, ErrReviewNotQueued) {
 		t.Fatalf("unknown repository: %v", err)
 	}
 }
