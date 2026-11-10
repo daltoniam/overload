@@ -1,10 +1,13 @@
 package queue
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -14,27 +17,37 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// bakeoffTolerance is how many lines away from the expected range a
-// finding may cite and still count; models count lines from hunk headers.
-const bakeoffTolerance = 2
+// defaultBakeoffReviewTimeout matches the default review timeout.
+const defaultBakeoffReviewTimeout = 260 * time.Minute
+
+var errBakeoffInterrupted = errors.New(postgres.BakeoffInterrupted)
 
 // BakeoffWorker runs a bake-off: every pinned model reviews every case of
 // every pinned suite, the given number of times, one review at a time.
+// Reviews run in the server process even when pull request reviews use
+// sandboxes: a case is a few files held in memory that the harness only
+// reads, and no repository code or tool runs.
 type BakeoffWorker struct {
 	river.WorkerDefaults[postgres.BakeoffArgs]
 	Store *postgres.Store
+	// ReviewTimeout bounds each review; zero uses the default review
+	// timeout.
+	ReviewTimeout time.Duration
 	// Review runs one review; nil uses the harness.
 	Review func(context.Context, overload.ReviewSpec, fs.FS) (overload.ReviewResult, error)
 }
 
-// Timeout allows long bake-offs: a local model can take most of an hour per
-// file.
+// Timeout is unlimited because a bake-off runs many reviews, each bounded
+// by ReviewTimeout. River treats a job running longer than the review
+// timeout plus an hour as stuck and queues another attempt; that attempt
+// finds the bake-off no longer queued and does nothing, so the first one
+// carries on.
 func (worker *BakeoffWorker) Timeout(*river.Job[postgres.BakeoffArgs]) time.Duration {
-	return 48 * time.Hour
+	return -1
 }
 
 func (worker *BakeoffWorker) Work(ctx context.Context, job *river.Job[postgres.BakeoffArgs]) error {
-	bakeoff, ok, err := worker.Store.StartBakeoff(ctx, job.Args.ID)
+	plan, ok, err := worker.Store.StartBakeoff(ctx, job.Args.ID)
 	if err != nil || !ok {
 		return err
 	}
@@ -42,49 +55,83 @@ func (worker *BakeoffWorker) Work(ctx context.Context, job *river.Job[postgres.B
 	if review == nil {
 		review = harness.Reviewer{}.Review
 	}
-	for _, model := range bakeoff.Models {
-		policy, err := worker.Store.LoadModelPolicy(ctx)
+	for _, model := range plan.Models {
+		workflow, err := harness.ProfileWorkflow(model.ModelProfile, model.Prompt())
 		if err != nil {
-			return worker.finish(ctx, bakeoff.ID, err)
+			return worker.finish(ctx, plan.ID, fmt.Errorf("model %s: %w", model.Name, err))
 		}
-		refused := policy.Check(model.Catalog, model.Model).Error()
-		workflow, err := harness.ProfileWorkflow(model, "context")
-		if err != nil {
-			return worker.finish(ctx, bakeoff.ID, err)
-		}
-		for _, suite := range bakeoff.Suites {
+		for _, suite := range plan.Suites {
 			for _, item := range suite.Cases {
-				for run := 1; run <= bakeoff.Runs; run++ {
+				for run := 1; run <= plan.Runs; run++ {
 					if ctx.Err() != nil {
-						return worker.finish(ctx, bakeoff.ID, ctx.Err())
+						return worker.finish(ctx, plan.ID, errBakeoffInterrupted)
 					}
 					result := postgres.BakeoffResult{Model: model.Name, Suite: suite.Name, Case: item.Name, Run: run, Score: eval.Score{Expected: len(item.Expected)}}
-					if refused != nil {
+					// The policy can change during a bake-off that lasts
+					// hours, so it is checked before every review.
+					policy, err := worker.Store.LoadModelPolicy(ctx)
+					if err != nil {
+						if ctx.Err() != nil {
+							return worker.finish(ctx, plan.ID, errBakeoffInterrupted)
+						}
+						return worker.finish(ctx, plan.ID, err)
+					}
+					if refused := policy.Check(model.Catalog, model.Model).Error(); refused != nil {
 						result.Error = "refused by the model policy: " + refused.Error()
 					} else {
 						result = worker.runCase(ctx, review, workflow, item, result)
+						// A review cut short by shutdown says nothing about
+						// the model, so it is not recorded.
+						if ctx.Err() != nil {
+							return worker.finish(ctx, plan.ID, errBakeoffInterrupted)
+						}
 					}
-					if err := worker.Store.AddBakeoffResult(context.WithoutCancel(ctx), bakeoff.ID, result); err != nil {
-						return worker.finish(ctx, bakeoff.ID, err)
+					if err := worker.Store.AddBakeoffResult(context.WithoutCancel(ctx), plan.ID, result); err != nil {
+						return worker.finish(ctx, plan.ID, err)
 					}
 				}
 			}
 		}
 	}
-	return worker.finish(ctx, bakeoff.ID, nil)
+	return worker.finish(ctx, plan.ID, nil)
 }
 
+// runCase reviews one case. A review that failed, or finished without
+// reviewing every file (degraded), is recorded as failed: its findings
+// would understate what the model finds.
 func (worker *BakeoffWorker) runCase(ctx context.Context, review func(context.Context, overload.ReviewSpec, fs.FS) (overload.ReviewResult, error), workflow overload.ResolvedWorkflow, item eval.Case, result postgres.BakeoffResult) postgres.BakeoffResult {
+	timeout := cmp.Or(worker.ReviewTimeout, defaultBakeoffReviewTimeout)
+	reviewCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	started := time.Now()
-	reviewed, err := review(ctx, overload.ReviewSpec{Diff: item.Diff, Workflow: workflow}, item.Repository())
+	reviewed, err := review(reviewCtx, overload.ReviewSpec{Diff: item.Diff, Workflow: workflow}, item.Repository())
 	result.Duration = time.Since(started)
-	if err != nil {
-		result.Error = overload.TruncateUTF8(err.Error(), 500)
-		return result
-	}
-	result.Score = eval.ScoreFindings(item.Expected, reviewed.Findings, bakeoffTolerance)
 	result.InputTokens, result.OutputTokens = metricInt(reviewed.Metrics["input_tokens"]), metricInt(reviewed.Metrics["output_tokens"])
+	switch {
+	case err != nil && ctx.Err() == nil && errors.Is(reviewCtx.Err(), context.DeadlineExceeded):
+		result.Error = fmt.Sprintf("the review took longer than %s", timeout)
+	case err != nil:
+		result.Error = overload.TruncateUTF8(err.Error(), 500)
+	case reviewed.Error != "":
+		result.Error = overload.TruncateUTF8(reviewed.Error, 500)
+	case isDegraded(reviewed):
+		result.Error = overload.TruncateUTF8("review incomplete: "+degradedReason(reviewed), 500)
+	default:
+		result.Score = eval.ScoreFindings(item.Expected, reviewed.Findings, eval.LineTolerance)
+	}
 	return result
+}
+
+func isDegraded(result overload.ReviewResult) bool {
+	degraded, _ := result.Metrics["degraded"].(bool)
+	return degraded
+}
+
+func degradedReason(result overload.ReviewResult) string {
+	if routing, ok := result.Metrics["routing"].(overload.Routing); ok && len(routing.Degraded) > 0 {
+		return strings.Join(routing.Degraded, "; ")
+	}
+	return "not every file was reviewed"
 }
 
 func (worker *BakeoffWorker) finish(ctx context.Context, id int64, cause error) error {

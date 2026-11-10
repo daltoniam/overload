@@ -1490,6 +1490,14 @@ plan and deploy/README.md.
 8. **Model bake-offs** (16.4 item 3; done): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.
+   Bake-offs run one at a time on their own queue, check the model policy
+   before every review, and count failed, timed-out and incomplete reviews
+   only as failed. Notes: reviews run in the server process even in sandbox
+   mode, since a case is in-memory files the reviewer only reads; the
+   planted suite is scored more strictly than the published measurements
+   table, and the planted-bug test logs both counts. Follow-up: placement
+   (misplaced findings) cannot be measured for cases built from commits,
+   which carry no expected wording.
 9. **Local multi-agent review** (16.10): risk tier and specialist selection
    by path, specialist and coordinator starter agents, a per-review budget,
    reviews of a local checkout, and an opt-in fix loop on a branch in a git

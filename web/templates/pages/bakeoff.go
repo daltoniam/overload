@@ -3,40 +3,68 @@ package pages
 import (
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/daltoniam/overload/postgres"
 )
 
-// ModelSummary totals one model's results in a bake-off.
+// ModelSummary totals one model's results in a bake-off. Failed reviews
+// count only in Reviews and Failed.
 type ModelSummary struct {
-	Model        string
-	Reviews      int
-	Failed       int
-	Expected     int
-	Matched      int
-	Misplaced    int
-	Extra        int
-	InputTokens  int64
-	OutputTokens int64
-	Duration     time.Duration
+	Model            string
+	Reviews          int
+	Failed           int
+	Expected         int
+	Matched          int
+	Misplaced        int
+	PlacementChecked int
+	Extra            int
+	InputTokens      int64
+	OutputTokens     int64
+	Duration         time.Duration
 }
 
-// Found formats matched of expected.
+func (summary ModelSummary) completed() int {
+	return summary.Reviews - summary.Failed
+}
+
+// Found formats bugs matched of bugs expected in completed reviews.
 func (summary ModelSummary) Found() string {
+	if summary.completed() <= 0 {
+		return "n/a"
+	}
 	return fmt.Sprintf("%d of %d", summary.Matched, summary.Expected)
 }
 
-// AverageTime is the mean time per review.
-func (summary ModelSummary) AverageTime() string {
-	if summary.Reviews-summary.Failed <= 0 {
+// MisplacedCount is n/a when no completed review had a bug with expected
+// words, the only kind a misplaced finding can be recognised by.
+func (summary ModelSummary) MisplacedCount() string {
+	if summary.completed() <= 0 || summary.PlacementChecked == 0 {
 		return "n/a"
 	}
-	return (summary.Duration / time.Duration(summary.Reviews-summary.Failed)).Round(time.Second).String()
+	return strconv.Itoa(summary.Misplaced)
 }
 
-// Summarize totals a bake-off's results per model, in the order the
-// models were chosen.
+// ExtraCount formats the findings that matched no expected bug.
+func (summary ModelSummary) ExtraCount() string {
+	if summary.completed() <= 0 {
+		return "n/a"
+	}
+	return strconv.Itoa(summary.Extra)
+}
+
+// AverageTime is the mean time per completed review.
+func (summary ModelSummary) AverageTime() string {
+	if summary.completed() <= 0 {
+		return "n/a"
+	}
+	return (summary.Duration / time.Duration(summary.completed())).Round(time.Second).String()
+}
+
+// Summarize totals a bake-off's results per model, sorted by the share of
+// expected bugs found, best first; ties keep the order the models were
+// chosen in.
 func Summarize(bakeoff postgres.Bakeoff) []ModelSummary {
 	var summaries []ModelSummary
 	for _, model := range bakeoff.Models {
@@ -46,13 +74,14 @@ func Summarize(bakeoff postgres.Bakeoff) []ModelSummary {
 				continue
 			}
 			summary.Reviews++
-			summary.Expected += result.Score.Expected
 			if result.Error != "" {
 				summary.Failed++
 				continue
 			}
+			summary.Expected += result.Score.Expected
 			summary.Matched += result.Score.Matched
 			summary.Misplaced += result.Score.Misplaced
+			summary.PlacementChecked += result.Score.PlacementChecked
 			summary.Extra += result.Score.Unmatched
 			summary.InputTokens += result.InputTokens
 			summary.OutputTokens += result.OutputTokens
@@ -64,6 +93,14 @@ func Summarize(bakeoff postgres.Bakeoff) []ModelSummary {
 		return b.Matched*max(a.Expected, 1) - a.Matched*max(b.Expected, 1)
 	})
 	return summaries
+}
+
+// misplacedResult is n/a for a case without expected words.
+func misplacedResult(result postgres.BakeoffResult) string {
+	if result.Score.PlacementChecked == 0 {
+		return "n/a"
+	}
+	return strconv.Itoa(result.Score.Misplaced)
 }
 
 func caseCount(count int) string {

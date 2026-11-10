@@ -11,7 +11,7 @@ import (
 	"github.com/daltoniam/overload/web/templates/layouts"
 )
 
-templ Bakeoffs(bakeoffs []postgres.Bakeoff, models []overload.ReviewSettings, suites []eval.Suite, nonce string) {
+templ Bakeoffs(bakeoffs []postgres.Bakeoff, models []overload.ReviewSettings, suites []postgres.SuiteSummary, nonce string) {
 	@layouts.Base(layouts.PageData{Title: "Bake-offs", CurrentPath: "/bakeoffs"}) {
 		<div class="page-header"><div><p class="eyebrow">Models / Bake-offs</p><h1>Model bake-offs</h1><p class="muted">Run the same reviews through several models and compare what each found, where it pointed and how long it took. Suites are overload's planted-bug files, or cases built from commits that fixed real bugs in your repositories with <code>overload bakeoff case</code>.</p></div></div>
 		<section class="panel"><h2>New bake-off</h2>
@@ -26,10 +26,10 @@ templ Bakeoffs(bakeoffs []postgres.Bakeoff, models []overload.ReviewSettings, su
 					</fieldset>
 					<fieldset class="field"><legend>Suites</legend>
 						for _, suite := range suites {
-							<label class="check"><input type="checkbox" name="suites" value={ suite.Name } checked?={ suite.Name == eval.BuiltinSuite }/> { suite.Name } <span class="muted">({ caseCount(len(suite.Cases)) })</span></label>
+							<label class="check"><input type="checkbox" name="suites" value={ suite.Name } checked?={ suite.Name == eval.BuiltinSuite }/> { suite.Name } <span class="muted">({ caseCount(suite.Cases) })</span></label>
 						}
 					</fieldset>
-					<label class="field"><span>Runs per model and case</span><input name="runs" type="number" min="1" max={ strconv.Itoa(postgres.MaxBakeoffRuns) } value="3" required/><small>Models vary from run to run; three or more runs make differences meaningful. Reviews run one at a time, so local models can take hours.</small></label>
+					<label class="field"><span>Runs per model and case</span><input name="runs" type="number" min="1" max={ strconv.Itoa(postgres.MaxBakeoffRuns) } value="3" required/><small>Models vary from run to run; three or more runs make differences meaningful. Reviews run one at a time, so local models can take hours. A bake-off runs at most { strconv.Itoa(postgres.MaxBakeoffReviews) } reviews (models times cases times runs).</small></label>
 					<div class="actions"><button type="submit">Start bake-off</button></div>
 				</form>
 			}
@@ -63,12 +63,12 @@ templ BakeoffDetail(bakeoff postgres.Bakeoff, summaries []ModelSummary) {
 			if len(bakeoff.Results) == 0 {
 				<div class="empty">No results yet. Reviews run one at a time; refresh to see progress.</div>
 			} else {
-				<div class="table-wrap"><table><caption class="sr-only">Results by model</caption><thead><tr><th>Model</th><th>Bugs found</th><th>Misplaced</th><th>Other findings</th><th>Time per review</th><th>Tokens in / out</th><th>Failed reviews</th></tr></thead><tbody>
+				<div class="table-wrap"><table><caption class="sr-only">Results by model</caption><thead><tr><th>Model</th><th>Bugs found</th><th>Misplaced</th><th>Other findings</th><th>Time per review</th><th>Total tokens in / out</th><th>Failed reviews</th></tr></thead><tbody>
 					for _, summary := range summaries {
-						<tr><td>{ summary.Model }</td><td>{ summary.Found() }</td><td>{ strconv.Itoa(summary.Misplaced) }</td><td>{ strconv.Itoa(summary.Extra) }</td><td>{ summary.AverageTime() }</td><td class="mono">{ strconv.FormatInt(summary.InputTokens, 10) } / { strconv.FormatInt(summary.OutputTokens, 10) }</td><td>{ strconv.Itoa(summary.Failed) } of { strconv.Itoa(summary.Reviews) }</td></tr>
+						<tr><td>{ summary.Model }</td><td>{ summary.Found() }</td><td>{ summary.MisplacedCount() }</td><td>{ summary.ExtraCount() }</td><td>{ summary.AverageTime() }</td><td class="mono">{ strconv.FormatInt(summary.InputTokens, 10) } / { strconv.FormatInt(summary.OutputTokens, 10) }</td><td>{ strconv.Itoa(summary.Failed) } of { strconv.Itoa(summary.Reviews) }</td></tr>
 					}
 				</tbody></table></div>
-				<p class="muted">Misplaced counts bugs a model described in the right file but cited on lines outside the expected range (more than two lines off); overload drops such findings before posting, so they help nobody. Other findings may be real bugs that were not planted.</p>
+				<p class="muted">Bugs found, misplaced, other findings, time and tokens cover completed reviews; a review that failed, was refused by the model policy or left files unreviewed counts only as failed. Misplaced counts bugs a model described in the right file but cited on lines outside the expected range (more than two lines off); overload drops such findings before posting, so they help nobody. It needs the words a bug is expected to be described with, so it is n/a for cases built from commits. Other findings matched no expected bug: some may be real bugs nobody planted or fixed, others false alarms.</p>
 			}
 		</section>
 		if len(bakeoff.Results) > 0 {
@@ -80,7 +80,7 @@ templ BakeoffDetail(bakeoff postgres.Bakeoff, summaries []ModelSummary) {
 							if result.Error != "" {
 								<td colspan="4"><span class="badge failed">Failed</span><span class="secondary-line">{ result.Error }</span></td>
 							} else {
-								<td>{ strconv.Itoa(result.Score.Matched) } of { strconv.Itoa(result.Score.Expected) }</td><td>{ strconv.Itoa(result.Score.Misplaced) }</td><td>{ strconv.Itoa(result.Score.Unmatched) }</td><td>{ result.Duration.Round(1e9).String() }</td>
+								<td>{ strconv.Itoa(result.Score.Matched) } of { strconv.Itoa(result.Score.Expected) }</td><td>{ misplacedResult(result) }</td><td>{ strconv.Itoa(result.Score.Unmatched) }</td><td>{ result.Duration.Round(1e9).String() }</td>
 							}
 						</tr>
 					}
@@ -99,9 +99,5 @@ func modelNames(bakeoff postgres.Bakeoff) string {
 }
 
 func suiteNames(bakeoff postgres.Bakeoff) string {
-	names := make([]string, 0, len(bakeoff.Suites))
-	for _, suite := range bakeoff.Suites {
-		names = append(names, suite.Name)
-	}
-	return strings.Join(names, ", ")
+	return strings.Join(bakeoff.SuiteNames, ", ")
 }

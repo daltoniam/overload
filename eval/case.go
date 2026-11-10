@@ -128,9 +128,9 @@ func PlantedSuite() Suite {
 		Files:       []CaseFile{{Path: "billing/invoice.go", Content: PlantedInvoice}},
 		Diff:        NewFileDiff("billing/invoice.go", PlantedInvoice),
 		Expected: []ExpectedFinding{
-			{Path: "billing/invoice.go", StartLine: 23, EndLine: 28, Description: "mutex held on cache hit", Keywords: []string{"lock|deadlock|mutex"}},
+			{Path: "billing/invoice.go", StartLine: 23, EndLine: 28, Description: "mutex held on cache hit", Keywords: []string{"lock|deadlock|unlock|mutex"}},
 			{Path: "billing/invoice.go", StartLine: 40, EndLine: 42, Description: "SQL injection", Keywords: []string{"sql|inject"}},
-			{Path: "billing/invoice.go", StartLine: 59, EndLine: 65, Description: "pagination drops the last invoice", Keywords: []string{"last|off-by-one|off by one|drop|miss|page|slice|end"}},
+			{Path: "billing/invoice.go", StartLine: 59, EndLine: 65, Description: "pagination drops the last invoice", Keywords: []string{"last|off-by-one|off by one|drop|miss|page|paginat|slice|end"}},
 			{Path: "billing/invoice.go", StartLine: 75, EndLine: 86, Description: "negative refund", Keywords: []string{"negative"}},
 			{Path: "billing/invoice.go", StartLine: 70, EndLine: 91, Description: "stale cache after refund", Keywords: []string{"cache", "stale|invalidat|outdated|unchanged|old amount|old balance"}},
 		},
@@ -151,13 +151,34 @@ func PlantedSuite() Suite {
 const BuiltinSuite = "planted"
 
 // keywordsMatch reports whether text matches every keyword group; a group
-// lists alternatives separated by |.
+// lists alternatives separated by |. A keyword must start a word, so "lock"
+// does not match "block" nor "end" match "append".
 func keywordsMatch(groups []string, text string) bool {
 	text = strings.ToLower(text)
 	for _, group := range groups {
-		if !slices.ContainsFunc(strings.Split(group, "|"), func(word string) bool { return word != "" && strings.Contains(text, strings.ToLower(word)) }) {
+		if !slices.ContainsFunc(strings.Split(group, "|"), func(word string) bool { return word != "" && startsWord(text, strings.ToLower(word)) }) {
 			return false
 		}
 	}
 	return true
+}
+
+// startsWord reports whether word occurs in text at the start of a word.
+func startsWord(text, word string) bool {
+	for offset := 0; offset <= len(text); {
+		index := strings.Index(text[offset:], word)
+		if index < 0 {
+			return false
+		}
+		index += offset
+		if index == 0 || !isWordByte(text[index-1]) {
+			return true
+		}
+		offset = index + 1
+	}
+	return false
+}
+
+func isWordByte(char byte) bool {
+	return char == '_' || char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char >= 0x80
 }

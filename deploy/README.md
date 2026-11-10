@@ -485,24 +485,51 @@ overload bakeoff run --models flint,opus --suites planted --runs 3
 overload bakeoff show 4
 ```
 
-- The built-in `planted` suite is the planted-bug file the measurements
-  above use (five bugs) and a file with a misleading name that hides a SQL
-  injection.
+- The built-in `planted` suite holds the planted-bug file the measurements
+  above use (the same five bugs) and a file with a misleading name that
+  hides a SQL injection. Bake-offs score it more strictly than the
+  measurements table: every bug needs a finding within two lines of its
+  range that uses the expected words, while the table credits the mutex
+  bug on its lines without any wording or on any line that mentions a
+  deadlock or unlock, the stale cache bug on any line, and the pagination
+  bug on line 63 without any wording. A model can therefore score lower in
+  a bake-off than in the table. `TestPlantedBugEval` reviews the suite's
+  file and logs both counts, so reruns stay comparable with the table.
 - Build cases from your own history: pick commits that fixed a real bug.
   `overload bakeoff case --repo . --commit <fix>` prints a case in which
   the reviewer sees the change that undoes the fix (the buggy code as new
   lines) and is expected to point at the lines the fix changed. Save cases
   as a suite with `overload bakeoff suite save NAME case1.json case2.json`.
-  Only modified files are included, at most 20 per commit.
+  Only modified text files are included, at most 20 per commit and 512 KiB
+  in all; added, deleted, renamed and binary files are skipped, and merge
+  commits are refused. Your git configuration (colours, external diff
+  tools, path prefixes) does not change the case.
+- All the lines a fix changed form one bug: a finding near any of them
+  finds it, and it counts once. To score a fix as several bugs, give its
+  expected findings different `bug` names in the case file.
 - A bug counts as found when a finding cites its file within two lines of
-  the expected range and, for planted bugs, uses the expected words.
-  **Misplaced** counts bugs a model described in the right file but cited
-  on the wrong lines, which overload drops before posting (the problem
-  that sank Gemma 4 26B-A4B and Devstral above). **Other findings** may be
-  real bugs that were not planted.
-- Reviews run one at a time on the server, with the model policy checked
-  for each model; a model the policy refuses is recorded as failed rather
-  than called. A restart ends a running bake-off as failed.
+  the expected range and, for planted bugs, uses the expected words (each
+  must start a word, so "lock" does not match "block"). **Misplaced**
+  counts bugs a model described in the right file but cited on the wrong
+  lines, which overload drops before posting (the problem that sank
+  Gemma 4 26B-A4B and Devstral above). It relies on the expected words, so
+  it shows n/a for cases built from commits. **Other findings** matched no
+  expected bug and leave out the misplaced ones; some may be real bugs
+  nobody planted or fixed, others false alarms.
+- Bugs found, time and tokens cover completed reviews. A review that
+  failed, timed out (each review has the server's review timeout), was
+  refused by the model policy or left files unreviewed counts only as
+  failed, and a model whose reviews all failed shows n/a.
+- Each model reviews with its connection's prompt. Reviews run one at a
+  time on the server, on their own queue so pull request reviews are not
+  held up, with the model policy checked before every review; a model the
+  policy refuses is recorded as failed rather than called. A bake-off runs
+  at most 300 reviews (models times cases times runs) and 10 models. A
+  restart ends a running bake-off as failed, without recording the review
+  it cut short; start it again.
+- Bake-offs run reviews in the server process even when pull request
+  reviews run in sandboxes: a case is a few files held in memory that the
+  reviewer only reads, and no repository code or tool runs.
 
 ## GitHub
 

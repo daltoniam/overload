@@ -12,6 +12,7 @@ import (
 	"github.com/daltoniam/overload"
 	"github.com/daltoniam/overload/eval"
 	"github.com/daltoniam/overload/postgres"
+	"github.com/jackc/pgx/v5"
 )
 
 type fakeBakeoffs struct {
@@ -26,12 +27,19 @@ func (store *fakeBakeoffs) SaveSuite(_ context.Context, suite eval.Suite) error 
 	store.saved = append(store.saved, suite)
 	return nil
 }
-func (store *fakeBakeoffs) ListSuites(context.Context) ([]eval.Suite, error) {
-	return append([]eval.Suite{eval.PlantedSuite()}, store.saved...), nil
+func (store *fakeBakeoffs) ListSuites(context.Context) ([]postgres.SuiteSummary, error) {
+	suites := []postgres.SuiteSummary{{Name: eval.BuiltinSuite, Cases: 2}}
+	for _, suite := range store.saved {
+		suites = append(suites, postgres.SuiteSummary{Name: suite.Name, Cases: len(suite.Cases)})
+	}
+	return suites, nil
 }
 func (store *fakeBakeoffs) DeleteSuite(context.Context, string) error { return nil }
-func (store *fakeBakeoffs) GetBakeoff(context.Context, int64) (postgres.Bakeoff, error) {
-	return postgres.Bakeoff{ID: 4, Status: "completed", Models: []overload.ModelProfile{{Name: "flint"}}, Results: []postgres.BakeoffResult{{Model: "flint", Score: eval.Score{Expected: 5, Matched: 3}}}}, nil
+func (store *fakeBakeoffs) GetBakeoff(_ context.Context, id int64) (postgres.Bakeoff, error) {
+	if id != 4 {
+		return postgres.Bakeoff{}, pgx.ErrNoRows
+	}
+	return postgres.Bakeoff{ID: 4, Status: "completed", Models: []postgres.BakeoffModel{{ModelProfile: overload.ModelProfile{Name: "flint"}}}, Results: []postgres.BakeoffResult{{Model: "flint", Score: eval.Score{Expected: 5, Matched: 3}}}}, nil
 }
 func (store *fakeBakeoffs) queueBakeoff(_ context.Context, models, suites []string, runs int) (int64, error) {
 	store.queued = append(append(store.queued, models...), suites...)
@@ -54,12 +62,15 @@ func TestBakeoffCommands(t *testing.T) {
 	if err := runBakeoffWith(ctx, store, []string{"suite", "list"}, &out); err != nil || !strings.Contains(out.String(), "ours") || !strings.Contains(out.String(), "planted") {
 		t.Fatalf("list: %v %s", err, out.String())
 	}
-	if err := runBakeoffWith(ctx, store, []string{"run", "--models", "flint,gemma", "--suites", "planted,ours", "--runs", "2"}, &out); err != nil || strings.Join(store.queued, ",") != "flint,gemma,planted,ours" {
+	if err := runBakeoffWith(ctx, store, []string{"run", "--models", "flint, gemma,flint,", "--suites", "planted, ours,planted", "--runs", "2"}, &out); err != nil || strings.Join(store.queued, ",") != "flint,gemma,planted,ours" {
 		t.Fatalf("run: %v %v", err, store.queued)
 	}
 	out.Reset()
 	if err := runBakeoffWith(ctx, store, []string{"show", "4"}, &out); err != nil || !strings.Contains(out.String(), "3 of 5") {
 		t.Fatalf("show: %v %s", err, out.String())
+	}
+	if err := runBakeoffWith(ctx, store, []string{"show", "9"}, &out); err == nil || err.Error() != "no bake-off 9" {
+		t.Fatalf("show of an unknown bake-off: %v", err)
 	}
 	for _, args := range [][]string{{}, {"run"}, {"show", "x"}, {"suite", "save"}, {"bogus"}} {
 		if err := runBakeoffWith(ctx, store, args, &out); err == nil {

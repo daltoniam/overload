@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,8 +15,6 @@ import (
 	"github.com/daltoniam/overload/eval"
 )
 
-var plantedInvoice = eval.PlantedInvoice
-
 type plantedBug struct {
 	name  string
 	match func(overload.Finding) bool
@@ -25,7 +24,13 @@ func findingText(finding overload.Finding) string {
 	return strings.ToLower(finding.Title + " " + finding.Body)
 }
 
-var plantedBugs = []plantedBug{
+// publishedBugs is how the measurements table in deploy/README.md counts
+// the planted bugs. It is looser than the bake-off scoring the planted
+// suite uses (eval.ScoreFindings): it credits the mutex bug on lines 23 to
+// 27 without any wording or on any line that says deadlock or unlock, the
+// stale cache bug on any line, and the pagination bug on line 63 without
+// any wording. It is kept so reruns stay comparable with the table.
+var publishedBugs = []plantedBug{
 	{"mutex held on cache hit", func(f overload.Finding) bool {
 		text := findingText(f)
 		return (f.Line >= 23 && f.Line <= 27) || strings.Contains(text, "deadlock") || strings.Contains(text, "unlock")
@@ -53,9 +58,10 @@ var plantedBugs = []plantedBug{
 	}},
 }
 
-// TestPlantedBugEval reviews a file with five planted bugs through the normal
-// workflow path and reports which were found, tokens and time. Configure the
-// model with OVERLOAD_EVAL_BASE_URL, OVERLOAD_EVAL_MODEL,
+// TestPlantedBugEval reviews the planted suite's file with five planted
+// bugs through the normal workflow path and reports, per run, the bake-off
+// score, the count the published measurements use, tokens and time.
+// Configure the model with OVERLOAD_EVAL_BASE_URL, OVERLOAD_EVAL_MODEL,
 // OVERLOAD_EVAL_KIND (local or hosted), OVERLOAD_EVAL_KEY_ENV,
 // OVERLOAD_EVAL_REASONING_PARAM, OVERLOAD_EVAL_REASONING_EFFORT,
 // OVERLOAD_EVAL_MAX_OUTPUT_TOKENS and OVERLOAD_EVAL_RUNS.
@@ -74,39 +80,28 @@ func TestPlantedBugEval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSuffix(plantedInvoice, "\n"), "\n")
-	var diff strings.Builder
-	fmt.Fprintf(&diff, "diff --git a/billing/invoice.go b/billing/invoice.go\nnew file mode 100644\n--- /dev/null\n+++ b/billing/invoice.go\n@@ -0,0 +1,%d @@\n", len(lines))
-	for _, line := range lines {
-		diff.WriteString("+" + line + "\n")
-	}
+	invoice := eval.PlantedSuite().Cases[0]
 	workflow := overload.ResolvedWorkflow{Name: "planted-eval", Kind: "pr_review", Revision: 1, Agents: []overload.ResolvedAgent{{Name: "eval", Model: overload.ModelProfile{Provider: "openaicompat", ConnectionKind: os.Getenv("OVERLOAD_EVAL_KIND"), BaseURL: baseURL, Model: model, APIKeyEnv: os.Getenv("OVERLOAD_EVAL_KEY_ENV"), Headers: evalHeaders(), ReasoningParam: os.Getenv("OVERLOAD_EVAL_REASONING_PARAM"), ReasoningEffort: os.Getenv("OVERLOAD_EVAL_REASONING_EFFORT"), MaxOutputTokens: maxTokens}, EntryPrompt: overload.PromptTemplate{Kind: "entry", Body: prompt, SHA256: overload.PromptDigest(prompt)}}}}
-	repo := fstest.MapFS{"billing/invoice.go": {Data: []byte(plantedInvoice)}}
 	for run := 1; run <= runs; run++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 		start := time.Now()
-		result, err := (Reviewer{}).Review(ctx, overload.ReviewSpec{Diff: diff.String(), Workflow: workflow}, repo)
+		result, err := (Reviewer{}).Review(ctx, overload.ReviewSpec{Diff: invoice.Diff, Workflow: workflow}, invoice.Repository())
 		cancel()
 		if err != nil {
 			t.Fatalf("run %d: %v", run, err)
 		}
-		found := 0
+		score := eval.ScoreFindings(invoice.Expected, result.Findings, eval.LineTolerance)
+		published := 0
 		var report []string
-		for _, bug := range plantedBugs {
-			hit := false
-			for _, finding := range result.Findings {
-				if bug.match(finding) {
-					hit = true
-					break
-				}
-			}
+		for _, bug := range publishedBugs {
+			hit := slices.ContainsFunc(result.Findings, bug.match)
 			if hit {
-				found++
+				published++
 			}
 			report = append(report, fmt.Sprintf("%s=%v", bug.name, hit))
 		}
-		t.Logf("run %d: %d/5 planted bugs, %d findings, %s, input=%v output=%v fallbacks=%v reasoning=%v", run, found, len(result.Findings), time.Since(start).Round(time.Second), result.Metrics["input_tokens"], result.Metrics["output_tokens"], result.Metrics["effort_fallbacks"], result.Metrics["agent_eval_reasoning"])
-		t.Logf("run %d: %s", run, strings.Join(report, ", "))
+		t.Logf("run %d: bake-off score %d/%d (misplaced %d, other %d), published counting %d/5, %d findings, %s, input=%v output=%v fallbacks=%v reasoning=%v", run, score.Matched, score.Expected, score.Misplaced, score.Unmatched, published, len(result.Findings), time.Since(start).Round(time.Second), result.Metrics["input_tokens"], result.Metrics["output_tokens"], result.Metrics["effort_fallbacks"], result.Metrics["agent_eval_reasoning"])
+		t.Logf("run %d: published counting: %s", run, strings.Join(report, ", "))
 		for _, finding := range result.Findings {
 			t.Logf("  L%d [%s] %s: %s", finding.Line, finding.Severity, finding.Title, finding.Body)
 		}
@@ -118,18 +113,6 @@ func evalHeaders() map[string]string {
 		return map[string]string{"cf-aig-skip-cache": "true"}
 	}
 	return nil
-}
-
-var plantedTextutil = eval.PlantedTextutil
-
-func newFileDiff(path, content string) string {
-	lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-	var diff strings.Builder
-	fmt.Fprintf(&diff, "diff --git a/%s b/%s\nnew file mode 100644\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,%d @@\n", path, path, path, len(lines))
-	for _, line := range lines {
-		diff.WriteString("+" + line + "\n")
-	}
-	return diff.String()
 }
 
 // TestPlannerRoutingEval checks that the planner sends a file with a
@@ -160,8 +143,8 @@ func TestPlannerRoutingEval(t *testing.T) {
 		{Name: "lead", Model: profile, EntryPrompt: prompt("entry", entry)},
 		{Name: "database", Model: profile, EntryPrompt: prompt("entry", entry+"\n\nFocus on SQL injection, transactions and query correctness."), Scope: overload.Scope{Paths: []string{"**/store/**", "**/*.sql"}, Description: "SQL queries, database access and migrations"}},
 	}}
-	diff := newFileDiff("util/textutil.go", plantedTextutil) + newFileDiff("billing/invoice.go", plantedInvoice)
-	repo := fstest.MapFS{"util/textutil.go": {Data: []byte(plantedTextutil)}, "billing/invoice.go": {Data: []byte(plantedInvoice)}}
+	diff := eval.NewFileDiff("util/textutil.go", eval.PlantedTextutil) + eval.NewFileDiff("billing/invoice.go", eval.PlantedInvoice)
+	repo := fstest.MapFS{"util/textutil.go": {Data: []byte(eval.PlantedTextutil)}, "billing/invoice.go": {Data: []byte(eval.PlantedInvoice)}}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Minute)
 	defer cancel()
 	start := time.Now()

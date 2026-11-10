@@ -313,9 +313,9 @@ func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbo
 	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models})
 	river.AddWorker(workers, &ScheduleWorker{Store: store})
 	river.AddWorker(workers, &PostWorker{Store: store})
-	river.AddWorker(workers, &BakeoffWorker{Store: store})
+	river.AddWorker(workers, &BakeoffWorker{Store: store, ReviewTimeout: time.Duration(timeoutSeconds) * time.Second})
 	return river.NewClient(riverpgxv5.New(store.Pool), &river.Config{
-		Queues:     map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrent}},
+		Queues:     map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrent}, postgres.BakeoffQueue: {MaxWorkers: 1}},
 		Workers:    workers,
 		JobTimeout: time.Duration(timeoutSeconds) * time.Second,
 	})

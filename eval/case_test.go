@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,7 +25,7 @@ func TestPlantedSuite(t *testing.T) {
 		{Path: "billing/invoice.go", Line: 88, Title: "Ignored parse error", Body: "amount parse error is ignored"},
 	}
 	score := ScoreFindings(invoice.Expected, found, 2)
-	if score.Expected != 5 || score.Matched != 2 || score.Misplaced != 1 || score.Unmatched != 2 {
+	if score.Expected != 5 || score.Matched != 2 || score.Misplaced != 1 || score.Unmatched != 1 || score.PlacementChecked != 5 {
 		t.Fatalf("score = %+v", score)
 	}
 	if _, err := invoice.Repository().Open("billing/invoice.go"); err != nil {
@@ -50,10 +51,10 @@ func TestSuiteValidate(t *testing.T) {
 	}
 }
 
-func TestCaseFromCommit(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not installed")
-	}
+// gitRepo makes a repository whose local configuration sets every option
+// that changes git's output, so CaseFromCommit has to override them.
+func gitRepo(t *testing.T) (string, func(...string) string, func(string, string)) {
+	t.Helper()
 	dir := t.TempDir()
 	git := func(args ...string) string {
 		t.Helper()
@@ -73,40 +74,118 @@ func TestCaseFromCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	git("init", "-q")
-	write("calc/sum.go", "package calc\n\n// Sum adds the values.\nfunc Sum(values []int) int {\n\ttotal := 0\n\tfor i := 1; i < len(values); i++ {\n\t\ttotal += values[i]\n\t}\n\treturn total\n}\n")
-	write("README.md", "calc\n")
-	git("add", ".")
-	git("commit", "-q", "-m", "add sum")
-	write("calc/sum.go", "package calc\n\n// Sum adds the values.\nfunc Sum(values []int) int {\n\ttotal := 0\n\tfor i := 0; i < len(values); i++ {\n\t\ttotal += values[i]\n\t}\n\treturn total\n}\n")
-	write("NEW.md", "added\n")
-	git("add", ".")
-	git("commit", "-q", "-m", "Fix Sum skipping the first value")
-	fix := git("rev-parse", "HEAD")
+	git("init", "-q", "-b", "main")
+	for _, setting := range [][2]string{
+		{"color.ui", "always"},
+		{"color.diff", "always"},
+		{"diff.noprefix", "true"},
+		{"diff.mnemonicPrefix", "true"},
+		{"diff.relative", "true"},
+		{"diff.renames", "copies"},
+		{"diff.context", "9"},
+		{"diff.external", "echo external"},
+		{"diff.shout.textconv", "tr a-z A-Z"},
+		{"log.showSignature", "true"},
+	} {
+		git("config", setting[0], setting[1])
+	}
+	write(".gitattributes", "*.go diff=shout\n")
+	return dir, git, write
+}
 
-	item, err := CaseFromCommit(context.Background(), dir, fix[:10], "")
-	if err != nil {
-		t.Fatal(err)
+func TestCaseFromCommit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
 	}
-	if item.Name != "commit-"+fix[:12] || item.Description != "Fix Sum skipping the first value" || len(item.Files) != 1 || item.Files[0].Path != "calc/sum.go" {
-		t.Fatalf("case = %+v", item)
+	const sum = "package calc\n\n// Sum adds the values.\nfunc Sum(values []int) int {\n\ttotal := 0\n\tfor i := 1; i < len(values); i++ {\n\t\ttotal += values[i]\n\t}\n\treturn total\n}\n"
+	for _, test := range []struct {
+		name   string
+		before string
+		after  string
+		want   [][2]int
+	}{
+		{"changed line", sum, strings.Replace(sum, "i := 1", "i := 0", 1), [][2]int{{6, 6}}},
+		{"pure insertion", "a\nb\nc\nd\n", "a\nb\nguard\nc\nd\n", [][2]int{{2, 3}}},
+		{"insertion at the top", "a\nb\n", "check\na\nb\n", [][2]int{{1, 2}}},
+		{"pure deletion", "a\nb\nbad\nc\n", "a\nb\nc\n", [][2]int{{3, 3}}},
+		{"two hunks", "a\nbad\nc\nd\ne\nf\ng\nh\ni\nworse\n", "a\ngood\nc\nd\ne\nf\ng\nh\ni\nbetter\n", [][2]int{{2, 2}, {10, 10}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir, git, write := gitRepo(t)
+			write("calc/sum.go", test.before)
+			write("README.md", "calc\n")
+			write("logo.png", "\x89PNG\x00one")
+			git("add", ".")
+			git("commit", "-q", "-m", "add sum")
+			write("calc/sum.go", test.after)
+			write("logo.png", "\x89PNG\x00two")
+			write("NEW.md", "added\n")
+			git("add", ".")
+			git("commit", "-q", "-m", "Fix Sum skipping the first value")
+			fix := git("rev-parse", "HEAD")
+
+			// A subdirectory checks that paths stay relative to the top.
+			item, err := CaseFromCommit(context.Background(), filepath.Join(dir, "calc"), fix[:10], "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if item.Name != "commit-"+fix[:12] || item.Description != "Fix Sum skipping the first value" || len(item.Files) != 1 || item.Files[0].Path != "calc/sum.go" || item.Files[0].Content != test.before {
+				t.Fatalf("case = %+v", item)
+			}
+			if !strings.HasPrefix(item.Diff, "diff --git a/calc/sum.go b/calc/sum.go\n") || strings.Contains(item.Diff, "\x1b") || strings.Contains(item.Diff, "external") {
+				t.Fatalf("the diff depends on git configuration:\n%s", item.Diff)
+			}
+			var lines [][2]int
+			for _, expected := range item.Expected {
+				if expected.Bug != CommitBug {
+					t.Errorf("expected finding %+v is not part of the fix", expected)
+				}
+				lines = append(lines, [2]int{expected.StartLine, expected.EndLine})
+			}
+			if !slices.Equal(lines, test.want) {
+				t.Fatalf("expected lines = %v, want %v", lines, test.want)
+			}
+			last := test.want[len(test.want)-1]
+			if score := ScoreFindings(item.Expected, []overload.Finding{{Path: "calc/sum.go", Line: last[0]}}, 0); score.Matched != 1 || score.Expected != 1 {
+				t.Fatalf("score = %+v", score)
+			}
+		})
 	}
-	if !strings.Contains(item.Files[0].Content, "i := 1") || !strings.Contains(item.Diff, "+\tfor i := 1") || !strings.Contains(item.Diff, "-\tfor i := 0") {
-		t.Fatalf("the case does not show the buggy version:\n%s", item.Diff)
+}
+
+func TestCaseFromCommitRefuses(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
 	}
-	if len(item.Expected) != 1 || item.Expected[0].StartLine != 6 || item.Expected[0].EndLine != 6 {
-		t.Fatalf("expected = %+v", item.Expected)
-	}
-	if score := ScoreFindings(item.Expected, []overload.Finding{{Path: "calc/sum.go", Line: 6}}, 0); score.Matched != 1 {
-		t.Fatalf("score = %+v", score)
-	}
-	for _, commit := range []string{"", "HEAD", "--upload-pack=x", "zzzzzzz"} {
-		if _, err := CaseFromCommit(context.Background(), dir, commit, ""); err == nil {
-			t.Errorf("%q accepted", commit)
+	dir, git, write := gitRepo(t)
+	write("a.go", "package a\n")
+	write("logo.png", "\x89PNG\x00one")
+	git("add", ".")
+	git("commit", "-q", "-m", "first")
+	root := git("rev-parse", "HEAD")
+	write("logo.png", "\x89PNG\x00two")
+	git("commit", "-q", "-am", "binary only")
+	binary := git("rev-parse", "HEAD")
+	git("checkout", "-q", "-b", "side")
+	write("a.go", "package a\n\nconst A = 1\n")
+	git("commit", "-q", "-am", "side")
+	git("checkout", "-q", "main")
+	write("b.go", "package a\n")
+	git("add", ".")
+	git("commit", "-q", "-m", "main")
+	git("merge", "-q", "--no-ff", "--no-edit", "side")
+	merge := git("rev-parse", "HEAD")
+	for _, test := range []struct{ commit, want string }{
+		{"", "as a hash"},
+		{"HEAD", "as a hash"},
+		{"--upload-pack=x", "as a hash"},
+		{"zzzzzzz", "as a hash"},
+		{root, "no parent"},
+		{binary, "no existing text files"},
+		{merge, "is a merge"},
+	} {
+		if _, err := CaseFromCommit(context.Background(), dir, test.commit, ""); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("%q: error %v, want %q", test.commit, err, test.want)
 		}
-	}
-	first := git("rev-list", "--max-parents=0", "HEAD")
-	if _, err := CaseFromCommit(context.Background(), dir, first, ""); err == nil {
-		t.Error("a root commit was accepted")
 	}
 }

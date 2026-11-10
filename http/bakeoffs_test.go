@@ -22,11 +22,11 @@ type fakeBakeoffStore struct {
 	queued [][]string
 }
 
-func (store *fakeBakeoffStore) ListSuites(context.Context) ([]eval.Suite, error) {
-	return []eval.Suite{eval.PlantedSuite()}, nil
+func (store *fakeBakeoffStore) ListSuites(context.Context) ([]postgres.SuiteSummary, error) {
+	return []postgres.SuiteSummary{{Name: eval.BuiltinSuite, Cases: 2}}, nil
 }
 func (store *fakeBakeoffStore) ListBakeoffs(context.Context) ([]postgres.Bakeoff, error) {
-	return []postgres.Bakeoff{{ID: 1, Status: "completed", Models: []overload.ModelProfile{{Name: "flint"}}, Suites: []eval.Suite{{Name: "planted"}}, Runs: 2, CreatedAt: time.Now()}}, nil
+	return []postgres.Bakeoff{{ID: 1, Status: "completed", Models: []postgres.BakeoffModel{{ModelProfile: overload.ModelProfile{Name: "flint"}}}, SuiteNames: []string{"planted"}, Runs: 2, CreatedAt: time.Now()}}, nil
 }
 func (store *fakeBakeoffStore) GetBakeoff(_ context.Context, id int64) (postgres.Bakeoff, error) {
 	if id != 1 {
@@ -34,9 +34,9 @@ func (store *fakeBakeoffStore) GetBakeoff(_ context.Context, id int64) (postgres
 	}
 	bakeoff, _ := store.ListBakeoffs(context.Background())
 	result := bakeoff[0]
-	result.Models = append(result.Models, overload.ModelProfile{Name: "gemma"})
+	result.Models = append(result.Models, postgres.BakeoffModel{ModelProfile: overload.ModelProfile{Name: "gemma"}})
 	result.Results = []postgres.BakeoffResult{
-		{Model: "flint", Suite: "planted", Case: "planted-invoice", Run: 1, Score: eval.Score{Expected: 5, Matched: 4, Misplaced: 1, Reported: 5, Unmatched: 1}, Duration: 6 * time.Minute},
+		{Model: "flint", Suite: "planted", Case: "planted-invoice", Run: 1, Score: eval.Score{Expected: 5, Matched: 4, Misplaced: 1, Reported: 6, Unmatched: 1, PlacementChecked: 5}, Duration: 6 * time.Minute},
 		{Model: "gemma", Suite: "planted", Case: "planted-invoice", Run: 1, Score: eval.Score{Expected: 5}, Error: "model timed out"},
 	}
 	return result, nil
@@ -70,8 +70,11 @@ func TestBakeoffPages(t *testing.T) {
 		t.Fatal("bake-offs page is missing models, suites or history")
 	}
 	detail := get("/bakeoffs/1", http.StatusOK)
-	if !strings.Contains(detail, "4 of 5") || !strings.Contains(detail, "model timed out") || !strings.Contains(detail, "6m0s") {
+	if !strings.Contains(detail, "4 of 5") || !strings.Contains(detail, "model timed out") || !strings.Contains(detail, "6m0s") || !strings.Contains(detail, "Total tokens") {
 		t.Fatalf("detail page: %s", detail)
+	}
+	if strings.Contains(detail, "0 of 5") || !strings.Contains(detail, "<td>gemma</td><td>n/a</td>") {
+		t.Fatalf("a model whose reviews all failed should have no detection count: %s", detail)
 	}
 	get("/bakeoffs/2", http.StatusNotFound)
 	csrf := regexp.MustCompile(`name="csrf" value="([a-f0-9]+)"`).FindStringSubmatch(page)[1]

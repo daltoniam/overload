@@ -1,11 +1,13 @@
 package postgres
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/daltoniam/overload"
@@ -14,8 +16,22 @@ import (
 	"github.com/riverqueue/river"
 )
 
-// MaxBakeoffRuns bounds the runs per model and case.
-const MaxBakeoffRuns = 10
+// Bake-off limits: runs per model and case, models, and reviews in total
+// (models times cases times runs), which bounds how long one can occupy
+// the bake-off queue.
+const (
+	MaxBakeoffRuns    = 10
+	MaxBakeoffModels  = 10
+	MaxBakeoffReviews = 300
+)
+
+// BakeoffQueue is the River queue bake-offs run on, one at a time, so a
+// bake-off lasting hours never holds a slot pull request reviews need.
+const BakeoffQueue = "bakeoffs"
+
+// BakeoffInterrupted is a bake-off's error when the server stopped while it
+// ran.
+const BakeoffInterrupted = "interrupted by a restart; start it again"
 
 // BakeoffArgs is the job that runs a bake-off.
 type BakeoffArgs struct {
@@ -24,17 +40,37 @@ type BakeoffArgs struct {
 
 func (BakeoffArgs) Kind() string { return "bakeoff" }
 
-// Bakeoff is a bake-off and, once loaded with GetBakeoff, its results.
+// BakeoffModel is a model connection pinned for a bake-off, with the
+// built-in prompt the connection reviews with.
+type BakeoffModel struct {
+	overload.ModelProfile
+	PromptProfile string `json:"prompt_profile,omitempty"`
+}
+
+// Prompt is the built-in prompt the model reviews with.
+func (model BakeoffModel) Prompt() string {
+	return cmp.Or(model.PromptProfile, "context")
+}
+
+// Bakeoff is a bake-off and, once loaded with GetBakeoff, its results. It
+// holds only the names of its pinned suites; BakeoffPlan holds the cases.
 type Bakeoff struct {
 	ID         int64
 	Status     string
-	Models     []overload.ModelProfile
-	Suites     []eval.Suite
+	Models     []BakeoffModel
+	SuiteNames []string
 	Runs       int
 	Error      string
 	CreatedAt  time.Time
-	FinishedAt *time.Time
 	Results    []BakeoffResult
+}
+
+// BakeoffPlan is what a started bake-off runs.
+type BakeoffPlan struct {
+	ID     int64
+	Models []BakeoffModel
+	Suites []eval.Suite
+	Runs   int
 }
 
 // BakeoffResult is one model's review of one case.
@@ -48,6 +84,13 @@ type BakeoffResult struct {
 	OutputTokens int64
 	Duration     time.Duration
 	Error        string
+}
+
+// SuiteSummary describes a suite without loading its cases.
+type SuiteSummary struct {
+	Name        string
+	Description string
+	Cases       int
 }
 
 // SaveSuite creates or replaces a saved suite.
@@ -66,14 +109,33 @@ func (s *Store) SaveSuite(ctx context.Context, suite eval.Suite) error {
 	return err
 }
 
-// ListSuites returns the built-in suite and the saved ones.
-func (s *Store) ListSuites(ctx context.Context) ([]eval.Suite, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT name, description, cases FROM bakeoff_suites ORDER BY name`)
+// ListSuites summarizes the built-in suite and the saved ones.
+func (s *Store) ListSuites(ctx context.Context) ([]SuiteSummary, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT name, description, jsonb_array_length(cases) FROM bakeoff_suites ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	suites := []eval.Suite{eval.PlantedSuite()}
+	planted := eval.PlantedSuite()
+	suites := []SuiteSummary{{Name: planted.Name, Description: planted.Description, Cases: len(planted.Cases)}}
+	for rows.Next() {
+		var suite SuiteSummary
+		if err := rows.Scan(&suite.Name, &suite.Description, &suite.Cases); err != nil {
+			return nil, err
+		}
+		suites = append(suites, suite)
+	}
+	return suites, rows.Err()
+}
+
+// loadSuites returns the named suites with their cases, in the order named.
+func (s *Store) loadSuites(ctx context.Context, names []string) ([]eval.Suite, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT name, description, cases FROM bakeoff_suites WHERE name = ANY($1)`, names)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	saved := map[string]eval.Suite{}
 	for rows.Next() {
 		var suite eval.Suite
 		var cases []byte
@@ -81,11 +143,25 @@ func (s *Store) ListSuites(ctx context.Context) ([]eval.Suite, error) {
 			return nil, err
 		}
 		if err := json.Unmarshal(cases, &suite.Cases); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("suite %s: %w", suite.Name, err)
+		}
+		saved[suite.Name] = suite
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	suites := make([]eval.Suite, 0, len(names))
+	for _, name := range names {
+		suite, ok := saved[name]
+		if name == eval.BuiltinSuite {
+			suite, ok = eval.PlantedSuite(), true
+		}
+		if !ok {
+			return nil, fmt.Errorf("no suite named %s", name)
 		}
 		suites = append(suites, suite)
 	}
-	return suites, rows.Err()
+	return suites, nil
 }
 
 // DeleteSuite deletes a saved suite.
@@ -100,11 +176,23 @@ func (s *Store) DeleteSuite(ctx context.Context, name string) error {
 	return nil
 }
 
+// uniqueNames trims names and drops empty and repeated ones.
+func uniqueNames(names []string) []string {
+	var unique []string
+	for _, name := range names {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(unique, name) {
+			unique = append(unique, name)
+		}
+	}
+	return unique
+}
+
 // CreateBakeoff pins the named models (saved model connections, which the
 // model policy must allow) and suites and queues the bake-off.
 func (s *Store) CreateBakeoff(ctx context.Context, client *river.Client[pgx.Tx], models, suites []string, runs int) (int64, error) {
-	if len(models) == 0 || len(models) > 10 || len(suites) == 0 || runs < 1 || runs > MaxBakeoffRuns {
-		return 0, fmt.Errorf("choose 1 to 10 models, at least one suite and 1 to %d runs", MaxBakeoffRuns)
+	models, suites = uniqueNames(models), uniqueNames(suites)
+	if len(models) == 0 || len(models) > MaxBakeoffModels || len(suites) == 0 || runs < 1 || runs > MaxBakeoffRuns {
+		return 0, fmt.Errorf("choose 1 to %d models, at least one suite and 1 to %d runs", MaxBakeoffModels, MaxBakeoffRuns)
 	}
 	settings, err := s.ListReviewSettings(ctx)
 	if err != nil {
@@ -114,7 +202,7 @@ func (s *Store) CreateBakeoff(ctx context.Context, client *river.Client[pgx.Tx],
 	if err != nil {
 		return 0, err
 	}
-	var profiles []overload.ModelProfile
+	var pinnedModels []BakeoffModel
 	for _, name := range models {
 		index := slices.IndexFunc(settings, func(setting overload.ReviewSettings) bool { return setting.Name == name })
 		if index < 0 {
@@ -123,27 +211,24 @@ func (s *Store) CreateBakeoff(ctx context.Context, client *river.Client[pgx.Tx],
 		if err := policy.Check(settings[index].Catalog, settings[index].Model).Error(); err != nil {
 			return 0, fmt.Errorf("%w: %s: %v", ErrModelPolicy, name, err)
 		}
-		if !slices.ContainsFunc(profiles, func(profile overload.ModelProfile) bool { return profile.Name == name }) {
-			profiles = append(profiles, settings[index].Profile())
-		}
+		pinnedModels = append(pinnedModels, BakeoffModel{ModelProfile: settings[index].Profile(), PromptProfile: settings[index].PromptProfile})
 	}
-	available, err := s.ListSuites(ctx)
+	pinnedSuites, err := s.loadSuites(ctx, suites)
 	if err != nil {
 		return 0, err
 	}
-	var pinned []eval.Suite
-	for _, name := range suites {
-		index := slices.IndexFunc(available, func(suite eval.Suite) bool { return suite.Name == name })
-		if index < 0 {
-			return 0, fmt.Errorf("no suite named %s", name)
-		}
-		pinned = append(pinned, available[index])
+	cases := 0
+	for _, suite := range pinnedSuites {
+		cases += len(suite.Cases)
 	}
-	modelData, err := json.Marshal(profiles)
+	if reviews := len(pinnedModels) * cases * runs; reviews > MaxBakeoffReviews {
+		return 0, fmt.Errorf("that is %d reviews; choose fewer models, cases or runs (at most %d reviews)", reviews, MaxBakeoffReviews)
+	}
+	modelData, err := json.Marshal(pinnedModels)
 	if err != nil {
 		return 0, err
 	}
-	suiteData, err := json.Marshal(pinned)
+	suiteData, err := json.Marshal(pinnedSuites)
 	if err != nil {
 		return 0, err
 	}
@@ -156,37 +241,44 @@ func (s *Store) CreateBakeoff(ctx context.Context, client *river.Client[pgx.Tx],
 	if err := tx.QueryRow(ctx, `INSERT INTO bakeoffs (models, suites, runs) VALUES ($1, $2, $3) RETURNING id`, modelData, suiteData, runs).Scan(&id); err != nil {
 		return 0, err
 	}
-	if _, err := client.InsertTx(ctx, tx, BakeoffArgs{ID: id}, &river.InsertOpts{MaxAttempts: 1}); err != nil {
+	// Retrying is safe: only an attempt that finds the bake-off queued runs
+	// it, so the extra attempts cover a failure to start.
+	if _, err := client.InsertTx(ctx, tx, BakeoffArgs{ID: id}, &river.InsertOpts{Queue: BakeoffQueue, MaxAttempts: 3}); err != nil {
 		return 0, err
 	}
 	return id, tx.Commit(ctx)
 }
 
-// StartBakeoff marks a queued bake-off running and returns it; ok is false
-// when it is not queued (already run, or cancelled).
-func (s *Store) StartBakeoff(ctx context.Context, id int64) (Bakeoff, bool, error) {
-	var bakeoff Bakeoff
+// StartBakeoff marks a queued bake-off running and returns what it runs; ok
+// is false when it is not queued (already run, or running).
+func (s *Store) StartBakeoff(ctx context.Context, id int64) (BakeoffPlan, bool, error) {
+	plan := BakeoffPlan{ID: id}
 	var models, suites []byte
-	err := s.Pool.QueryRow(ctx, `UPDATE bakeoffs SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued' RETURNING id, models, suites, runs`, id).Scan(&bakeoff.ID, &models, &suites, &bakeoff.Runs)
+	err := s.Pool.QueryRow(ctx, `UPDATE bakeoffs SET status = 'running', started_at = now() WHERE id = $1 AND status = 'queued' RETURNING models, suites, runs`, id).Scan(&models, &suites, &plan.Runs)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return bakeoff, false, nil
+		return plan, false, nil
 	}
 	if err != nil {
-		return bakeoff, false, err
+		return plan, false, err
 	}
-	if err := json.Unmarshal(models, &bakeoff.Models); err != nil {
-		return bakeoff, false, err
+	decodeErr := json.Unmarshal(models, &plan.Models)
+	if decodeErr == nil {
+		decodeErr = json.Unmarshal(suites, &plan.Suites)
 	}
-	if err := json.Unmarshal(suites, &bakeoff.Suites); err != nil {
-		return bakeoff, false, err
+	if decodeErr != nil {
+		// A retry would find the bake-off running, so end it here.
+		if err := s.FinishBakeoff(ctx, id, "the pinned models or suites could not be read"); err != nil {
+			return plan, false, err
+		}
+		return plan, false, fmt.Errorf("read bake-off %d: %w", id, decodeErr)
 	}
-	return bakeoff, true, nil
+	return plan, true, nil
 }
 
 // AddBakeoffResult stores one result.
 func (s *Store) AddBakeoffResult(ctx context.Context, id int64, result BakeoffResult) error {
-	_, err := s.Pool.Exec(ctx, `INSERT INTO bakeoff_results (bakeoff_id, model, suite, case_name, run, expected, matched, misplaced, reported, input_tokens, output_tokens, duration_ms, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		ON CONFLICT (bakeoff_id, model, suite, case_name, run) DO NOTHING`, id, result.Model, result.Suite, result.Case, result.Run, result.Score.Expected, result.Score.Matched, result.Score.Misplaced, result.Score.Reported, result.InputTokens, result.OutputTokens, result.Duration.Milliseconds(), overload.TruncateUTF8(result.Error, 1000))
+	_, err := s.Pool.Exec(ctx, `INSERT INTO bakeoff_results (bakeoff_id, model, suite, case_name, run, expected, matched, misplaced, reported, unmatched, placement_checked, input_tokens, output_tokens, duration_ms, error) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		ON CONFLICT (bakeoff_id, model, suite, case_name, run) DO NOTHING`, id, result.Model, result.Suite, result.Case, result.Run, result.Score.Expected, result.Score.Matched, result.Score.Misplaced, result.Score.Reported, result.Score.Unmatched, result.Score.PlacementChecked, result.InputTokens, result.OutputTokens, result.Duration.Milliseconds(), overload.TruncateUTF8(result.Error, 1000))
 	return err
 }
 
@@ -201,15 +293,19 @@ func (s *Store) FinishBakeoff(ctx context.Context, id int64, failure string) err
 }
 
 // FailInterruptedBakeoffs ends bake-offs a restart interrupted; their job
-// does not run again.
+// does not run them again.
 func (s *Store) FailInterruptedBakeoffs(ctx context.Context) (int64, error) {
-	command, err := s.Pool.Exec(ctx, `UPDATE bakeoffs SET status = 'failed', error = 'interrupted by a restart; start it again', finished_at = now() WHERE status = 'running'`)
+	command, err := s.Pool.Exec(ctx, `UPDATE bakeoffs SET status = 'failed', error = $1, finished_at = now() WHERE status = 'running'`, BakeoffInterrupted)
 	return command.RowsAffected(), err
 }
 
+// bakeoffColumns selects a bake-off's suite names rather than its pinned
+// cases, which can be megabytes.
+const bakeoffColumns = `id, status, models, jsonb_path_query_array(suites, '$[*].name'), runs, error, created_at`
+
 // ListBakeoffs returns recent bake-offs, newest first, without results.
 func (s *Store) ListBakeoffs(ctx context.Context) ([]Bakeoff, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT id, status, models, suites, runs, error, created_at, finished_at FROM bakeoffs ORDER BY id DESC LIMIT 100`)
+	rows, err := s.Pool.Query(ctx, `SELECT `+bakeoffColumns+` FROM bakeoffs ORDER BY id DESC LIMIT 100`)
 	if err != nil {
 		return nil, err
 	}
@@ -227,14 +323,14 @@ func (s *Store) ListBakeoffs(ctx context.Context) ([]Bakeoff, error) {
 
 func scanBakeoff(row pgx.Row) (Bakeoff, error) {
 	var bakeoff Bakeoff
-	var models, suites []byte
-	if err := row.Scan(&bakeoff.ID, &bakeoff.Status, &models, &suites, &bakeoff.Runs, &bakeoff.Error, &bakeoff.CreatedAt, &bakeoff.FinishedAt); err != nil {
+	var models, suiteNames []byte
+	if err := row.Scan(&bakeoff.ID, &bakeoff.Status, &models, &suiteNames, &bakeoff.Runs, &bakeoff.Error, &bakeoff.CreatedAt); err != nil {
 		return bakeoff, err
 	}
 	if err := json.Unmarshal(models, &bakeoff.Models); err != nil {
 		return bakeoff, err
 	}
-	if err := json.Unmarshal(suites, &bakeoff.Suites); err != nil {
+	if err := json.Unmarshal(suiteNames, &bakeoff.SuiteNames); err != nil {
 		return bakeoff, err
 	}
 	return bakeoff, nil
@@ -242,11 +338,11 @@ func scanBakeoff(row pgx.Row) (Bakeoff, error) {
 
 // GetBakeoff returns a bake-off with its results.
 func (s *Store) GetBakeoff(ctx context.Context, id int64) (Bakeoff, error) {
-	bakeoff, err := scanBakeoff(s.Pool.QueryRow(ctx, `SELECT id, status, models, suites, runs, error, created_at, finished_at FROM bakeoffs WHERE id = $1`, id))
+	bakeoff, err := scanBakeoff(s.Pool.QueryRow(ctx, `SELECT `+bakeoffColumns+` FROM bakeoffs WHERE id = $1`, id))
 	if err != nil {
 		return bakeoff, err
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT model, suite, case_name, run, expected, matched, misplaced, reported, input_tokens, output_tokens, duration_ms, error FROM bakeoff_results WHERE bakeoff_id = $1 ORDER BY id`, id)
+	rows, err := s.Pool.Query(ctx, `SELECT model, suite, case_name, run, expected, matched, misplaced, reported, unmatched, placement_checked, input_tokens, output_tokens, duration_ms, error FROM bakeoff_results WHERE bakeoff_id = $1 ORDER BY id`, id)
 	if err != nil {
 		return bakeoff, err
 	}
@@ -254,11 +350,13 @@ func (s *Store) GetBakeoff(ctx context.Context, id int64) (Bakeoff, error) {
 	for rows.Next() {
 		var result BakeoffResult
 		var duration int64
-		if err := rows.Scan(&result.Model, &result.Suite, &result.Case, &result.Run, &result.Score.Expected, &result.Score.Matched, &result.Score.Misplaced, &result.Score.Reported, &result.InputTokens, &result.OutputTokens, &duration, &result.Error); err != nil {
+		if err := rows.Scan(&result.Model, &result.Suite, &result.Case, &result.Run, &result.Score.Expected, &result.Score.Matched, &result.Score.Misplaced, &result.Score.Reported, &result.Score.Unmatched, &result.Score.PlacementChecked, &result.InputTokens, &result.OutputTokens, &duration, &result.Error); err != nil {
 			return bakeoff, err
 		}
 		result.Duration = time.Duration(duration) * time.Millisecond
-		result.Score.Unmatched = result.Score.Reported - result.Score.Matched
+		if result.Score.Expected > 0 {
+			result.Score.Recall = float64(result.Score.Matched) / float64(result.Score.Expected)
+		}
 		bakeoff.Results = append(bakeoff.Results, result)
 	}
 	return bakeoff, rows.Err()

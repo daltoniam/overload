@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/daltoniam/overload"
-	"github.com/daltoniam/overload/eval"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
 	"github.com/jackc/pgx/v5"
@@ -18,7 +17,7 @@ import (
 // BakeoffStore runs and reports model bake-offs.
 type BakeoffStore interface {
 	ListReviewSettings(context.Context) ([]overload.ReviewSettings, error)
-	ListSuites(context.Context) ([]eval.Suite, error)
+	ListSuites(context.Context) ([]postgres.SuiteSummary, error)
 	ListBakeoffs(context.Context) ([]postgres.Bakeoff, error)
 	GetBakeoff(context.Context, int64) (postgres.Bakeoff, error)
 	QueueBakeoff(ctx context.Context, models, suites []string, runs int) (int64, error)

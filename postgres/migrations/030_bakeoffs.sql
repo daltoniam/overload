@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS bakeoff_results (
     matched integer NOT NULL DEFAULT 0,
     misplaced integer NOT NULL DEFAULT 0,
     reported integer NOT NULL DEFAULT 0,
+    -- Findings that matched no expected bug, not counting misplaced ones.
+    unmatched integer NOT NULL DEFAULT 0,
+    -- Expected bugs with words a misplaced finding could be recognised by
+    -- (none for cases built from commits).
+    placement_checked integer NOT NULL DEFAULT 0,
     input_tokens bigint NOT NULL DEFAULT 0,
     output_tokens bigint NOT NULL DEFAULT 0,
     duration_ms bigint NOT NULL DEFAULT 0,

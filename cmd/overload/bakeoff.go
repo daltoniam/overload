@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -16,6 +17,7 @@ import (
 	"github.com/daltoniam/overload/eval"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/daltoniam/overload/web/templates/pages"
+	"github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 )
@@ -70,7 +72,7 @@ func bakeoffCase(ctx context.Context, args []string, out io.Writer) error {
 // bakeoffStore is what the bake-off commands need from the store.
 type bakeoffStore interface {
 	SaveSuite(context.Context, eval.Suite) error
-	ListSuites(context.Context) ([]eval.Suite, error)
+	ListSuites(context.Context) ([]postgres.SuiteSummary, error)
 	DeleteSuite(context.Context, string) error
 	GetBakeoff(context.Context, int64) (postgres.Bakeoff, error)
 	queueBakeoff(ctx context.Context, models, suites []string, runs int) (int64, error)
@@ -126,7 +128,7 @@ func runBakeoffWith(ctx context.Context, store bakeoffStore, args []string, out 
 		writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "SUITE\tCASES\tDESCRIPTION")
 		for _, suite := range suites {
-			_, _ = fmt.Fprintf(writer, "%s\t%d\t%s\n", suite.Name, len(suite.Cases), suite.Description)
+			_, _ = fmt.Fprintf(writer, "%s\t%d\t%s\n", suite.Name, suite.Cases, suite.Description)
 		}
 		return writer.Flush()
 	case len(args) == 3 && args[0] == "suite" && args[1] == "delete":
@@ -142,7 +144,7 @@ func runBakeoffWith(ctx context.Context, store bakeoffStore, args []string, out 
 		if flags.NArg() != 0 || *models == "" {
 			return errors.New(bakeoffUsage)
 		}
-		id, err := store.queueBakeoff(ctx, strings.Split(*models, ","), strings.Split(*suites, ","), *runs)
+		id, err := store.queueBakeoff(ctx, splitNames(*models), splitNames(*suites), *runs)
 		if err != nil {
 			return err
 		}
@@ -154,6 +156,9 @@ func runBakeoffWith(ctx context.Context, store bakeoffStore, args []string, out 
 			return errors.New(bakeoffUsage)
 		}
 		bakeoff, err := store.GetBakeoff(ctx, id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("no bake-off %d", id)
+		}
 		if err != nil {
 			return err
 		}
@@ -161,10 +166,22 @@ func runBakeoffWith(ctx context.Context, store bakeoffStore, args []string, out 
 		writer := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		_, _ = fmt.Fprintln(writer, "MODEL\tFOUND\tMISPLACED\tOTHER\tTIME/REVIEW\tFAILED")
 		for _, summary := range pages.Summarize(bakeoff) {
-			_, _ = fmt.Fprintf(writer, "%s\t%s\t%d\t%d\t%s\t%d of %d\n", summary.Model, summary.Found(), summary.Misplaced, summary.Extra, summary.AverageTime(), summary.Failed, summary.Reviews)
+			_, _ = fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\t%d of %d\n", summary.Model, summary.Found(), summary.MisplacedCount(), summary.ExtraCount(), summary.AverageTime(), summary.Failed, summary.Reviews)
 		}
 		return writer.Flush()
 	default:
 		return errors.New(bakeoffUsage)
 	}
+}
+
+// splitNames splits a comma-separated list, trimming spaces and dropping
+// empty and repeated names.
+func splitNames(list string) []string {
+	var names []string
+	for _, name := range strings.Split(list, ",") {
+		if name = strings.TrimSpace(name); name != "" && !slices.Contains(names, name) {
+			names = append(names, name)
+		}
+	}
+	return names
 }
