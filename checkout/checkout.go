@@ -155,8 +155,13 @@ func openRepository(ctx context.Context, dir string) (repository, error) {
 	if err != nil {
 		return repository{}, err
 	}
-	// Only git's line ending is removed: the path itself may end in spaces.
-	return repository{dir: strings.TrimSuffix(strings.TrimSuffix(top, "\n"), "\r")}, nil
+	return repository{dir: trimLine(top)}, nil
+}
+
+// trimLine removes the line ending git prints after a path, and nothing
+// else: the path itself may end in spaces.
+func trimLine(output string) string {
+	return strings.TrimSuffix(strings.TrimSuffix(output, "\n"), "\r")
 }
 
 // diffOptions keep the diff in the form the reviewer parses whatever the

@@ -105,7 +105,7 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 		return FixResult{}, err
 	}
 	stamp := options.now().UTC().Format("20060102-150405") + "-" + hex.EncodeToString(suffix)
-	result = FixResult{Branch: "overload/fix-" + stamp, Worktree: filepath.Join(strings.TrimSpace(common), "overload-fix", stamp)}
+	result = FixResult{Branch: "overload/fix-" + stamp, Worktree: filepath.Join(trimLine(common), "overload-fix", stamp)}
 	// Cleanup after a failed add removes only what this run created, so
 	// the branch and folder must be new.
 	if _, err := original.git(ctx, "rev-parse", "--verify", "--quiet", "refs/heads/"+result.Branch); err == nil {
@@ -137,7 +137,7 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 	if err != nil {
 		return result, err
 	}
-	worktree := repository{dir: result.Worktree, global: []string{"--git-dir=" + strings.TrimSpace(gitDir), "--work-tree=" + result.Worktree, "--literal-pathspecs"}}
+	worktree := repository{dir: result.Worktree, global: []string{"--git-dir=" + trimLine(gitDir), "--work-tree=" + result.Worktree, "--literal-pathspecs"}}
 	gitFile, err := snapshotGitFile(result.Worktree)
 	if err != nil {
 		return result, err
