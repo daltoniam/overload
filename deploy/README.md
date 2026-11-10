@@ -550,9 +550,13 @@ decision of request changes or approve it posts `REQUEST_CHANGES` or
   it. A failing verdict is sticky: a re-review of the same commit that was
   requested through the review API (an API key or a workload token) can
   add to it but cannot clear it, approve, or withdraw overload's request
-  for changes; the review says why. Only a re-review a person starts from
-  the Review button or `overload review --queue --again` can clear it. A
-  re-review waits until the earlier review of the commit has been posted.
+  for changes; the first such review says why. Only a re-review a person
+  starts from the Review button or `overload review --queue --again` can
+  clear it. An automated re-review waits until the earlier review of the
+  commit has been posted; a person's does not, and the older post is then
+  skipped. A post that still fails after its last retry (about an hour and
+  a half) is marked `post_failed`, records a failing verdict and fails the
+  check, so it never keeps re-reviews waiting.
 - When the changed files of a review are unknown, the check fails and the
   review says so, even with no findings. Reviews finished before this
   version did not record their changed files, so any still waiting to be
@@ -743,17 +747,31 @@ rule must match `repository` or `repository_owner`; add `ref`,
 `environment` or `job_workflow_ref` to narrow it further.
 
 ```yaml
-on: pull_request_target
-permissions:
-  id-token: write
-steps:
-  - run: |
-      token=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://overload.example.com" | jq -r .value)
-      curl -sf -X POST https://overload.example.com/api/reviews \
-        -H "Authorization: Bearer $token" \
-        -d '{"repository":"${{ github.repository }}","pull_request":${{ github.event.number }}}'
+name: overload review
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - env:
+          REPOSITORY: ${{ github.repository }}
+          PULL_REQUEST: ${{ github.event.pull_request.number }}
+        run: |
+          token=$(curl -sfH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=https://overload.example.com" | jq -r .value)
+          curl -sf -X POST https://overload.example.com/api/reviews \
+            -H "Authorization: Bearer $token" \
+            -d "{\"repository\":\"$REPOSITORY\",\"pull_request\":$PULL_REQUEST}"
 ```
+
+A `pull_request_target` job runs with the base repository's permissions
+and secrets, so it must never check out or run the pull request's code:
+no `actions/checkout` of the head, no build or test steps. It only asks
+overload for a review, and overload reads the pull request itself.
 
 `POST /api/reviews` with `{"repository": "owner/name", "pull_request": N}`
 queues a review of the pull request's current head, as the Review button

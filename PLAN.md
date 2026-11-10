@@ -1482,7 +1482,11 @@ plan and deploy/README.md.
    when a later review does not approve; a failing verdict that a re-review
    of the same commit requested through the API cannot clear (only a
    person's re-review can); a documented branch-protection recipe that
-   pins the status to the overload GitHub App.
+   pins the status to the overload GitHub App. Follow-up: blocking
+   findings still count on later commits only when a review finds them
+   again, so a no-op commit can re-roll the model; keeping them until the
+   lines they point to change or a person dismisses them needs per-finding
+   resolution state, line tracking across commits and a dismiss action.
 8. **Model bake-offs** (16.4 item 3): eval suites built from the planted-bug
    fixtures and from commits that fixed real bugs in the team's repositories,
    run against chosen models, with detection, placement and time per model.

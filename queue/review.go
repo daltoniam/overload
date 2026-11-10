@@ -214,24 +214,26 @@ func (w *ReviewWorker) finishReview(ctx context.Context, run overload.Run, repoN
 	if _, err := finalTx.Exec(ctx, `INSERT INTO run_events (run_id, level, step, message) VALUES ($1, 'info', 'completed', $2)`, runID, message); err != nil {
 		return err
 	}
+	// A review that is not posted gets its verdict in the transaction that
+	// completes it, so a completed run always has one for later reviews of
+	// the commit to be held by; a run that is posted records it then.
+	var gate overload.Gate
+	if !plan.enqueue {
+		history, err := postgres.LoadGateHistory(ctx, finalTx, runID)
+		if err != nil {
+			return err
+		}
+		input := gateInput(spec.Workflow, result, files)
+		input.NotPosted, input.HeldFailure = true, history.HeldFailure
+		gate = overload.GateOutcome(input)
+		if err := postgres.RecordGate(ctx, finalTx, runID, gate); err != nil {
+			return err
+		}
+	}
 	if err := finalTx.Commit(ctx); err != nil {
 		return err
 	}
 	if !plan.enqueue {
-		history, err := w.Store.LoadGateHistory(ctx, runID)
-		if err != nil {
-			// A verdict set without its history, or not recorded, could
-			// clear an earlier failure, so the status is left pending.
-			slog.Error("merge gate history unavailable", "run_id", runID, "error", err)
-			return nil
-		}
-		input := gateInput(spec.Workflow, result, files)
-		input.NotPosted, input.HeldFailure = true, history.HeldFailure
-		gate := overload.GateOutcome(input)
-		if err := w.Store.RecordGate(ctx, runID, gate); err != nil {
-			slog.Error("merge gate verdict not recorded", "run_id", runID, "error", err)
-			return nil
-		}
 		reportStatus(ctx, w.Store, w.Status, runID, gate.State, gate.Description)
 	}
 	return nil

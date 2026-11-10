@@ -132,6 +132,40 @@ func TestQueueManualReview(t *testing.T) {
 	if err := store.Pool.QueryRow(ctx, `SELECT trigger FROM runs WHERE id=$1`, automated).Scan(&trigger); err != nil || trigger != postgres.TriggerAPI {
 		t.Fatalf("a review requested through the API is recorded as %q (%v), so it could clear a failing verdict", trigger, err)
 	}
+	// A post that keeps failing holds back automation, never a person.
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed', post_status='queued' WHERE id=$1`, automated); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, true); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "being posted") {
+		t.Fatalf("automation did not wait for a post in progress: %v", err)
+	}
+	person, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, false)
+	if err != nil || person == automated {
+		t.Fatalf("a stuck post blocked a person's review: %d %v", person, err)
+	}
+	// Requests to review the same commit again at the same moment queue it
+	// once: ingest takes a per pull request lock before its checks.
+	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET status='completed', post_status='posted' WHERE id=$1`, person); err != nil {
+		t.Fatal(err)
+	}
+	results := make(chan error, 6)
+	for index := range 6 {
+		go func() {
+			_, err := QueueManualReview(ctx, store, client, reader, repo, 296, true, index%2 == 0)
+			results <- err
+		}()
+	}
+	queued := 0
+	for range 6 {
+		if err := <-results; err == nil {
+			queued++
+		} else if !errors.Is(err, ErrReviewNotQueued) {
+			t.Fatal(err)
+		}
+	}
+	if queued != 1 {
+		t.Fatalf("%d concurrent requests to review the same commit again were queued, want 1", queued)
+	}
 	reader.pr.Draft = gh.Ptr(true)
 	if _, err := queue(); !errors.Is(err, ErrReviewNotQueued) || !strings.Contains(err.Error(), "draft") {
 		t.Fatalf("draft: %v", err)

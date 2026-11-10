@@ -8,6 +8,7 @@ import (
 
 	"github.com/daltoniam/overload"
 	"github.com/jackc/pgx/v5"
+	"github.com/riverqueue/river"
 )
 
 type PostReviewArgs struct {
@@ -15,6 +16,15 @@ type PostReviewArgs struct {
 }
 
 func (PostReviewArgs) Kind() string { return "post_review" }
+
+// PostMaxAttempts bounds a post job's retries (about an hour and a half
+// with River's backoff); the last attempt gives up with FailPost, so a run
+// never waits to be posted forever.
+const PostMaxAttempts = 8
+
+func (PostReviewArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{MaxAttempts: PostMaxAttempts}
+}
 
 // PostTarget is everything needed to post one run's findings.
 type PostTarget struct {
@@ -74,12 +84,14 @@ var ErrNothingToPost = errors.New("run is not awaiting posting")
 func (s *Store) LoadPostTarget(ctx context.Context, runID int64) (PostTarget, error) {
 	target := PostTarget{RunID: runID}
 	var installation *int64
-	var routing, files, human, approve, skip, postedHuman []byte
+	var routing, files, human, approve, skip []byte
+	var history gateHistoryRow
+	columns := append([]any{&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.RerunOfHead, &target.ReviewDecision, &target.BlockSeverity, &routing, &files, &human, &approve, &skip}, history.targets()...)
 	err := s.Pool.QueryRow(ctx, `SELECT repo.full_name, r.pr_number, r.head_sha, r.installation_id, COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(r.metrics->'routing'->'degraded') = 'array' THEN r.metrics->'routing'->'degraded' END), 0) > 0, NOT repo.enabled OR repo.dry_run,
 EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha <> r.head_sha AND n.status IN ('queued', 'running', 'completed')),
 EXISTS (SELECT 1 FROM runs n WHERE n.repository_id = r.repository_id AND n.pr_number = r.pr_number AND n.id > r.id AND n.head_sha = r.head_sha AND n.kind = 'pr_review' AND NOT n.dry_run AND n.status IN ('queued', 'running', 'completed')),
 COALESCE(r.config_snapshot->>'review_decision', ''), COALESCE(r.config_snapshot->>'block_severity', ''), COALESCE(r.metrics->'routing', 'null'), COALESCE(r.metrics->'gate_files', 'null'), COALESCE(r.config_snapshot->'human_review_paths', 'null'), COALESCE(r.config_snapshot->'approve_paths', 'null'), COALESCE(r.config_snapshot->'skip_paths', 'null'), `+gateHistoryColumns+`
-FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(&target.Repository, &target.PRNumber, &target.HeadSHA, &installation, &target.Partial, &target.RepositoryPaused, &target.Superseded, &target.RerunOfHead, &target.ReviewDecision, &target.BlockSeverity, &routing, &files, &human, &approve, &skip, &target.History.HeldFailure, &postedHuman)
+FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 AND r.status = 'completed' AND NOT r.dry_run AND r.posted_at IS NULL AND r.post_status = 'queued'`, runID).Scan(columns...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return target, ErrNothingToPost
 	}
@@ -97,7 +109,7 @@ FROM runs r JOIN repositories repo ON repo.id = r.repository_id WHERE r.id = $1 
 			return target, fmt.Errorf("read run %d: %w", runID, err)
 		}
 	}
-	if err := target.History.readHumanFiles(postedHuman); err != nil {
+	if target.History, err = history.history(); err != nil {
 		return target, err
 	}
 	// The sandbox writes the routing; one that does not parse covers no

@@ -13,6 +13,7 @@ import (
 	"github.com/daltoniam/overload/github"
 	"github.com/daltoniam/overload/postgres"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 )
 
 type fakePoster struct {
@@ -24,6 +25,7 @@ type fakePoster struct {
 	standing   []github.StandingReview
 	dismissed  []int64
 	dismissErr error
+	findErr    error
 }
 
 type fakeStatus struct {
@@ -60,6 +62,9 @@ func (poster *fakePoster) DismissReview(_ context.Context, _ int64, _ string, _ 
 func (poster *fakePoster) FindReview(_ context.Context, installationID int64, _ string, _ int, marker string) (int64, error) {
 	if installationID < 1 || !strings.HasPrefix(marker, "<!-- overload-run:") {
 		return 0, fmt.Errorf("bad lookup")
+	}
+	if poster.findErr != nil {
+		return 0, poster.findErr
 	}
 	return poster.existing, nil
 }
@@ -128,7 +133,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 
 	poster := &fakePoster{}
 	worker := &PostWorker{Store: store, Poster: poster}
-	job := &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: runID}}
+	job := &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: runID}}
 	if err := worker.Work(ctx, job); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +156,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 
 	crashed := newRun("completed", "queued", []overload.Finding{{Path: "c.go", Line: 1, Side: "RIGHT", Severity: "low", Category: "bug", Title: "Third", Body: "b", Confidence: 0.7, Evidence: "z()"}}, "pending")
 	poster.existing = 555
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: crashed}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: crashed}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(poster.posts) != 1 {
@@ -178,7 +183,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET metrics='{"routing":{"agents":[],"degraded":["sub-agent sql failed"]}}' WHERE id=$1`, partial); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: partial}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: partial}}); err != nil {
 		t.Fatal(err)
 	}
 	if len(poster.posts) != 2 || len(poster.posts[1]) != 1 || poster.posts[1][0].Title != "Kept" || !strings.Contains(poster.summary, "This review is partial") || strings.Contains(poster.summary, "sql") {
@@ -194,7 +199,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `UPDATE runs SET head_sha=$2 WHERE id=$1`, newer, strings.Repeat("c", 40)); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: stale}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: stale}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, stale).Scan(&postStatus); err != nil || postStatus != "superseded_by_newer_commit" || len(poster.posts) != 2 {
@@ -206,7 +211,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 
 	poster.reject, poster.existing = true, 0
 	rejected := newRun("completed", "queued", []overload.Finding{{Path: "f.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Stale", Body: "b", Confidence: 0.9, Evidence: "s()"}}, "pending")
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: rejected}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: rejected}}); err != nil {
 		t.Fatalf("a rejected review must not be retried: %v", err)
 	}
 	var event string
@@ -219,7 +224,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 	if _, err := store.Pool.Exec(ctx, `UPDATE repositories SET dry_run=true WHERE id=$1`, repoID); err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: paused}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: paused}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, paused).Scan(&postStatus); err != nil || postStatus != "repository_paused" || len(poster.posts) != 2 {
@@ -231,7 +236,7 @@ func TestPostWorkerIsIdempotent(t *testing.T) {
 
 	t.Setenv("OVERLOAD_ENABLE_POSTING", "")
 	disabled := newRun("completed", "queued", []overload.Finding{fresh}, "pending")
-	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: disabled}}); err != nil {
+	if err := worker.Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: disabled}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Pool.QueryRow(ctx, `SELECT post_status FROM runs WHERE id=$1`, disabled).Scan(&postStatus); err != nil || postStatus != "posting_disabled" || len(poster.posts) != 2 {
@@ -312,7 +317,7 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 	statuses := &fakeStatus{}
 	work := func(poster *fakePoster, runID int64) string {
 		t.Helper()
-		if err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: runID}}); err != nil {
+		if err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: runID}}); err != nil {
 			t.Fatal(err)
 		}
 		var status string
@@ -414,7 +419,7 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 	t.Run("a failed withdrawal of an approval fails the check", func(t *testing.T) {
 		poster := &fakePoster{standing: []github.StandingReview{approved(5)}, dismissErr: fmt.Errorf("403 dismissal restricted")}
 		before := len(statuses.states)
-		err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{Args: postgres.PostReviewArgs{RunID: newRun(overload.ReviewDecisionApprove, finding("critical"))}})
+		err := (&PostWorker{Store: store, Poster: poster, Status: statuses}).Work(ctx, &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: newRun(overload.ReviewDecisionApprove, finding("critical"))}})
 		if err == nil || !strings.Contains(err.Error(), "dismiss earlier review") {
 			t.Fatalf("withdrawal failure not reported for a retry: %v", err)
 		}
@@ -443,8 +448,8 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 			t.Fatalf("automated re-review cleared the status: %v %v", statuses.states[before:], statuses.descriptions[before:])
 		}
 		poster = &fakePoster{standing: []github.StandingReview{requested(77)}}
-		if status := work(poster, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "posted" || statuses.states[len(statuses.states)-1] != "failure" {
-			t.Fatalf("a held verdict must stay held for the next automated review: %q %v", status, statuses.states[before:])
+		if status := work(poster, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "nothing_new" || len(poster.events) != 0 || len(poster.dismissed) != 0 || statuses.states[len(statuses.states)-1] != "failure" {
+			t.Fatalf("a held verdict must stay held for the next automated review, without explaining it again: %q events %v dismissed %v statuses %v", status, poster.events, poster.dismissed, statuses.states[before:])
 		}
 		poster = &fakePoster{standing: []github.StandingReview{requested(77)}}
 		if status := work(poster, insertRun(number, postgres.TriggerManual, snapshot, reviewedA)); status != "posted" || len(poster.events) != 1 || poster.events[0] != overload.ReviewApprove || fmt.Sprint(poster.dismissed) != "[77]" || statuses.states[len(statuses.states)-1] != "success" {
@@ -452,6 +457,32 @@ func TestPostWorkerReviewDecisions(t *testing.T) {
 		}
 		if status := work(&fakePoster{}, insertRun(number, postgres.TriggerAPI, snapshot, reviewedA)); status != "posted" || statuses.states[len(statuses.states)-1] != "success" {
 			t.Fatalf("after a person cleared it, automation may pass again: %q %v", status, statuses.states[before:])
+		}
+	})
+
+	t.Run("a post that keeps failing gives up on its last attempt", func(t *testing.T) {
+		pr++
+		runID := insertRun(pr, postgres.TriggerWebhook, `{"review_decision":"approve"}`, reviewedA)
+		poster := &fakePoster{findErr: fmt.Errorf("GitHub is down")}
+		worker := &PostWorker{Store: store, Poster: poster, Status: statuses}
+		before := len(statuses.states)
+		job := &river.Job[postgres.PostReviewArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: postgres.PostMaxAttempts}, Args: postgres.PostReviewArgs{RunID: runID}}
+		var postStatus, verdict string
+		if err := worker.Work(ctx, job); err == nil {
+			t.Fatal("a failed post was not retried")
+		}
+		if err := store.Pool.QueryRow(ctx, `SELECT post_status, COALESCE(gate->>'state', '') FROM runs WHERE id=$1`, runID).Scan(&postStatus, &verdict); err != nil || postStatus != "queued" || verdict != "" || len(statuses.states) != before {
+			t.Fatalf("an early attempt gave up: %q %q %v %v", postStatus, verdict, statuses.states[before:], err)
+		}
+		job.Attempt = postgres.PostMaxAttempts
+		if err := worker.Work(ctx, job); err == nil {
+			t.Fatal("the last failure was hidden")
+		}
+		if err := store.Pool.QueryRow(ctx, `SELECT post_status, gate->>'state' FROM runs WHERE id=$1`, runID).Scan(&postStatus, &verdict); err != nil || postStatus != "post_failed" || verdict != "failure" {
+			t.Fatalf("the last attempt left %q %q %v", postStatus, verdict, err)
+		}
+		if fmt.Sprint(statuses.states[before:]) != "[failure]" || !strings.Contains(statuses.descriptions[before], "could not finish posting") {
+			t.Fatalf("commit statuses %v %v", statuses.states[before:], statuses.descriptions[before:])
 		}
 	})
 

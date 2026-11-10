@@ -177,9 +177,13 @@ func (s *Store) IngestPR(ctx context.Context, client *river.Client[pgx.Tx], deli
 	if delivery.Manual && delivery.Again {
 		statuses = []string{"queued", "running"}
 	}
-	// A review still being posted has not recorded its verdict yet, so a
-	// new review of the head waits for it.
-	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND (status = ANY($4) OR (status = 'completed' AND post_status = 'queued')) ORDER BY id DESC LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA, statuses).Scan(&existing)
+	// A review still being posted has not recorded its verdict yet, so an
+	// automated review of the head waits for it, or it could miss a
+	// failure it must not clear. A person's review is never held by an
+	// earlier verdict, so it does not wait; the older post is then skipped
+	// as an earlier review of the same commit.
+	waitForPost := trigger != TriggerManual
+	err = tx.QueryRow(ctx, `SELECT id FROM runs WHERE repository_id = $1 AND pr_number = $2 AND head_sha = $3 AND (status = ANY($4) OR ($5 AND status = 'completed' AND post_status = 'queued')) ORDER BY id DESC LIMIT 1`, repo.id, delivery.PR, delivery.HeadSHA, statuses, waitForPost).Scan(&existing)
 	if err == nil {
 		return skip(skipAlreadyReviewed, &existing)
 	}

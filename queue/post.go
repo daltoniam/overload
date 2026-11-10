@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -42,8 +43,26 @@ type PostWorker struct {
 	Status StatusSetter
 }
 
+// Work posts a run's review. When the job's last attempt fails too, the
+// post is given up with a failing verdict and status, so the run does not
+// stay waiting to be posted and holding back automated re-reviews.
 func (w *PostWorker) Work(ctx context.Context, job *river.Job[postgres.PostReviewArgs]) error {
-	runID := job.Args.RunID
+	err := w.post(ctx, job.Args.RunID)
+	if err != nil && job.Attempt >= job.MaxAttempts {
+		w.giveUp(context.WithoutCancel(ctx), job.Args.RunID, err)
+	}
+	return err
+}
+
+func (w *PostWorker) giveUp(ctx context.Context, runID int64, cause error) {
+	if err := w.Store.FailPost(ctx, runID, cause.Error()); err != nil {
+		slog.Error("failed post not recorded", "run_id", runID, "error", err)
+		return
+	}
+	reportStatus(ctx, w.Store, w.Status, runID, overload.GateFailure, "Overload could not finish posting its review; review the pull request again")
+}
+
+func (w *PostWorker) post(ctx context.Context, runID int64) error {
 	target, err := w.Store.LoadPostTarget(ctx, runID)
 	if errors.Is(err, postgres.ErrNothingToPost) {
 		return nil
@@ -148,8 +167,9 @@ func requestsChanges(standing []github.StandingReview) bool {
 // gateNotes explains a failing or held gate on the pull request: changed
 // files that could not be read or were not reviewed, an earlier failing
 // verdict this review cannot clear, and sensitive files that still need a
-// person. The sensitive files are listed only when they differ from those
-// of overload's last posted review, so each push does not repeat them.
+// person. The earlier verdict is explained only once, not on every held
+// re-review, and the sensitive files only when they differ from those of
+// overload's last posted review, so repeated reviews do not repeat them.
 func gateNotes(gate overload.Gate, history postgres.GateHistory) string {
 	var notes strings.Builder
 	if gate.FilesUnknown {
@@ -158,7 +178,7 @@ func gateNotes(gate overload.Gate, history postgres.GateHistory) string {
 	if len(gate.Unreviewed) > 0 {
 		fmt.Fprintf(&notes, "\n\nNot reviewed, so the overload check fails for this commit: %s.", codeList(gate.Unreviewed))
 	}
-	if gate.HeldBack {
+	if gate.HeldBack && !history.PreviousHeld {
 		notes.WriteString("\n\nAn earlier overload review of this commit failed the check. A review requested through the API or by automation cannot clear that; a person can review the commit again from overload's UI or CLI.")
 	}
 	if len(gate.HumanFiles) > 0 && (!history.HumanFilesKnown || !sameFiles(history.PostedHumanFiles, gate.HumanFiles)) {
