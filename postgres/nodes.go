@@ -28,7 +28,9 @@ const validKey = `(k.id IS NOT NULL AND k.revoked_at IS NULL AND k.expires_at > 
 // ReportNode stores a node's latest report from the API key keyID. The
 // first key to report a name claims it; reports for that name from any
 // other key are refused while the owning key is valid. A revoked or
-// expired key's names, and released names, go to the next key to report.
+// expired key's names, and released names, go to the next key to report,
+// except that a released name is never returned to the key it was
+// released from.
 func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.NodeReport) error {
 	if err := report.Validate(); err != nil {
 		return err
@@ -54,20 +56,20 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, nodeLock); err != nil {
 		return err
 	}
-	var owner *int64
+	var owner, releasedFrom *int64
 	var ownerValid bool
-	err = tx.QueryRow(ctx, `SELECT n.api_key_id, `+validKey+` FROM nodes n LEFT JOIN api_keys k ON k.id = n.api_key_id WHERE n.name = $1 FOR UPDATE OF n`, report.Name).Scan(&owner, &ownerValid)
+	err = tx.QueryRow(ctx, `SELECT n.api_key_id, n.released_from, `+validKey+` FROM nodes n LEFT JOIN api_keys k ON k.id = n.api_key_id WHERE n.name = $1 FOR UPDATE OF n`, report.Name).Scan(&owner, &releasedFrom, &ownerValid)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		var total, owned int
-		if err := tx.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE api_key_id = $1) FROM nodes`, keyID).Scan(&total, &owned); err != nil {
+		var total int
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM nodes`).Scan(&total); err != nil {
 			return err
 		}
 		if total >= MaxNodes {
 			return fmt.Errorf("%w: the inventory already holds %d nodes; forget nodes that are gone", overload.ErrTooManyNodes, MaxNodes)
 		}
-		if owned >= MaxNodesPerKey {
-			return fmt.Errorf("%w: this API key already reports %d nodes; use another key", overload.ErrTooManyNodes, MaxNodesPerKey)
+		if err := checkKeyShare(ctx, tx, keyID); err != nil {
+			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO nodes (name, report, api_key_id) VALUES ($1, $2, $3)`, report.Name, data, keyID); err != nil {
 			return err
@@ -76,12 +78,32 @@ func (s *Store) ReportNode(ctx context.Context, keyID int64, report overload.Nod
 		return err
 	case owner != nil && *owner != keyID && ownerValid:
 		return overload.ErrNodeClaimed
+	case releasedFrom != nil && *releasedFrom == keyID:
+		return overload.ErrNodeReleased
 	default:
-		if _, err := tx.Exec(ctx, `UPDATE nodes SET report = $2, api_key_id = $3, last_seen = now() WHERE name = $1`, report.Name, data, keyID); err != nil {
+		if owner == nil || *owner != keyID {
+			if err := checkKeyShare(ctx, tx, keyID); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(ctx, `UPDATE nodes SET report = $2, api_key_id = $3, released_from = NULL, last_seen = now() WHERE name = $1`, report.Name, data, keyID); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+// checkKeyShare refuses a claim that would give keyID more than
+// MaxNodesPerKey names.
+func checkKeyShare(ctx context.Context, tx pgx.Tx, keyID int64) error {
+	var owned int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE api_key_id = $1`, keyID).Scan(&owned); err != nil {
+		return err
+	}
+	if owned >= MaxNodesPerKey {
+		return fmt.Errorf("%w: this API key already reports %d nodes; use another key", overload.ErrTooManyNodes, MaxNodesPerKey)
+	}
+	return nil
 }
 
 // ListNodes returns the inventory by name, with the prefix of the key that
@@ -107,11 +129,12 @@ func (s *Store) ListNodes(ctx context.Context) ([]overload.Node, error) {
 	return nodes, rows.Err()
 }
 
-// ReleaseNode frees a node's name for the next key that reports it,
+// ReleaseNode frees a node's name for the next other key that reports it,
 // keeping the node and any placement that uses it, so a node can move to a
-// new key without being forgotten.
+// new key without being forgotten. The key it held is refused until
+// another key has claimed the name, or it would take it straight back.
 func (s *Store) ReleaseNode(ctx context.Context, name string) error {
-	command, err := s.Pool.Exec(ctx, `UPDATE nodes SET api_key_id = NULL WHERE name = $1`, name)
+	command, err := s.Pool.Exec(ctx, `UPDATE nodes SET released_from = COALESCE(api_key_id, released_from), api_key_id = NULL WHERE name = $1`, name)
 	if err != nil {
 		return err
 	}

@@ -63,7 +63,7 @@ func nodesAPI(store NodeStore, keys apiKeyAuthenticator) http.Handler {
 		switch {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
-		case errors.Is(err, overload.ErrNodeClaimed):
+		case errors.Is(err, overload.ErrNodeClaimed), errors.Is(err, overload.ErrNodeReleased):
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
 		case errors.Is(err, overload.ErrInvalidNodeReport), errors.Is(err, overload.ErrTooManyNodes):
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})

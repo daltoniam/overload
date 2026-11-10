@@ -564,8 +564,10 @@ overload node install --server https://overload.example.com   # reports every mi
   file and restart the reporter (`overload node install` again), then
   revoke the old key: names held by a revoked or expired key go to the next
   key that reports them. To move a node before the old key is revoked, an
-  administrator uses Release on the Nodes page, which frees the name but
-  keeps the node and its placements.
+  administrator uses Release on the Nodes page: the node and its
+  placements stay, the old key is refused for that name from then on, and
+  the next other key to report takes it over. Taking over a name counts
+  toward the new key's limit of 100.
 - `--server` must use https unless overload runs on the same machine, since
   every report carries the key.
 - `overload node report --server URL` reports once; add `--every 1m` (at

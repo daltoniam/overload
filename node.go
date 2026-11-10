@@ -63,6 +63,9 @@ var (
 	ErrInvalidNodeReport = errors.New("invalid node report")
 	// ErrNodeClaimed means another API key already reports under the name.
 	ErrNodeClaimed = errors.New("another API key reports this node; forget the node in overload to move it to a new key")
+	// ErrNodeReleased means an administrator released the node from the
+	// reporting key, which must not take it back.
+	ErrNodeReleased = errors.New("an administrator released this node from this API key; report it with a new key")
 	// ErrTooManyNodes means the inventory, or the key's share of it, is full.
 	ErrTooManyNodes = errors.New("too many nodes")
 	// ErrNodeInPlacement means a placement still names the node.

@@ -86,7 +86,7 @@ templ Nodes(nodes []overload.Node, drift []overload.VersionDrift, placements []o
 const ForgetNodeImpact = "It leaves the inventory and its name is released, so any key with the nodes scope can report under it. It reappears if it reports again; run overload node uninstall on it to stop that."
 
 // ReleaseNodeImpact is what releasing a node does.
-const ReleaseNodeImpact = "Its current key can no longer keep the name: the next key with the nodes scope to report under it takes it over. The node and its placements stay. Use this when moving a node to a new key."
+const ReleaseNodeImpact = "Its current key loses the name and cannot take it back: the next other key with the nodes scope to report under it takes it over. The node and its placements stay. Use this when moving a node to a new key."
 
 // ReleaseNodePrompt confirms releasing node name.
 func ReleaseNodePrompt(name string) ConfirmPrompt {

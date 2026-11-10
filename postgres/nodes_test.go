@@ -117,8 +117,20 @@ func TestNodeKeyRotation(t *testing.T) {
 	if nodes, err := store.ListNodes(ctx); err != nil || nodes[0].KeyPrefix != "" {
 		t.Fatalf("released node still held: %+v, %v", nodes, err)
 	}
+	if err := store.ReportNode(ctx, third.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); !errors.Is(err, overload.ErrNodeReleased) {
+		t.Fatalf("the released key took its node back: %v", err)
+	}
 	if err := store.ReportNode(ctx, fourth.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); err != nil {
 		t.Fatalf("a released node was not taken over: %v", err)
+	}
+	if nodes, err := store.ListNodes(ctx); err != nil || nodes[0].KeyPrefix != fourth.Prefix {
+		t.Fatalf("nodes = %+v, %v", nodes, err)
+	}
+	if err := store.ReleaseNode(ctx, "studio-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, third.ID, overload.NodeReport{Name: "studio-1", OS: "darwin"}); err != nil {
+		t.Fatalf("a key released earlier could not claim a name released from another key: %v", err)
 	}
 	if placements, err := store.ListPlacements(ctx); err != nil || len(placements) != 1 {
 		t.Fatalf("rotation lost the placement: %+v, %v", placements, err)
@@ -156,5 +168,14 @@ func TestNodeLimits(t *testing.T) {
 	}
 	if err := store.ReportNode(ctx, other.ID, overload.NodeReport{Name: "unclaimed-1"}); err != nil {
 		t.Fatalf("a full inventory refused a known node: %v", err)
+	}
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "unclaimed-2"}); !errors.Is(err, overload.ErrTooManyNodes) {
+		t.Fatalf("a full key took over an unclaimed node: %v", err)
+	}
+	if err := store.ReleaseNode(ctx, "unclaimed-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReportNode(ctx, key.ID, overload.NodeReport{Name: "unclaimed-1"}); !errors.Is(err, overload.ErrTooManyNodes) {
+		t.Fatalf("a full key took over a released node: %v", err)
 	}
 }

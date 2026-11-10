@@ -129,6 +129,7 @@ func TestNodesAPI(t *testing.T) {
 		message string
 	}{
 		{fmt.Errorf("%w: the inventory already holds 500 nodes", overload.ErrTooManyNodes), http.StatusUnprocessableEntity, "500 nodes"},
+		{overload.ErrNodeReleased, http.StatusForbidden, "released this node"},
 		{errors.New("dial tcp 10.0.0.9:5432: connection refused"), http.StatusInternalServerError, "report not stored"},
 	} {
 		store.reportErr = test.err
