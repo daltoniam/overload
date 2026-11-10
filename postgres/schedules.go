@@ -255,25 +255,28 @@ func (s *Store) RunScheduleNow(ctx context.Context, client *river.Client[pgx.Tx]
 // were running when overload stopped (a restart or a deploy). It must run
 // at startup, before the job queue starts working: overload runs as a
 // single process, so anything still marked running was cut off. Local CLI
-// reviews are left alone. It returns how many runs were queued again.
+// reviews are left alone. Each run's old job is cancelled in the same
+// transaction so a retry of it cannot race the new one. It returns how many
+// runs were queued again.
 func (s *Store) RecoverInterruptedRuns(ctx context.Context, client *river.Client[pgx.Tx]) (int, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	rows, err := tx.Query(ctx, `SELECT id, kind FROM runs WHERE status = 'running' AND river_job_id IS NOT NULL AND trigger <> 'cli_inline' FOR UPDATE`)
+	rows, err := tx.Query(ctx, `SELECT id, kind, river_job_id FROM runs WHERE status = 'running' AND river_job_id IS NOT NULL AND trigger <> 'cli_inline' FOR UPDATE`)
 	if err != nil {
 		return 0, err
 	}
 	type interrupted struct {
-		id   int64
-		kind string
+		id       int64
+		kind     string
+		oldJobID int64
 	}
 	var runs []interrupted
 	for rows.Next() {
 		var run interrupted
-		if err := rows.Scan(&run.id, &run.kind); err != nil {
+		if err := rows.Scan(&run.id, &run.kind, &run.oldJobID); err != nil {
 			rows.Close()
 			return 0, err
 		}
@@ -292,6 +295,12 @@ func (s *Store) RecoverInterruptedRuns(ctx context.Context, client *river.Client
 			args = ScheduleArgs{RunID: run.id}
 		default:
 			continue
+		}
+		// A job stopped by a hard shutdown is left retryable, and one from a
+		// crash stays running until River rescues it; either would run the
+		// review a second time next to the new job.
+		if _, err := client.JobCancelTx(ctx, tx, run.oldJobID); err != nil && !errors.Is(err, river.ErrNotFound) {
+			return 0, fmt.Errorf("cancel the interrupted job of run %d: %w", run.id, err)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE runs SET status = 'queued', started_at = NULL WHERE id = $1`, run.id); err != nil {
 			return 0, err

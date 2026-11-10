@@ -28,7 +28,10 @@ type ScheduleWorker struct {
 }
 
 func (worker *ScheduleWorker) Work(ctx context.Context, job *river.Job[postgres.ScheduleArgs]) error {
-	runID := job.Args.RunID
+	return cancelIfInterrupted(ctx, worker.Store, job.Args.RunID, worker.run(ctx, job.Args.RunID))
+}
+
+func (worker *ScheduleWorker) run(ctx context.Context, runID int64) error {
 	var snapshot, input []byte
 	var status string
 	err := worker.Store.Pool.QueryRow(ctx, `SELECT r.status,r.config_snapshot,r.input_snapshot FROM runs r WHERE r.id=$1 AND r.kind='scheduled_prompt'`, runID).Scan(&status, &snapshot, &input)

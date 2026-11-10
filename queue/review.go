@@ -30,7 +30,10 @@ type ReviewWorker struct {
 }
 
 func (w *ReviewWorker) Work(ctx context.Context, job *river.Job[postgres.ReviewArgs]) error {
-	runID := job.Args.RunID
+	return cancelIfInterrupted(ctx, w.Store, job.Args.RunID, w.review(ctx, job.Args.RunID))
+}
+
+func (w *ReviewWorker) review(ctx context.Context, runID int64) error {
 	tx, err := w.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -160,6 +163,11 @@ func (w *ReviewWorker) refuseByPolicy(ctx context.Context, tx pgx.Tx, runID int6
 }
 
 func (w *ReviewWorker) failRun(ctx context.Context, runID int64, code, message string) error {
+	// A review cut off by shutdown is not a failure: the run stays running so
+	// the next start queues it again.
+	if stoppedByShutdown(ctx) {
+		return fmt.Errorf("review stopped by shutdown: %s", message)
+	}
 	message = overload.TruncateUTF8(message, 500)
 	_, err := w.Store.Pool.Exec(context.WithoutCancel(ctx), `UPDATE runs SET status='failed',error_code=$2,error_message=$3,finished_at=now() WHERE id=$1 AND status='running'`, runID, code, message)
 	if err == nil {
@@ -308,6 +316,13 @@ func planPosting(dryRun, enabled bool) postingPlan {
 	}
 }
 
+// SoftStopTimeout is how long a stopping server lets running jobs finish
+// before cancelling them. Every way overload runs allows 30 seconds from
+// SIGTERM to SIGKILL (the launchd agent's ExitTimeOut, systemd's
+// TimeoutStopSec, Kubernetes' default grace period and the compose file's
+// stop_grace_period), leaving 15 seconds for cancelled jobs to return.
+const SoftStopTimeout = 15 * time.Second
+
 func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbox overload.SandboxRunner, models reviewpkg.ModelGrants) (*river.Client[pgx.Tx], error) {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &ReviewWorker{Store: store, Sandbox: sandbox, Models: models})
@@ -315,8 +330,9 @@ func NewClient(store *postgres.Store, concurrent int, timeoutSeconds int, sandbo
 	river.AddWorker(workers, &PostWorker{Store: store})
 	river.AddWorker(workers, &BakeoffWorker{Store: store, ReviewTimeout: time.Duration(timeoutSeconds) * time.Second})
 	return river.NewClient(riverpgxv5.New(store.Pool), &river.Config{
-		Queues:     map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrent}, postgres.BakeoffQueue: {MaxWorkers: 1}},
-		Workers:    workers,
-		JobTimeout: time.Duration(timeoutSeconds) * time.Second,
+		Queues:          map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: concurrent}, postgres.BakeoffQueue: {MaxWorkers: 1}},
+		Workers:         workers,
+		JobTimeout:      time.Duration(timeoutSeconds) * time.Second,
+		SoftStopTimeout: SoftStopTimeout,
 	})
 }

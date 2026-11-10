@@ -42,6 +42,30 @@ jobs:
           cache: true
       - run: brew install postgresql@17
       - run: OVERLOAD_INSTALL_TEST=1 go test -count=1 -timeout 15m -v ./deploy/installtest/
+      - name: Build and check the unsigned macOS package
+        run: make pkg VERSION=0.0.0-ci
+      - name: Install the package
+        run: |
+          sudo mkdir -p /usr/local/bin
+          before=$(stat -f '%Su:%Sg %Sp' /usr/local /usr/local/bin)
+          sudo installer -pkg dist/pkg/overload_darwin_universal.pkg -target /
+          test "$(/usr/local/bin/overload version)" = 0.0.0-ci
+          test "$(readlink /usr/local/bin/overload)" = ../overload/bin/overload
+          test "$(stat -f '%Sp' /usr/local/overload/bin/overload)" = -rwxr-xr-x
+          test "$(stat -f '%Su:%Sg %Sp' /usr/local /usr/local/bin)" = "$before"
+          test -z "$(find /usr/local/overload -name '._*')"
+          test ! -e /usr/local/bin/._overload
+          pkgutil --pkg-info dev.overload.pkg
+  compose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: docker/setup-buildx-action@v3
+      - run: OVERLOAD_COMPOSE_TEST=1 go test -count=1 -timeout 15m -v ./deploy/composetest/
   kind:
     runs-on: ubuntu-latest
     steps:

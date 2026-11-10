@@ -2,12 +2,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
-permissions:
-  contents: write
-  packages: write
+permissions: {}
 jobs:
   image:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     strategy:
       matrix:
         include:
@@ -38,11 +39,15 @@ jobs:
           file: ${{ matrix.dockerfile }}
           platforms: linux/amd64,linux/arm64
           push: true
+          provenance: mode=max
+          sbom: true
           build-args: VERSION=${{ github.ref_name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
   binaries:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -57,3 +62,60 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+  macos-pkg:
+    needs: binaries
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      MACOS_SIGN_IDENTITY: ${{ vars.MACOS_SIGN_IDENTITY }}
+      MACOS_INSTALLER_IDENTITY: ${{ vars.MACOS_INSTALLER_IDENTITY }}
+      MACOS_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+      MACOS_NOTARY_PROFILE: overload-ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - id: credentials
+        env:
+          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
+          MACOS_INSTALLER_P12_BASE64: ${{ secrets.MACOS_INSTALLER_P12_BASE64 }}
+          MACOS_P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          configured=true
+          for name in MACOS_SIGN_IDENTITY MACOS_INSTALLER_IDENTITY MACOS_TEAM_ID MACOS_SIGN_P12_BASE64 MACOS_INSTALLER_P12_BASE64 MACOS_P12_PASSWORD MACOS_NOTARY_APPLE_ID MACOS_NOTARY_PASSWORD; do
+            if [ -z "$(printenv "$name")" ]; then
+              configured=false
+            fi
+          done
+          if [ "$configured" != true ]; then
+            echo "::notice::Developer ID signing is not fully configured; the release has no macOS package."
+          fi
+          echo "configured=$configured" >> "$GITHUB_OUTPUT"
+      - if: steps.credentials.outputs.configured == 'true'
+        env:
+          MACOS_SIGN_P12_BASE64: ${{ secrets.MACOS_SIGN_P12_BASE64 }}
+          MACOS_INSTALLER_P12_BASE64: ${{ secrets.MACOS_INSTALLER_P12_BASE64 }}
+          MACOS_P12_PASSWORD: ${{ secrets.MACOS_P12_PASSWORD }}
+          MACOS_NOTARY_APPLE_ID: ${{ secrets.MACOS_NOTARY_APPLE_ID }}
+          MACOS_NOTARY_TEAM_ID: ${{ secrets.MACOS_NOTARY_TEAM_ID }}
+          MACOS_NOTARY_PASSWORD: ${{ secrets.MACOS_NOTARY_PASSWORD }}
+        run: |
+          keychain=$(sh deploy/macos/import-certs.sh)
+          echo "MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+      - if: steps.credentials.outputs.configured == 'true'
+        env:
+          REQUIRE_SIGNED: "1"
+        run: make pkg VERSION="$GITHUB_REF_NAME"
+      - if: steps.credentials.outputs.configured == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/pkg/overload_darwin_universal.pkg dist/pkg/overload_darwin_universal.pkg.sha256 --clobber
+      - if: always() && env.MACOS_KEYCHAIN != ''
+        run: |
+          security delete-keychain "$MACOS_KEYCHAIN"
+          rm -rf "$(dirname "$MACOS_KEYCHAIN")"

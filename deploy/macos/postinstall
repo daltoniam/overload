@@ -1,0 +1,33 @@
+#!/bin/sh
+# Runs as root after the package installs /usr/local/overload. Puts overload
+# on the PATH with a /usr/local/bin/overload link, unless that name already
+# belongs to something else (such as a Homebrew install on an Intel Mac),
+# which is left untouched. The installer passes the target volume as $3.
+set -eu
+
+volume=${3:-/}
+volume=${volume%/}
+bin_dir=$volume/usr/local/bin
+link=$bin_dir/overload
+# A relative link stays correct when the package goes to another volume.
+target=../overload/bin/overload
+
+if [ -L "$link" ]; then
+	case $(readlink "$link") in
+	"$target" | /usr/local/overload/bin/overload) ;;
+	*)
+		echo "overload: $link already points at $(readlink "$link"); leaving it. Run /usr/local/overload/bin/overload or remove that install first." >&2
+		exit 0
+		;;
+	esac
+elif [ -e "$link" ]; then
+	echo "overload: $link already exists; leaving it. Run /usr/local/overload/bin/overload or remove that file first." >&2
+	exit 0
+fi
+
+if [ ! -d "$bin_dir" ]; then
+	mkdir -p "$bin_dir"
+	chown root:wheel "$bin_dir"
+	chmod 755 "$bin_dir"
+fi
+ln -sfn "$target" "$link"

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"syscall"
 	"time"
 
 	"github.com/daltoniam/overload/github"
@@ -142,7 +143,7 @@ func serve() error {
 	if err := httpapi.ValidateAuth(); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	store, err := waitForDatabase(ctx, 2*time.Minute)
 	if err != nil {
@@ -174,6 +175,8 @@ func serve() error {
 	} else if recovered > 0 {
 		slog.Info("queued runs interrupted by a restart", "runs", recovered)
 	}
+	// A signal cancels ctx, which starts River's soft stop: running jobs get
+	// queue.SoftStopTimeout to finish before their contexts are cancelled.
 	if err := client.Start(ctx); err != nil {
 		return err
 	}

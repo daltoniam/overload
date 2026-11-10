@@ -1,0 +1,10 @@
+# Builds the app image from this checkout under a local tag, rather than
+# pulling a release, so a local build is never tagged as the published image:
+#
+#   docker compose -f compose.yaml -f compose.build.yaml up -d --build --wait
+services:
+  overload:
+    image: ${OVERLOAD_BUILD_IMAGE:-overload:local}
+    build:
+      context: ../..
+      dockerfile: deploy/images/app/Dockerfile

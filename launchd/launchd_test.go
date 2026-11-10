@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLaunchAgentPlistIsValidXML(t *testing.T) {
@@ -25,6 +26,27 @@ func TestLaunchAgentPlistIsValidXML(t *testing.T) {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("plist missing %q", want)
 		}
+	}
+}
+
+func TestLaunchAgentExitTimeout(t *testing.T) {
+	agent := Agent{Label: "dev.overload", Args: []string{"/bin/true"}}
+	if strings.Contains(string(agent.plist()), "ExitTimeOut") {
+		t.Error("an agent without an exit timeout should keep launchd's default")
+	}
+	agent.ExitTimeout = 30 * time.Second
+	if !strings.Contains(string(agent.plist()), "<key>ExitTimeOut</key>\n\t<integer>30</integer>") {
+		t.Errorf("plist missing a 30 second ExitTimeOut:\n%s", agent.plist())
+	}
+	for _, timeout := range []time.Duration{time.Millisecond, 500 * time.Millisecond, time.Second} {
+		agent.ExitTimeout = timeout
+		if !strings.Contains(string(agent.plist()), "<key>ExitTimeOut</key>\n\t<integer>1</integer>") {
+			t.Errorf("an ExitTimeout of %s should round up to 1 second, not 0 (no limit):\n%s", timeout, agent.plist())
+		}
+	}
+	agent.ExitTimeout = 1500 * time.Millisecond
+	if !strings.Contains(string(agent.plist()), "<key>ExitTimeOut</key>\n\t<integer>2</integer>") {
+		t.Errorf("an ExitTimeout of 1.5s should round up to 2 seconds:\n%s", agent.plist())
 	}
 }
 

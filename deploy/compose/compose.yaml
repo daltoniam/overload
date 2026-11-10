@@ -1,0 +1,75 @@
+# The overload control plane and its Postgres database on one Docker host.
+# Needs Docker Compose 2.24 or newer (optional env_file entries).
+#
+#   cd deploy/compose
+#   printf 'OVERLOAD_POSTGRES_PASSWORD=%s\nOVERLOAD_UI_PASSWORD=%s\n' \
+#     "$(openssl rand -hex 24)" "$(openssl rand -hex 24)" > .env
+#   docker compose up -d --wait
+#
+# .env holds the values this file reads: OVERLOAD_POSTGRES_PASSWORD (used
+# only when the database volume is first created), OVERLOAD_UI_PASSWORD,
+# OVERLOAD_UI_USER, OVERLOAD_BASE_URL, OVERLOAD_PORT and OVERLOAD_IMAGE. The
+# UI listens on 127.0.0.1:8082 (OVERLOAD_PORT); put a TLS proxy or a
+# Cloudflare Tunnel in front of it for a team and set OVERLOAD_BASE_URL in
+# .env to the address people use. Other overload variables (model API keys,
+# OIDC settings) go in overload.env next to this file; it cannot override
+# the variables set under environment below.
+#
+# compose.build.yaml builds the image from this checkout instead.
+name: overload
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: overload
+      POSTGRES_USER: overload
+      POSTGRES_PASSWORD: ${OVERLOAD_POSTGRES_PASSWORD:?set OVERLOAD_POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U overload -d overload"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  overload:
+    image: ${OVERLOAD_IMAGE:-ghcr.io/daltoniam/overload:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: overload.env
+        required: false
+    environment:
+      # The password comes from PGPASSWORD so it needs no URL escaping.
+      DATABASE_URL: postgres://overload@postgres:5432/overload?sslmode=disable
+      PGPASSWORD: ${OVERLOAD_POSTGRES_PASSWORD}
+      OVERLOAD_ADDR: 0.0.0.0:8082
+      OVERLOAD_UI_USER: ${OVERLOAD_UI_USER:-admin}
+      OVERLOAD_UI_PASSWORD: ${OVERLOAD_UI_PASSWORD:?set OVERLOAD_UI_PASSWORD in .env}
+      OVERLOAD_BASE_URL: ${OVERLOAD_BASE_URL:-http://localhost:${OVERLOAD_PORT:-8082}}
+    ports:
+      - "127.0.0.1:${OVERLOAD_PORT:-8082}:8082"
+    # Older images have no HEALTHCHECK of their own.
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/overload", "healthcheck"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    # Running jobs get 15 seconds to finish on a stop before they are
+    # cancelled and queued again for the next start.
+    stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  postgres_data:

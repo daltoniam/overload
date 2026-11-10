@@ -186,6 +186,8 @@ overload/
   deploy/kind/         kind config + setup scripts
   deploy/k8s/          kustomize base + overlays (dev, prod): overload, postgres (dev only), llama.cpp, agent-sandbox resources, NetworkPolicies
   deploy/images/       Dockerfiles for overload and overload-agent
+  deploy/compose/      Docker Compose file for the control plane and Postgres on one host
+  deploy/macos/        macOS installer package build, check and CI signing scripts
   testdata/            diffs, recorded model responses, fixture repos
 ```
 
@@ -1516,6 +1518,13 @@ plan and deploy/README.md.
     full JACCL meshes of two to four nodes; larger rings are not modelled.
     Running models across a real Thunderbolt 5 cluster still waits for the
     hardware spike in 16.3.
-11. **Packaging** (16.4 item 5): a signed and notarized macOS package when
-    signing credentials are configured, and a published control-plane
-    container image.
+11. **Packaging** (16.4 item 5; done): a universal macOS installer package,
+    signed and notarized when Developer ID credentials are configured and
+    attached to the release; it installs only `/usr/local/overload` and
+    links `/usr/local/bin/overload` unless that name is taken, so it never
+    changes Homebrew's directories. A control-plane container image with a
+    health check, SBOM and provenance; and a Docker Compose file for running
+    the control plane with Postgres on one host, tested in CI. On SIGTERM
+    the server gives running jobs a short soft stop, then cancels them; an
+    interrupted review or scheduled job is queued again on the next start
+    and its old job is cancelled in the same transaction, so it runs once.
