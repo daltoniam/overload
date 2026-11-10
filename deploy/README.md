@@ -589,28 +589,34 @@ overload fix --workflow review-cohort --base main --test "make test" --rounds 3
   `--until` (default high), running `--test` when given, and the files the
   fixer wrote are committed on the branch. It stops when the review is
   clean, after `--rounds`, when the fixer changes nothing, or at
-  `--timeout` (default 4h, at most 5h). When no round was committed (the
+  `--timeout` (default 4h, at most 5h). Ctrl-C stops the loop and cleans
+  up; a second Ctrl-C exits at once. When no round was committed (the
   first review was clean, the fixer changed nothing, or the loop failed or
   was interrupted), the branch and worktree are removed; otherwise the
   branch is kept and the output says how to remove its worktree. Nothing
   is pushed, and the original working tree is never touched; review the
   branch before using it.
-- **What the fixer can do.** Its file tools only read and write files
-  inside the worktree: they refuse paths outside it, symbolic links that
-  leave it, and git's own files (`.git` at any depth, in any letter case).
-  git runs with repository hooks, file system monitors and commit signing
-  turned off. With `--test`, though, the fixer can run any code: it can
-  edit a test or a Makefile and then run the tests, which run as you, on
-  your machine, with your files and network. Tests get only `PATH`,
-  `HOME`, user, shell, temporary directory, locale, `TZ`, `TERM`, C
-  compiler and `GO*`/`CGO_*` variables, minus any whose name mentions a
-  token, key, secret, password or auth; database URLs, API keys and GitHub
-  tokens are not passed. A test command that needs one sets it itself,
-  for example `--test "DATABASE_URL=postgres://localhost/test make test"`;
-  point it at a throwaway database. Review findings come from pull request
-  text, so treat the fixer's changes as untrusted until a person has read
-  them, and run `fix --test` only in a checkout you would let an untrusted
-  contributor's tests run in.
+- **What the fixer can do.** Its file tools only read and write files inside
+  the worktree: they refuse paths outside it, symbolic links that leave it,
+  and git's own files (`.git` at any depth, in any letter case), and they
+  never write through a symbolic link, even one that stays inside the
+  worktree. git runs with repository hooks, file system monitors and commit
+  signing turned off. After every round and after the final tests the loop
+  checks the worktree's `.git` file (which tells git where the repository
+  is); if anything changed it, the loop puts it back and stops with an
+  error. With `--test`, though, the fixer can run any code: it can edit a
+  test or a Makefile and then run the tests, which run as you, on your
+  machine, with your files and network. Tests get only `PATH`, `HOME`, user,
+  shell, temporary directory, locale, `TZ`, `TERM`, C compiler and
+  `GO*`/`CGO_*` variables, minus any whose name mentions a token, key,
+  secret, password or auth and any whose value is a URL with a user name or
+  password (such as `GOPROXY=https://user:token@...`); database URLs, API
+  keys and GitHub tokens are not passed. A test command that needs one sets
+  it itself, for example `--test "DATABASE_URL=postgres://localhost/test
+  make test"`; point it at a throwaway database. Review findings come from
+  pull request text, so treat the fixer's changes as untrusted until a
+  person has read them, and run `fix --test` only in a checkout you would
+  let an untrusted contributor's tests run in.
 
 ## GitHub
 

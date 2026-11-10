@@ -1,9 +1,11 @@
 package checkout
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -119,6 +121,10 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 		return result, err
 	}
 	worktree := repository{dir: result.Worktree, global: []string{"--git-dir=" + strings.TrimSpace(gitDir), "--work-tree=" + result.Worktree, "--literal-pathspecs"}}
+	gitFile, err := snapshotGitFile(result.Worktree)
+	if err != nil {
+		return result, err
+	}
 	_, _ = fmt.Fprintf(options.Out, "Fixing on branch %s in %s\n", result.Branch, result.Worktree)
 	for round := 1; ; round++ {
 		review, err := worktree.review(ctx, options.Base, options.Workflow)
@@ -142,6 +148,9 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 		}
 		result.Rounds = round
 		changed, err := fixRound(ctx, options, worktree, blocking)
+		if guardErr := gitFile.verify(); guardErr != nil {
+			return result, fmt.Errorf("fix round %d: %w", round, guardErr)
+		}
 		if err != nil {
 			return result, fmt.Errorf("fix round %d: %w", round, err)
 		}
@@ -156,9 +165,55 @@ func Fix(ctx context.Context, options FixOptions) (result FixResult, err error) 
 	}
 	if options.TestCommand != "" {
 		passed, _ := RunTests(ctx, result.Worktree, options.TestCommand)
+		if err := gitFile.verify(); err != nil {
+			return result, fmt.Errorf("final tests: %w", err)
+		}
+		// An interrupted run is not a test failure.
+		if err := ctx.Err(); err != nil {
+			return result, fmt.Errorf("final tests: %w", err)
+		}
 		result.TestsPassed = &passed
 	}
 	return result, nil
+}
+
+// gitFileSnapshot is a fixer worktree's .git file as git wrote it. The
+// file tells git where the repository is, so a changed one could point the
+// developer's later git commands in the worktree at a repository whose
+// configuration runs programs.
+type gitFileSnapshot struct {
+	path    string
+	content []byte
+}
+
+func snapshotGitFile(worktree string) (gitFileSnapshot, error) {
+	path := filepath.Join(worktree, ".git")
+	info, err := os.Lstat(path)
+	if err != nil {
+		return gitFileSnapshot{}, err
+	}
+	if !info.Mode().IsRegular() {
+		return gitFileSnapshot{}, fmt.Errorf("%s is not a regular file", path)
+	}
+	content, err := os.ReadFile(path)
+	return gitFileSnapshot{path: path, content: content}, err
+}
+
+// verify reports an error when the .git file changed, after putting the
+// original back.
+func (snapshot gitFileSnapshot) verify() error {
+	if info, err := os.Lstat(snapshot.path); err == nil && info.Mode().IsRegular() {
+		if content, err := os.ReadFile(snapshot.path); err == nil && bytes.Equal(content, snapshot.content) {
+			return nil
+		}
+	}
+	if err := os.RemoveAll(snapshot.path); err != nil {
+		return fmt.Errorf("the worktree's .git file was changed and could not be restored: %w", err)
+	}
+	if err := os.WriteFile(snapshot.path, snapshot.content, 0o644); err != nil {
+		return fmt.Errorf("the worktree's .git file was changed and could not be restored: %w", err)
+	}
+	return errors.New("the worktree's .git file was changed; it was restored and the loop stopped")
 }
 
 // removeFixBranch removes a fix loop's worktree and branch when no round

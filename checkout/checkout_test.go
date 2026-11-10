@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,6 +50,12 @@ func gitRepo(t *testing.T) string {
 // fakeModels plays the reviewer (a finding while bug() is in the diff) and
 // the fixer (writes a fixed app.go with one tool call, then reports).
 func fakeModels(t *testing.T, fixes *atomic.Int64) *httptest.Server {
+	return fakeModelsWriting(t, fixes, "app.go", "package app\n\nfunc ok() {}\n\nfunc broken() {}\n")
+}
+
+// fakeModelsWriting is fakeModels with a fixer that writes content to
+// path.
+func fakeModelsWriting(t *testing.T, fixes *atomic.Int64, path, content string) *httptest.Server {
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Model    string `json:"model"`
@@ -71,7 +78,7 @@ func fakeModels(t *testing.T, fixes *atomic.Int64) *httptest.Server {
 				return
 			}
 			fixes.Add(1)
-			arguments, _ := json.Marshal(map[string]string{"path": "app.go", "content": "package app\n\nfunc ok() {}\n\nfunc broken() {}\n"})
+			arguments, _ := json.Marshal(map[string]string{"path": path, "content": content})
 			_, _ = fmt.Fprintf(w, `{"id":"2","object":"chat.completion","created":1,"model":"fixer","choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":"","tool_calls":[{"id":"call_1","type":"function","function":{"name":"write_file","arguments":%q}}]}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`, arguments)
 			return
 		}
@@ -384,7 +391,9 @@ func TestRunTestsEnvironmentAndTimeout(t *testing.T) {
 	t.Setenv("OVERLOAD_DEFAULT_MODEL_API_KEY", "sk-secret")
 	t.Setenv("GITHUB_TOKEN", "ghp-secret")
 	t.Setenv("GOFLAGS", "-count=1")
-	passed, output := RunTests(context.Background(), t.TempDir(), `test -z "$DATABASE_URL" && test -z "$OVERLOAD_DEFAULT_MODEL_API_KEY" && test -z "$GITHUB_TOKEN" && test -n "$PATH" && test -n "$HOME" && test "$GOFLAGS" = -count=1`)
+	t.Setenv("GOPROXY", "https://user:token@proxy.example.com")
+	t.Setenv("GONOSUMDB", "git.example.com/*")
+	passed, output := RunTests(context.Background(), t.TempDir(), `test -z "$DATABASE_URL" && test -z "$OVERLOAD_DEFAULT_MODEL_API_KEY" && test -z "$GITHUB_TOKEN" && test -z "$GOPROXY" && test -n "$PATH" && test -n "$HOME" && test "$GOFLAGS" = -count=1 && test "$GONOSUMDB" = "git.example.com/*"`)
 	if !passed {
 		t.Fatalf("tests saw secrets or lost toolchain variables: %s", output)
 	}
@@ -396,5 +405,108 @@ func TestRunTestsEnvironmentAndTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 10*time.Second {
 		t.Fatalf("cancelling tests took %s; a background process kept them running", elapsed)
+	}
+}
+
+func TestFixerWritesRefuseSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	gitFile := []byte("gitdir: /somewhere/.git/worktrees/fix\n")
+	if err := os.WriteFile(filepath.Join(dir, ".git"), gitFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{"cfg": ".git", "folder": "real", "dangling": "missing.txt"} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	var written writtenPaths
+	tools := map[string]*localTool{}
+	for _, tool := range fixerTools(root, dir, "", &written) {
+		tools[tool.Info().Name] = tool.(*localTool)
+	}
+	for _, path := range []string{"cfg", "folder/a.txt", "folder/new/b.txt", "dangling"} {
+		if _, err := tools["write_file"].run(context.Background(), map[string]any{"path": path, "content": "gitdir: /tmp/evil"}); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+			t.Errorf("write through %s: %v", path, err)
+		}
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, ".git")); err != nil || !bytes.Equal(data, gitFile) {
+		t.Fatalf("the .git file changed through a link: %q %v", data, err)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(dir, "real")); len(entries) != 0 || len(written.list()) != 0 {
+		t.Fatalf("wrote through a folder link: %v %v", entries, written.list())
+	}
+	if _, err := tools["write_file"].run(context.Background(), map[string]any{"path": "real/a.txt", "content": "ok"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFixLoopKeepsTheWorktreeGitFile(t *testing.T) {
+	dir := gitRepo(t)
+	if err := os.Symlink(".git", filepath.Join(dir, "cfg")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(context.Background(), dir, "add", "cfg"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Git(context.Background(), dir, "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "link"); err != nil {
+		t.Fatal(err)
+	}
+	var fixes atomic.Int64
+	server := fakeModelsWriting(t, &fixes, "cfg", "gitdir: /tmp/evil\n")
+	defer server.Close()
+	fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+	var out bytes.Buffer
+	result, err := Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, Rounds: 1, Until: "high", Out: &out})
+	if err != nil || fixes.Load() != 1 || !strings.Contains(out.String(), "made no changes") {
+		t.Fatalf("fix through a link to .git: %+v %v\n%s", result, err, out.String())
+	}
+	assertNoFixBranches(t, dir)
+
+	// Tests run model-written code that can write anything; the loop
+	// notices a changed .git file, restores it and stops.
+	server = fakeModels(t, &fixes)
+	defer server.Close()
+	fixer.BaseURL = server.URL
+	out.Reset()
+	result, err = Fix(context.Background(), FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, TestCommand: "printf 'gitdir: /tmp/evil' > .git", Rounds: 1, Until: "high", Out: &out})
+	if err == nil || !strings.Contains(err.Error(), ".git file was changed") || result.Worktree == "" {
+		t.Fatalf("tests that rewrote .git: %+v %v\n%s", result, err, out.String())
+	}
+	if data, err := os.ReadFile(filepath.Join(result.Worktree, ".git")); err != nil || !strings.HasPrefix(string(data), "gitdir: /") || !strings.Contains(string(data), "/.git/worktrees/") {
+		t.Fatalf("the .git file was not restored: %q %v", data, err)
+	}
+	if head, err := Git(context.Background(), result.Worktree, "rev-parse", "--abbrev-ref", "HEAD"); err != nil || strings.TrimSpace(head) != result.Branch {
+		t.Fatalf("restored worktree HEAD = %q %v", head, err)
+	}
+}
+
+func TestFixReportsAnInterruptDuringTheFinalTests(t *testing.T) {
+	dir := gitRepo(t)
+	var fixes atomic.Int64
+	server := fakeModels(t, &fixes)
+	defer server.Close()
+	fixer := overload.ModelProfile{Provider: "openaicompat", BaseURL: server.URL, Model: "fixer", Concurrency: 1}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		for ctx.Err() == nil {
+			if started, _ := filepath.Glob(filepath.Join(dir, ".git", "overload-fix", "*", "started")); len(started) > 0 {
+				cancel()
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}()
+	result, err := Fix(ctx, FixOptions{Dir: dir, Base: "main", Workflow: workflowFor(server.URL), Fixer: fixer, TestCommand: "touch started; sleep 30", Rounds: 1, Until: "high"})
+	if !errors.Is(err, context.Canceled) || result.TestsPassed != nil {
+		t.Fatalf("interrupted final tests: %+v %v", result, err)
 	}
 }

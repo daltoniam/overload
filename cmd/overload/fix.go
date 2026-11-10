@@ -60,6 +60,9 @@ func manageFix(args []string) error {
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, options.timeout)
 	defer cancel()
+	// Once the loop is stopping, a second Ctrl-C exits at once instead of
+	// waiting for cleanup.
+	defer context.AfterFunc(ctx, stop)()
 	store, err := database(ctx)
 	if err != nil {
 		return err

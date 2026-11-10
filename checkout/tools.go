@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -98,6 +99,28 @@ func isGitName(component string) bool {
 	return strings.EqualFold(name, ".git") || strings.EqualFold(name, "git~1")
 }
 
+// refuseSymlinks refuses a write to name when it or any folder on the way
+// is a symbolic link. os.Root follows links that stay inside the worktree,
+// so a tracked link such as cfg -> .git would otherwise let a write replace
+// the worktree's .git file, which git reads to find its repository.
+func refuseSymlinks(root *os.Root, name string) error {
+	parts := strings.Split(name, "/")
+	for index := range parts {
+		prefix := strings.Join(parts[:index+1], "/")
+		info, err := root.Lstat(prefix)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symbolic link; write the file it points to instead", prefix)
+		}
+	}
+	return nil
+}
+
 // writtenPaths records the files a fixer wrote, so only those are
 // committed and build output left by tests is not.
 type writtenPaths struct {
@@ -162,6 +185,9 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 			if len(content) > maxWriteBytes {
 				return "", fmt.Errorf("content is larger than %d bytes", maxWriteBytes)
 			}
+			if err := refuseSymlinks(root, name); err != nil {
+				return "", err
+			}
 			if dir := path.Dir(name); dir != "." {
 				if err := root.MkdirAll(dir, 0o755); err != nil {
 					return "", err
@@ -217,23 +243,27 @@ func fixerTools(root *os.Root, dir, testCommand string, written *writtenPaths) [
 }
 
 // testEnvironmentNames are the variables tests run with. Tests in a fixer
-// worktree may be model-written, so database URLs, API keys and tokens in
-// the developer's environment are not passed; a test command that needs
-// one sets it itself.
+// worktree may be model-written, so database URLs, API keys, tokens and
+// URLs with credentials in the developer's environment are not passed; a
+// test command that needs one sets it itself.
 var testEnvironmentNames = []string{"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "TMP", "TEMP", "LANG", "TZ", "TERM", "CC", "CXX", "PKG_CONFIG_PATH"}
 
 // testEnvironmentPrefixes are toolchain and locale variable families tests
 // keep, unless their names suggest a secret.
 var testEnvironmentPrefixes = []string{"LC_", "GO", "CGO_"}
 
+// urlUserinfo matches a URL with a user name or password, as in
+// GOPROXY=https://user:token@proxy.example.com.
+var urlUserinfo = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^/?#\s]*@`)
+
 func testEnvironment(environment []string) []string {
 	var kept []string
 	for _, variable := range environment {
-		name, _, _ := strings.Cut(variable, "=")
+		name, value, _ := strings.Cut(variable, "=")
 		upper := strings.ToUpper(name)
 		secret := strings.Contains(upper, "TOKEN") || strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "PASSWORD") || strings.Contains(upper, "AUTH")
 		allowed := slices.Contains(testEnvironmentNames, name) || slices.ContainsFunc(testEnvironmentPrefixes, func(prefix string) bool { return strings.HasPrefix(name, prefix) })
-		if allowed && !secret {
+		if allowed && !secret && !urlUserinfo.MatchString(value) {
 			kept = append(kept, variable)
 		}
 	}
@@ -258,8 +288,10 @@ func RunTests(ctx context.Context, dir, command string) (bool, string) {
 	var output bytes.Buffer
 	process.Stdout, process.Stderr = &output, &output
 	err := process.Run()
-	if process.Process != nil {
-		// Background processes the tests left behind die with the group.
+	// Background processes the tests left behind die with the group. The
+	// group outlives sh only while a member is alive, so checking it exists
+	// first keeps the kill to the tests' own processes.
+	if process.Process != nil && syscall.Kill(-process.Process.Pid, 0) == nil {
 		_ = syscall.Kill(-process.Process.Pid, syscall.SIGKILL)
 	}
 	text := output.String()
