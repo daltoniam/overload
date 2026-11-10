@@ -27,9 +27,10 @@ type Budget struct {
 	// FromEnvironment marks caps set by OVERLOAD_BUDGET_MONTHLY_USD or
 	// OVERLOAD_BUDGET_DAILY_USD, which take precedence over the database.
 	FromEnvironment bool `json:"from_environment,omitempty"`
-	// repositoryID is the repository a budget applies to (0: global);
-	// budgets are matched to repositories by it, not by name.
-	repositoryID int64
+	// RepositoryID is the repository a budget applies to (0: global).
+	// Budgets are matched to repositories by it, not by name; when saving,
+	// it names the repository exactly.
+	RepositoryID int64 `json:"repository_id,omitempty"`
 }
 
 // Budget skip statuses.
@@ -63,18 +64,32 @@ func (s *Store) SaveBudget(ctx context.Context, budget Budget) error {
 	if status == "" {
 		status = BudgetSkipSuccess
 	}
-	if budget.Repository == "" {
+	if budget.Repository == "" && budget.RepositoryID == 0 {
 		_, err := s.Pool.Exec(ctx, `INSERT INTO budgets (repository_id, monthly_usd, daily_usd, skip_status) VALUES (NULL, $1, $2, $3) ON CONFLICT ((repository_id IS NULL)) WHERE repository_id IS NULL DO UPDATE SET monthly_usd=EXCLUDED.monthly_usd, daily_usd=EXCLUDED.daily_usd, skip_status=EXCLUDED.skip_status, updated_at=now()`, budget.MonthlyUSD, budget.DailyUSD, status)
 		return err
 	}
-	var repoID int64
-	if err := s.Pool.QueryRow(ctx, `SELECT id FROM repositories WHERE full_name=$1`, budget.Repository).Scan(&repoID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("%s is not a repository overload knows", budget.Repository)
-		}
+	// The repository is named by ID, or by a name that must match exactly
+	// one repository.
+	rows, err := s.Pool.Query(ctx, `SELECT id FROM repositories WHERE ($1::bigint = 0 OR id = $1) AND ($2 = '' OR full_name = $2) ORDER BY id LIMIT 2`, budget.RepositoryID, budget.Repository)
+	if err != nil {
 		return err
 	}
-	_, err := s.Pool.Exec(ctx, `INSERT INTO budgets (repository_id, monthly_usd, daily_usd, skip_status) VALUES ($1, $2, $3, $4) ON CONFLICT (repository_id) DO UPDATE SET monthly_usd=EXCLUDED.monthly_usd, daily_usd=EXCLUDED.daily_usd, skip_status=EXCLUDED.skip_status, updated_at=now()`, repoID, budget.MonthlyUSD, budget.DailyUSD, status)
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		return err
+	}
+	name := budget.Repository
+	if name == "" {
+		name = fmt.Sprintf("repository %d", budget.RepositoryID)
+	}
+	switch len(ids) {
+	case 0:
+		return fmt.Errorf("%s is not a repository overload knows", name)
+	case 2:
+		return fmt.Errorf("%s matches more than one repository; name it by repository ID", name)
+	}
+	repoID := ids[0]
+	_, err = s.Pool.Exec(ctx, `INSERT INTO budgets (repository_id, monthly_usd, daily_usd, skip_status) VALUES ($1, $2, $3, $4) ON CONFLICT (repository_id) DO UPDATE SET monthly_usd=EXCLUDED.monthly_usd, daily_usd=EXCLUDED.daily_usd, skip_status=EXCLUDED.skip_status, updated_at=now()`, repoID, budget.MonthlyUSD, budget.DailyUSD, status)
 	return err
 }
 
@@ -111,10 +126,10 @@ func listBudgets(ctx context.Context, q rowsQuerier) ([]Budget, error) {
 	hasGlobal := false
 	for rows.Next() {
 		var budget Budget
-		if err := rows.Scan(&budget.repositoryID, &budget.Repository, &budget.MonthlyUSD, &budget.DailyUSD, &budget.SkipStatus); err != nil {
+		if err := rows.Scan(&budget.RepositoryID, &budget.Repository, &budget.MonthlyUSD, &budget.DailyUSD, &budget.SkipStatus); err != nil {
 			return nil, err
 		}
-		hasGlobal = hasGlobal || budget.repositoryID == 0
+		hasGlobal = hasGlobal || budget.RepositoryID == 0
 		budgets = append(budgets, budget)
 	}
 	if err := rows.Err(); err != nil {
@@ -173,7 +188,7 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 	}
 	now := s.now()
 	for _, budget := range budgets {
-		if budget.repositoryID != 0 && budget.repositoryID != repoID {
+		if budget.RepositoryID != 0 && budget.RepositoryID != repoID {
 			continue
 		}
 		for _, period := range []struct {
@@ -185,7 +200,7 @@ func (s *Store) checkBudget(ctx context.Context, q rowsQuerier, repoID int64, re
 				continue
 			}
 			check := BudgetCheck{Period: period.name, Scope: budget.Repository, Cap: *period.cap, Expected: expected, SkipStatus: budget.SkipStatus}
-			scoped := budget.repositoryID != 0
+			scoped := budget.RepositoryID != 0
 			// Spent and pending come from one statement, so they share a
 			// snapshot: a run that records its cost and finishes is counted
 			// in exactly one of them. Spend recorded up to the moment the

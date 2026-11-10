@@ -11,8 +11,8 @@ import (
 
 // FilePatchHashes identifies each file's change in a diff by its changed
 // and context lines (carriage returns and final-newline markers
-// included), each hunk's section heading, its source path, file modes and
-// rename or copy source, and for binary files the new content's blob ID.
+// included), each hunk's section heading, its source path, file modes
+// (from mode lines or the index line) and rename or copy source, and for binary files the new content's blob ID.
 // Hunk positions and other index lines are left out, so the same change
 // hashes the same after a rebase or a merge from the base branch.
 func FilePatchHashes(patch string) map[string]string {
@@ -59,10 +59,16 @@ func FilePatchHashes(patch string) map[string]string {
 			body.WriteString(strings.TrimSuffix(line, "\r"))
 			body.WriteByte('\n')
 		case !inHunk && strings.HasPrefix(line, "index "):
-			if fields := strings.Fields(line); len(fields) > 1 {
+			fields := strings.Fields(line)
+			if len(fields) > 1 {
 				if _, blob, ok := strings.Cut(fields[1], ".."); ok {
 					newBlob = blob
 				}
+			}
+			// The mode on an index line (a file whose mode did not change)
+			// tells a regular file from a symlink; blob IDs are left out.
+			if len(fields) > 2 {
+				body.WriteString("mode " + fields[2] + "\n")
 			}
 		case !inHunk && (strings.HasPrefix(line, "Binary files ") || line == "GIT binary patch"):
 			body.WriteString("binary " + newBlob + "\n")

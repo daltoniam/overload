@@ -283,14 +283,32 @@ func TestRepositoryBudgetsApplyByRepositoryID(t *testing.T) {
 		_, _ = store.Pool.Exec(ctx, `DELETE FROM repositories WHERE id = ANY($1)`, []int64{capped, other})
 	})
 	zero := 0.0
-	if _, err := store.Pool.Exec(ctx, `INSERT INTO budgets (repository_id, daily_usd, skip_status) VALUES ($1, $2, 'success')`, capped, zero); err != nil {
+	// Saved by repository ID, the exact identity.
+	if err := store.SaveBudget(ctx, Budget{RepositoryID: capped, DailyUSD: &zero}); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.SaveBudget(ctx, Budget{RepositoryID: capped, Repository: "someone/else", DailyUSD: &zero}); err == nil {
+		t.Fatal("saved a budget whose ID and name disagree")
+	}
+	if err := store.SaveBudget(ctx, Budget{RepositoryID: other + 1_000_000, DailyUSD: &zero}); err == nil {
+		t.Fatal("saved a budget for an unknown repository ID")
 	}
 	if check, err := store.CheckBudget(ctx, capped, 1); err != nil || !check.Exceeded || check.Scope == "" {
 		t.Fatalf("capped repository = %+v %v", check, err)
 	}
 	if check, err := store.CheckBudget(ctx, other, 1); err != nil || check.Exceeded {
 		t.Fatalf("another repository = %+v %v", check, err)
+	}
+	budgets, err := store.Budgets(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, budget := range budgets {
+		found = found || budget.RepositoryID == capped && budget.Repository != ""
+	}
+	if !found {
+		t.Fatalf("budget not listed with its repository: %+v", budgets)
 	}
 }
 

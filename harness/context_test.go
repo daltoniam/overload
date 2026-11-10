@@ -79,6 +79,33 @@ func TestContractsIndexKeepsSameNamedDefinitionsApart(t *testing.T) {
 	}
 }
 
+func TestContractsIndexBoundsUsesAndCountsBinaryReads(t *testing.T) {
+	parsed, err := parseReviewDiff(renameDiff)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A minified file calls fetch_user thousands of times on each line.
+	minified := strings.Repeat(strings.Repeat("users.fetch_user(x);", 500)+"\n", 50)
+	repo := renameRepo()
+	repo["web/app.min.js"] = &fstest.MapFile{Data: []byte(minified)}
+	index := buildContractsIndex(context.Background(), parsed, repo, 3)
+	change := index.Changes[0]
+	// 50 lines of the minified file plus api/handlers.py:6, one use per line.
+	if len(change.Uses) != 3 || change.More != 48 || cap(change.Uses) > 4 {
+		t.Fatalf("uses = %d (cap %d), more = %d", len(change.Uses), cap(change.Uses), change.More)
+	}
+	if change.Uses[0].Path != "api/handlers.py" || change.Uses[1].Path != "web/app.min.js" || change.Uses[1].Line != 1 || change.Uses[2].Line != 2 {
+		t.Fatalf("first uses = %+v", change.Uses)
+	}
+	// Binary files with searchable extensions count against the budgets.
+	defer func(files int) { maxSearchFiles = files }(maxSearchFiles)
+	maxSearchFiles = 2
+	binary := fstest.MapFS{"a/blob1.py": {Data: []byte{0, 1, 2}}, "a/blob2.py": {Data: []byte{0, 1, 2}}, "z/caller.py": {Data: []byte("fetch_user(1)\n")}}
+	if index := buildContractsIndex(context.Background(), parsed, binary, 3); !index.Truncated || len(index.Changes[0].Uses) != 0 {
+		t.Fatalf("binary reads did not count: truncated=%v uses=%+v", index.Truncated, index.Changes[0].Uses)
+	}
+}
+
 func TestContractsIndexSignatureChangesAndLanguages(t *testing.T) {
 	for _, test := range []struct {
 		name, diff, file, symbol, kind string

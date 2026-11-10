@@ -73,6 +73,15 @@ func TestPatchHashSeesModesLineEndingsAndBinaries(t *testing.T) {
 	if len(UnchangedFiles(rename, rename)) != 1 {
 		t.Fatal("the same rename counted as changed")
 	}
+	// The same edit to a regular file and to a symlink differs by the
+	// mode on the index line only.
+	regular := "diff --git a/link b/link\nindex 1111111..2222222 100644\n--- a/link\n+++ b/link\n@@ -1 +1 @@\n-old\n+new\n"
+	if len(UnchangedFiles(regular, strings.Replace(regular, "100644", "120000", 1))) != 0 {
+		t.Error("a symlink edit counted as the same as a regular file edit")
+	}
+	if len(UnchangedFiles(regular, strings.Replace(regular, "1111111..2222222", "3333333..4444444", 1))) != 1 {
+		t.Error("blob IDs on the index line counted as a change")
+	}
 	// A file that becomes a symlink is a deletion section plus an addition
 	// section; a different deleted body is a different change.
 	typeChange := func(removed string) string {

@@ -24,9 +24,9 @@ type rereview struct {
 
 // planRereview decides which reviewable files to carry over: a file whose
 // diff is unchanged since the earlier review is carried unless the
-// contracts index links it to a changed file (it uses a symbol a changed
-// file removes or changes). inDiff lists every file the current diff
-// touches, reviewable or not.
+// contracts index links it to a changed file, reviewable or not (it uses
+// a symbol a changed file removes or changes). inDiff lists every file
+// the current diff touches, reviewable or not.
 func planRereview(incremental *overload.Incremental, reviewable []string, links map[string][]string, inDiff map[string]bool) *rereview {
 	if incremental == nil {
 		return nil
@@ -41,7 +41,9 @@ func planRereview(incremental *overload.Incremental, reviewable []string, links 
 			plan.carried[name] = true
 		}
 	}
-	for _, name := range reviewable {
+	// Any changed file, reviewable or not, brings back the unchanged files
+	// that use what it changed.
+	for name := range inDiff {
 		if unchanged[name] {
 			continue
 		}

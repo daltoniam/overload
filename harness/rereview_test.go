@@ -125,3 +125,12 @@ func TestPriorFindingsOnRevertedFilesAreResolved(t *testing.T) {
 		t.Fatalf("touched = %v", touched)
 	}
 }
+
+func TestNonReviewableChangesBringBackTheirUsers(t *testing.T) {
+	// schema.graphql changed but is not reviewable (a skip path); the
+	// unchanged api/handlers.py uses a field it changed.
+	plan := planRereview(&overload.Incremental{Unchanged: []string{"api/handlers.py"}}, []string{"api/handlers.py"}, map[string][]string{"schema.graphql": {"api/handlers.py"}}, map[string]bool{"api/handlers.py": true, "schema.graphql": true})
+	if plan.carried["api/handlers.py"] {
+		t.Fatal("a file using a changed, non-reviewable file was carried over")
+	}
+}

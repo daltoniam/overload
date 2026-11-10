@@ -69,10 +69,14 @@ var skipWords = map[string]bool{"if": true, "for": true, "while": true, "switch"
 
 // Limits on the search for uses.
 const (
-	maxSearchFiles     = 60000
 	maxSearchFileBytes = 1 << 20
-	maxSearchBytes     = 600 << 20
 	maxUseText         = 160
+)
+
+// Budgets for one search for uses, variables so tests can lower them.
+var (
+	maxSearchFiles = 60000
+	maxSearchBytes = 600 << 20
 )
 
 type symbolUse struct {
@@ -203,7 +207,11 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 		position[change.Symbol] = append(position[change.Symbol], i)
 	}
 	pattern := regexp.MustCompile(`(?:` + strings.Join(names, "|") + `)`)
-	uses := make([][]symbolUse, len(index.Changes))
+	// Only the first maxCallers uses of each change, in report order, are
+	// kept while scanning; the rest are counted. A file with thousands of
+	// uses (minified code) cannot grow memory.
+	kept := make([][]symbolUse, len(index.Changes))
+	counts := make([]int, len(index.Changes))
 	files, bytesRead := 0, 0
 	_ = fs.WalkDir(repo, ".", func(name string, entry fs.DirEntry, err error) error {
 		if err != nil || ctx.Err() != nil {
@@ -227,50 +235,75 @@ func buildContractsIndex(ctx context.Context, parsed reviewDiff, repo fs.FS, max
 			return nil
 		}
 		data, err := fs.ReadFile(repo, name)
-		if err != nil || bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 {
+		if err != nil {
 			return nil
 		}
+		// Every file read counts against the budgets, binary ones too.
 		files++
 		bytesRead += len(data)
-		if !pattern.Match(data) {
+		if bytes.IndexByte(data[:min(len(data), 8000)], 0) >= 0 || !pattern.Match(data) {
 			return nil
 		}
 		for number, line := range strings.Split(string(data), "\n") {
+			seen := map[int]bool{}
 			for _, symbol := range identifiersIn(line, position) {
 				if isDefinitionOf(line, name, symbol) {
 					continue
 				}
 				for _, i := range position[symbol] {
-					uses[i] = append(uses[i], symbolUse{Path: name, Line: number + 1, Text: truncateUse(line), InDiff: inDiff[name]})
+					// One use per change and line.
+					if seen[i] {
+						continue
+					}
+					seen[i] = true
+					counts[i]++
+					use := symbolUse{Path: name, Line: number + 1, InDiff: inDiff[name]}
+					kept[i] = keepFirstUses(kept[i], use, maxCallers, line)
 				}
 			}
 		}
 		return nil
 	})
 	for i := range index.Changes {
-		list := uses[i]
-		// Uses outside the diff come first: those are the callers a
-		// per-file review cannot see.
-		slices.SortStableFunc(list, func(a, b symbolUse) int {
-			if a.InDiff != b.InDiff {
-				if a.InDiff {
-					return 1
-				}
-				return -1
-			}
-			if a.Path != b.Path {
-				return strings.Compare(a.Path, b.Path)
-			}
-			return a.Line - b.Line
-		})
-		list = slices.CompactFunc(list, func(a, b symbolUse) bool { return a.Path == b.Path && a.Line == b.Line })
-		if len(list) > maxCallers {
-			index.Changes[i].More = len(list) - maxCallers
-			list = list[:maxCallers]
+		index.Changes[i].Uses = kept[i]
+		if counts[i] > len(kept[i]) {
+			index.Changes[i].More = counts[i] - len(kept[i])
 		}
-		index.Changes[i].Uses = list
 	}
 	return index
+}
+
+// compareUses orders uses for the report: uses outside the diff first
+// (the callers a per-file review cannot see), then by path and line.
+func compareUses(a, b symbolUse) int {
+	if a.InDiff != b.InDiff {
+		if a.InDiff {
+			return 1
+		}
+		return -1
+	}
+	if a.Path != b.Path {
+		return strings.Compare(a.Path, b.Path)
+	}
+	return a.Line - b.Line
+}
+
+// keepFirstUses adds use to uses, sorted by compareUses, keeping at most
+// limit. The use's text is made only when it is kept.
+func keepFirstUses(uses []symbolUse, use symbolUse, limit int, line string) []symbolUse {
+	if limit <= 0 {
+		return uses
+	}
+	at, _ := slices.BinarySearchFunc(uses, use, compareUses)
+	if at >= limit {
+		return uses
+	}
+	use.Text = truncateUse(line)
+	uses = slices.Insert(uses, at, use)
+	if len(uses) > limit {
+		uses = uses[:limit:limit]
+	}
+	return uses
 }
 
 // isDefinitionOf reports whether line defines symbol rather than using it.
