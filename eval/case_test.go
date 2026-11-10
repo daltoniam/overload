@@ -89,6 +89,8 @@ func gitRepo(t *testing.T) (string, func(...string) string, func(string, string)
 		{"diff.renames", "copies"},
 		{"diff.context", "9"},
 		{"diff.interHunkContext", "20"},
+		{"diff.algorithm", "patience"},
+		{"diff.indentHeuristic", "false"},
 		{"diff.external", "echo external"},
 		{"diff.shout.textconv", "tr a-z A-Z"},
 		{"log.showSignature", "true"},
