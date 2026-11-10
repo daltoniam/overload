@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -380,5 +381,23 @@ func waitFor(t *testing.T, done func() bool) {
 			t.Fatal("timed out")
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestUnverifiedIssuer(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"iss":"https://issuer.example"}`))
+	for _, test := range []struct {
+		name, raw, want string
+	}{
+		{"token", "e30." + payload + ".sig", "https://issuer.example"},
+		{"too many parts", "e30." + payload + ".sig.extra", ""},
+		{"too few parts", "e30." + payload, ""},
+		{"oversized", "e30." + payload + "." + strings.Repeat(".", 20<<10), ""},
+		{"no issuer", "e30.e30.sig", ""},
+	} {
+		got, err := unverifiedIssuer(test.raw)
+		if got != test.want || (test.want == "") != errors.Is(err, ErrNotWorkloadToken) {
+			t.Errorf("%s: %q, %v", test.name, got, err)
+		}
 	}
 }

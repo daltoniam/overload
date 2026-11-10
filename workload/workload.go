@@ -342,8 +342,11 @@ func signingAlgorithms(advertised []string) []string {
 // unverifiedIssuer reads a JWT's iss claim to pick the rules to check it
 // against; nothing is trusted until the signature is verified.
 func unverifiedIssuer(raw string) (string, error) {
-	parts := strings.Split(raw, ".")
-	if len(parts) != 3 || len(raw) > 16<<10 {
+	if len(raw) > 16<<10 {
+		return "", ErrNotWorkloadToken
+	}
+	parts := strings.SplitN(raw, ".", 4)
+	if len(parts) != 3 {
 		return "", ErrNotWorkloadToken
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
