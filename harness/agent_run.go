@@ -32,13 +32,13 @@ func RunAgent(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 	if toolset != nil {
 		options = append(options, fantasy.WithTools(toolset.Tools()...))
 	}
-	agent, _, err := newAgent(ctx, model, systemPrompt, options...)
+	agent, plan, err := newAgent(ctx, model, systemPrompt, options...)
 	if err != nil {
 		return AgentRun{}, err
 	}
 	final := systemPrompt + finalStepNotice
 	hitLimit := false
-	result, err := agent.Generate(ctx, fantasy.AgentCall{
+	call := fantasy.AgentCall{
 		Prompt:   prompt,
 		StopWhen: []fantasy.StopCondition{fantasy.StepCountIs(maxSteps)},
 		PrepareStep: func(ctx context.Context, step fantasy.PrepareStepFunctionOptions) (context.Context, fantasy.PrepareStepResult, error) {
@@ -48,7 +48,12 @@ func RunAgent(ctx context.Context, model overload.ModelProfile, systemPrompt, pr
 			hitLimit = true
 			return ctx, fantasy.PrepareStepResult{DisableAllTools: true, System: &final}, nil
 		},
-	})
+	}
+	result, err := agent.Generate(ctx, call)
+	if (result == nil || len(result.Steps) == 0) && plan.retriesWithThinkingBudget(err) {
+		call.ProviderOptions = plan.providerOptions(plan.effort)
+		result, err = agent.Generate(ctx, call)
+	}
 	run := AgentRun{HitStepLimit: hitLimit}
 	if toolset != nil {
 		run.ToolCalls = toolset.Calls()
