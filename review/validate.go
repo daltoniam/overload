@@ -31,12 +31,18 @@ func Validate(findings []overload.Finding, patch string, limit int) ([]overload.
 	var valid []overload.Finding
 	seen := make(map[string]int)
 	for _, finding := range findings {
+		finding.Side = strings.ToUpper(strings.TrimSpace(finding.Side))
+		if finding.Side == "" {
+			finding.Side = "RIGHT"
+		}
 		if !diff.Commentable(files, finding.Path, finding.Line) || finding.Side != "RIGHT" || finding.Confidence < 0 || finding.Confidence > 1 {
 			continue
 		}
-		if !allowed(finding.Severity, []string{"critical", "high", "medium", "low"}) || !allowed(finding.Category, []string{"bug", "security", "performance", "correctness", "maintainability", "test"}) {
+		var ok bool
+		if finding.Severity, ok = normalizeSeverity(finding.Severity); !ok {
 			continue
 		}
+		finding.Category = normalizeCategory(finding.Category)
 		if finding.Evidence == "" || !evidenceMatches(files, finding) {
 			continue
 		}
@@ -99,6 +105,44 @@ func evidenceMatches(files []diff.File, finding overload.Finding) bool {
 	return false
 }
 
+// Severities and categories a finding is stored and posted with.
+var (
+	Severities = []string{"critical", "high", "medium", "low"}
+	Categories = []string{"bug", "security", "performance", "correctness", "maintainability", "test"}
+)
+
+// severityWords maps the other words models use for a severity.
+var severityWords = map[string]string{"blocker": "critical", "severe": "critical", "major": "high", "error": "high", "moderate": "medium", "warning": "medium", "minor": "low", "info": "low", "trivial": "low", "nit": "low"}
+
+// normalizeSeverity reads a model's severity case-insensitively, accepting
+// common synonyms. An unknown severity is rejected: it decides whether a
+// review blocks, so it is not guessed.
+func normalizeSeverity(severity string) (string, bool) {
+	severity = strings.ToLower(strings.TrimSpace(severity))
+	if allowed(severity, Severities) {
+		return severity, true
+	}
+	mapped, ok := severityWords[severity]
+	return mapped, ok
+}
+
+// categoryWords maps the other words models use for a category.
+var categoryWords = map[string]string{"vulnerability": "security", "injection": "security", "auth": "security", "perf": "performance", "efficiency": "performance", "testing": "test", "tests": "test", "readability": "maintainability", "style": "maintainability", "design": "maintainability", "logic": "correctness", "arithmetic": "correctness", "off-by-one": "correctness", "concurrency": "correctness", "race": "correctness", "error handling": "correctness", "error-handling": "correctness", "validation": "correctness", "reliability": "correctness"}
+
+// normalizeCategory reads a model's category case-insensitively. A
+// category outside the known set is only a label, so the finding is kept
+// as a bug rather than dropped.
+func normalizeCategory(category string) string {
+	category = strings.ToLower(strings.TrimSpace(category))
+	if allowed(category, Categories) {
+		return category
+	}
+	if mapped, ok := categoryWords[category]; ok {
+		return mapped
+	}
+	return "bug"
+}
+
 // dedupeKey collapses near-identical findings within one review: same file,
 // title and category within a five-line window.
 func dedupeKey(finding overload.Finding) string {
@@ -112,7 +156,7 @@ func SeverityRank(severity string) int {
 }
 
 func rank(severity string) int {
-	for index, value := range []string{"critical", "high", "medium", "low"} {
+	for index, value := range Severities {
 		if value == severity {
 			return index
 		}

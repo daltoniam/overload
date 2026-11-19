@@ -62,3 +62,29 @@ func TestSanitizeStripsReferenceLinksRelativeURLsAndEntities(t *testing.T) {
 		t.Fatalf("plain text damaged: %q", text)
 	}
 }
+
+func TestValidateNormalizesModelLabels(t *testing.T) {
+	patch := "diff --git a/a.go b/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n-old\n+discount := total * 100 / percent\n+return total > 50\n"
+	base := overload.Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: "high", Category: "bug", Title: "Bug", Body: "Fix it.", Evidence: "total * 100 / percent", Confidence: 0.9}
+	arithmetic := base
+	arithmetic.Category, arithmetic.Severity = "Arithmetic", "HIGH"
+	offByOne := base
+	offByOne.Line, offByOne.Evidence, offByOne.Category, offByOne.Severity, offByOne.Side, offByOne.Title = 2, "return total > 50", "off-by-one", "Major", "", "Boundary"
+	unknown := base
+	unknown.Severity, unknown.Title = "catastrophic", "Unknown severity"
+	valid, err := Validate([]overload.Finding{arithmetic, offByOne, unknown}, patch, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(valid) != 2 {
+		t.Fatalf("valid = %+v", valid)
+	}
+	for _, finding := range valid {
+		if finding.Severity != "high" || finding.Category != "correctness" || finding.Side != "RIGHT" {
+			t.Fatalf("finding not normalized: %+v", finding)
+		}
+	}
+	if got := normalizeCategory("something new"); got != "bug" {
+		t.Fatalf("unknown category = %q", got)
+	}
+}
